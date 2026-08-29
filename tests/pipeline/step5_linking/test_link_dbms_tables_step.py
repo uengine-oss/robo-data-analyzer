@@ -1,306 +1,423 @@
-"""DBMS 테이블 링킹 계약 — 자기 줄 스캔 결과와 소스 캐시 의존성.
-
-`_link` 는 파일 본문을 읽어야 하므로 소스 캐시가 필요하다. 그 의존은 호출자가
-명시적으로 넘긴다 — run 스코프 캐시 공유(spec 046 FR-008)가 호출 경로에 드러나야
-하고, 숨은 스코프 조회로 대체되면 정적 검사를 통과한 채 런타임에만 깨진다.
-"""
+"""DBMS data-access linking uses Parser occurrences and Analyzer binding only."""
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
-from graph.schema.graph_edges import ParentOf
 from graph.schema.graph_nodes import CodeNode, Table
-from shared.files.cache import SourceFileCache
-from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import (
-    _link,
-    _unresolved_object_references,
-)
 from pipeline.models.data_object_usage import (
     DatabaseLinkComponentEvidence,
     DataObjectUsageEvidence,
     QualifiedColumnUsage,
 )
+from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import (
+    DbmsDataAccessContractError,
+    _link,
+    link_dbms_tables_step,
+)
 
 
-def _statement(node_id: str, file_path: str, start_line: int, end_line: int) -> CodeNode:
+_SOURCE = "procedures/load_orders.sql"
+
+
+def _routine(node_id: str = "routine:load_orders") -> CodeNode:
     return CodeNode(
         id=node_id,
-        signature=node_id,
-        file_path=file_path,
-        start_line=start_line,
-        end_line=end_line,
-        label="INSERT",
-        name=node_id,
+        signature="load_orders()",
+        file_path=_SOURCE,
+        start_line=1,
+        end_line=50,
+        label="PROCEDURE",
+        name="load_orders",
     )
+
+
+def _statement(
+    node_id: str,
+    *,
+    label: str,
+    line: int,
+    parent_id: str = "routine:load_orders",
+) -> CodeNode:
+    return CodeNode(
+        id=node_id,
+        signature=label,
+        file_path=_SOURCE,
+        start_line=line,
+        end_line=line,
+        label=label,
+        name=label,
+        parent_id=parent_id,
+    )
+
+
+def _usage(
+    node: CodeNode,
+    *,
+    raw_reference: str,
+    name: str,
+    access: str,
+    line: int | None = None,
+    **kwargs,
+) -> DataObjectUsageEvidence:
+    return DataObjectUsageEvidence(
+        source_id=node.id,
+        raw_reference=raw_reference,
+        name=name,
+        access=access,
+        evidence_file=_SOURCE,
+        evidence_line=line or node.start_line,
+        **kwargs,
+    )
+
+
+def _with_usages(
+    node: CodeNode,
+    *usages: DataObjectUsageEvidence,
+    version: int = 4,
+) -> CodeNode:
+    node.extra["data_object_evidence_version"] = version
+    node.extra["data_object_usages"] = tuple(usages)
+    return node
 
 
 class LinkDbmsTablesTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.source = Path(self._tmp.name) / "load_orders.sql"
-        self.source.write_text(
-            "INSERT INTO ORDER_ITEM SELECT * FROM ORDERS;\n",
-            encoding="utf-8",
-        )
+        self.routine = _routine()
         self.tables = [
             Table(db="shop", schema="PUBLIC", name="ORDERS"),
             Table(db="shop", schema="PUBLIC", name="ORDER_ITEM"),
         ]
-        self.nodes = [_statement("insert:load_orders", str(self.source), 1, 1)]
 
-    def test_links_reads_and_writes_from_own_lines(self) -> None:
-        """정상: 자기 줄의 INSERT 대상은 WRITES, FROM 대상은 READS."""
-        edges = _link(self.nodes, self.tables, [], SourceFileCache())
-
-        relation_by_target = {e.target_id: e.relation for e in edges}
-        orders, order_item = self.tables[0].id, self.tables[1].id
-        self.assertEqual(relation_by_target.get(order_item), "WRITES")
-        self.assertEqual(relation_by_target.get(orders), "READS")
-
-    def test_reuses_the_caller_supplied_cache(self) -> None:
-        """캐시는 호출자가 넘긴 인스턴스를 그대로 쓴다 — run 스코프 공유가 깨지지 않는다."""
-        cache = SourceFileCache()
-
-        _link(self.nodes, self.tables, [], cache)
-
-        # 넘긴 캐시에 이 파일이 적재됐어야 한다 = 별도 캐시를 새로 만들지 않았다는 증거.
-        self.assertEqual(cache.lines(str(self.source))[0].strip().split()[0], "INSERT")
-
-    def test_no_ddl_tables_returns_no_edges(self) -> None:
-        """경계: DDL 테이블이 없으면 빈 결과."""
-        self.assertEqual(_link(self.nodes, [], [], SourceFileCache()), [])
-
-    def test_no_ddl_tables_preserves_versioned_reference_as_object_reference_edge(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 3
-        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
-            source_id=node.id, raw_reference="ORDERS@REMOTE", name="ORDERS",
-            database_link="REMOTE", database_link_components=(
-                DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
-            ), access="READ", evidence_file=str(self.source),
-            evidence_line=1,
-        ),)
-
-        edges = _link([node], [], [], SourceFileCache(), datasource="shop")
-        references = _unresolved_object_references([node], "shop")
-
-        self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0].relation, "READS")
-        self.assertTrue(edges[0].target_id.startswith("object-ref:"))
-        self.assertEqual(
-            references[0].database_link_components_json,
-            '[{"role":"database","name":"REMOTE","name_quoted":false}]',
+    def test_parser_occurrences_become_routine_to_table_products(self) -> None:
+        insert = _statement("statement:insert", label="INSERT", line=10)
+        _with_usages(
+            insert,
+            _usage(
+                insert,
+                raw_reference="PUBLIC.ORDER_ITEM",
+                schema="PUBLIC",
+                name="ORDER_ITEM",
+                alias="I",
+                access="WRITE",
+            ),
+            _usage(
+                insert,
+                raw_reference="PUBLIC.ORDERS",
+                schema="PUBLIC",
+                name="ORDERS",
+                alias="O",
+                access="READ",
+                qualified_columns=(
+                    QualifiedColumnUsage(
+                        raw_reference="O.ORDER_ID",
+                        qualifier="O",
+                        name="ORDER_ID",
+                        evidence_line=10,
+                    ),
+                ),
+            ),
         )
 
-    def test_quoted_unresolved_siblings_remain_two_edges_and_two_nodes(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 3
-        node.extra["data_object_usages"] = tuple(
-            DataObjectUsageEvidence(
-                source_id=node.id, raw_reference=f'"App"."{name}"', schema="App",
-                schema_quoted=True, name=name, name_quoted=True, access="READ",
-                evidence_file=str(self.source), evidence_line=line,
+        edges = _link([self.routine, insert], self.tables, datasource="shop")
+
+        self.assertCountEqual(
+            [
+                (self.routine.id, self.tables[1].id, "WRITES", "INSERT"),
+                (self.routine.id, self.tables[0].id, "READS", "SELECT"),
+            ],
+            [
+                (edge.source_id, edge.target_id, edge.relation, edge.dml_type)
+                for edge in edges
+            ],
+        )
+        usages = insert.extra["data_object_usages"]
+        self.assertEqual(["exact", "exact"], [usage.resolution for usage in usages])
+        self.assertEqual(["shop", "shop"], [usage.datasource for usage in usages])
+        self.assertEqual("ORDER_ID", usages[1].qualified_columns[0].name)
+
+    def test_repeated_occurrences_remain_two_but_product_operation_is_one(self) -> None:
+        first = _statement("statement:update:1", label="UPDATE", line=11)
+        second = _statement("statement:update:2", label="UPDATE", line=21)
+        for node in (first, second):
+            _with_usages(
+                node,
+                _usage(
+                    node,
+                    raw_reference="PUBLIC.ORDERS",
+                    schema="PUBLIC",
+                    name="ORDERS",
+                    access="WRITE",
+                ),
             )
-            for name, line in (("Foo", 1), ("foo", 2))
+
+        edges = _link(
+            [self.routine, first, second],
+            self.tables,
+            datasource="shop",
         )
 
-        edges = _link([node], [], [], SourceFileCache(), datasource="shop")
-        references = _unresolved_object_references([node], "shop")
-
-        self.assertEqual(len(edges), 2)
-        self.assertEqual(len({edge.target_id for edge in edges}), 2)
-        self.assertEqual(len(references), 2)
+        self.assertEqual(1, len(edges))
+        self.assertEqual("UPDATE", edges[0].dml_type)
         self.assertEqual(
-            {(reference.schema, reference.schema_quoted,
-              reference.name, reference.name_quoted) for reference in references},
-            {("App", True, "Foo", True), ("App", True, "foo", True)},
+            [11, 21],
+            [
+                first.extra["data_object_usages"][0].evidence_line,
+                second.extra["data_object_usages"][0].evidence_line,
+            ],
         )
 
-    def test_versioned_ast_evidence_resolves_schema_and_preserves_alias_columns(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 1
-        node.extra["data_object_usages"] = (
-            DataObjectUsageEvidence(
-                source_id=node.id, raw_reference="PUBLIC.ORDERS", schema="PUBLIC",
-                name="ORDERS", alias="O", access="READ", evidence_file=str(self.source),
-                evidence_line=1, qualified_columns=(QualifiedColumnUsage(
-                    raw_reference="O.ORDER_ID", qualifier="O", name="ORDER_ID", evidence_line=1,
-                ),),
+    def test_distinct_write_operations_are_not_collapsed_before_product_plan(self) -> None:
+        insert = _statement("statement:insert", label="INSERT", line=10)
+        update = _statement("statement:update", label="UPDATE", line=20)
+        for node in (insert, update):
+            _with_usages(
+                node,
+                _usage(
+                    node,
+                    raw_reference="PUBLIC.ORDERS",
+                    schema="PUBLIC",
+                    name="ORDERS",
+                    access="WRITE",
+                ),
+            )
+
+        edges = _link([self.routine, insert, update], self.tables)
+
+        self.assertEqual(["INSERT", "UPDATE"], sorted(edge.dml_type for edge in edges))
+
+    def test_unresolved_database_link_stays_in_occurrence_ledger_only(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        usage = _usage(
+            select,
+            raw_reference="ORDERS@REMOTE",
+            name="ORDERS",
+            database_link="REMOTE",
+            database_link_components=(
+                DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
             ),
-            DataObjectUsageEvidence(
-                source_id=node.id, raw_reference="PUBLIC.ORDER_ITEM", schema="PUBLIC",
-                name="ORDER_ITEM", alias="I", access="WRITE", evidence_file=str(self.source),
-                evidence_line=1,
-            ),
+            access="READ",
         )
+        _with_usages(select, usage, version=3)
 
-        edges = _link([node], self.tables, [], SourceFileCache(), datasource="shop")
+        edges = _link([self.routine, select], self.tables, datasource="shop")
 
+        self.assertEqual([], edges)
+        self.assertEqual((usage.raw_reference,), tuple(
+            item.raw_reference
+            for item in select.extra["unresolved_data_object_usages"]
+        ))
         self.assertEqual(
-            [(edge.target_id, edge.relation) for edge in edges],
-            [(self.tables[0].id, "READS"), (self.tables[1].id, "WRITES")],
+            ("database", "REMOTE"),
+            (
+                select.extra["unresolved_data_object_usages"][0]
+                .database_link_components[0].role,
+                select.extra["unresolved_data_object_usages"][0]
+                .database_link_components[0].name,
+            ),
         )
-        usages = node.extra["data_object_usages"]
-        self.assertEqual([usage.resolution for usage in usages], ["exact", "exact"])
-        self.assertEqual([usage.datasource for usage in usages], ["shop", "shop"])
-        self.assertEqual(usages[0].qualified_columns[0].name, "ORDER_ID")
 
-    def test_versioned_ast_evidence_resolves_only_exact_quoted_table_identity(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 3
-        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
-            source_id=node.id, raw_reference='"App"."foo"', schema="App",
-            schema_quoted=True, name="foo", name_quoted=True, access="READ",
-            evidence_file=str(self.source), evidence_line=1,
-        ),)
+    def test_quoted_unresolved_siblings_remain_distinct_occurrences(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        usages = tuple(
+            _usage(
+                select,
+                raw_reference=f'"App"."{name}"',
+                schema="App",
+                schema_quoted=True,
+                name=name,
+                name_quoted=True,
+                access="READ",
+                line=line,
+            )
+            for name, line in (("Foo", 12), ("foo", 13))
+        )
+        _with_usages(select, *usages)
+
+        edges = _link([self.routine, select], [], datasource="shop")
+
+        self.assertEqual([], edges)
+        unresolved = select.extra["unresolved_data_object_usages"]
+        self.assertEqual(
+            [
+                ('"App"."Foo"', "Foo", True),
+                ('"App"."foo"', "foo", True),
+            ],
+            [
+                (item.raw_reference, item.name, item.name_quoted)
+                for item in unresolved
+            ],
+        )
+
+    def test_quoted_and_catalog_identity_require_exact_match(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        _with_usages(
+            select,
+            _usage(
+                select,
+                raw_reference='"warehouse"."App"."Orders"',
+                catalog="warehouse",
+                catalog_quoted=True,
+                schema="App",
+                schema_quoted=True,
+                name="Orders",
+                name_quoted=True,
+                access="READ",
+            ),
+        )
         tables = [
-            Table(db="shop", schema="App", schema_quoted=True,
-                  name="Foo", name_quoted=True),
-            Table(db="shop", schema="App", schema_quoted=True,
-                  name="foo", name_quoted=True),
+            Table(
+                db="shop",
+                catalog="Warehouse",
+                catalog_quoted=True,
+                schema="App",
+                schema_quoted=True,
+                name="Orders",
+                name_quoted=True,
+            ),
+            Table(
+                db="shop",
+                catalog="warehouse",
+                catalog_quoted=True,
+                schema="App",
+                schema_quoted=True,
+                name="Orders",
+                name_quoted=True,
+            ),
         ]
 
-        edges = _link([node], tables, [], SourceFileCache(), datasource="shop")
+        edges = _link([self.routine, select], tables)
 
-        self.assertEqual([(tables[1].id, "READS")], [
-            (edge.target_id, edge.relation) for edge in edges
+        self.assertEqual([(self.routine.id, tables[1].id)], [
+            (edge.source_id, edge.target_id) for edge in edges
         ])
 
-    def test_versioned_ast_evidence_resolves_only_exact_catalog_identity(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 4
-        node.extra["data_object_usages"] = (DataObjectUsageEvidence(
-            source_id=node.id,
-            raw_reference='"warehouse"."App"."Orders"',
-            catalog="warehouse", catalog_quoted=True,
-            schema="App", schema_quoted=True,
-            name="Orders", name_quoted=True,
-            access="READ", evidence_file=str(self.source), evidence_line=1,
-        ),)
-        tables = [
-            Table(db="shop", catalog="Warehouse", catalog_quoted=True,
-                  schema="App", schema_quoted=True, name="Orders", name_quoted=True),
-            Table(db="shop", catalog="warehouse", catalog_quoted=True,
-                  schema="App", schema_quoted=True, name="Orders", name_quoted=True),
-        ]
-
-        edges = _link([node], tables, [], SourceFileCache(), datasource="shop")
-
-        self.assertEqual([(tables[1].id, "READS")], [
-            (edge.target_id, edge.relation) for edge in edges
-        ])
-
-    def test_legacy_bare_name_scanner_does_not_guess_between_schema_siblings(self) -> None:
+    def test_ambiguous_bare_name_is_not_guessed(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        _with_usages(
+            select,
+            _usage(
+                select,
+                raw_reference="ORDERS",
+                name="ORDERS",
+                access="READ",
+            ),
+        )
         tables = [
             Table(db="shop", schema="PUBLIC", name="ORDERS"),
             Table(db="shop", schema="TENANT", name="ORDERS"),
         ]
 
+        self.assertEqual([], _link([self.routine, select], tables))
         self.assertEqual(
-            [],
-            _link(self.nodes, tables, [], SourceFileCache(), datasource="shop"),
+            "ORDERS",
+            select.extra["unresolved_data_object_usages"][0].raw_reference,
         )
 
-    def test_versioned_evidence_does_not_guess_ambiguous_or_database_linked_objects(self) -> None:
-        node = self.nodes[0]
-        node.extra["data_object_evidence_version"] = 1
-        node.extra["data_object_usages"] = (
-            DataObjectUsageEvidence(
-                source_id=node.id, raw_reference="ORDERS", name="ORDERS", access="READ",
-                evidence_file=str(self.source), evidence_line=1,
+    def test_complete_empty_parser_evidence_never_falls_back_to_source_scan(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        _with_usages(select, version=4)
+        select.code_text = "SELECT * FROM ORDERS"
+
+        self.assertEqual([], _link([self.routine, select], self.tables))
+        self.assertEqual((), select.extra["data_object_usages"])
+        self.assertEqual((), select.extra["unresolved_data_object_usages"])
+
+    def test_dml_node_without_parser_evidence_fails_closed(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+
+        with self.assertRaisesRegex(
+            DbmsDataAccessContractError,
+            "missing Parser data-object evidence",
+        ):
+            _link([self.routine, select], self.tables)
+
+    def test_occurrence_without_owning_routine_fails_closed(self) -> None:
+        select = _statement(
+            "statement:select",
+            label="SELECT",
+            line=12,
+            parent_id="",
+        )
+        _with_usages(
+            select,
+            _usage(
+                select,
+                raw_reference="ORDERS",
+                name="ORDERS",
+                access="READ",
             ),
-            DataObjectUsageEvidence(
-                source_id=node.id, raw_reference="ORDER_ITEM@REMOTE", name="ORDER_ITEM",
-                database_link="REMOTE", database_link_components=(
-                    DatabaseLinkComponentEvidence(role="database", name="REMOTE"),
-                ), access="WRITE", evidence_file=str(self.source),
-                evidence_line=1,
+        )
+
+        with self.assertRaisesRegex(
+            DbmsDataAccessContractError,
+            "no owning user routine",
+        ):
+            _link([select], self.tables)
+
+    def test_exact_resolution_outside_table_population_fails_closed(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        exact = _usage(
+            select,
+            raw_reference="PUBLIC.ORDERS",
+            schema="PUBLIC",
+            name="ORDERS",
+            access="READ",
+        ).resolved("db:missing")
+        _with_usages(select, exact)
+
+        with self.assertRaisesRegex(
+            DbmsDataAccessContractError,
+            "outside the current Table population",
+        ):
+            _link([self.routine, select], self.tables)
+
+    def test_occurrence_source_mismatch_fails_closed(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        wrong = DataObjectUsageEvidence(
+            source_id="another-node",
+            raw_reference="ORDERS",
+            name="ORDERS",
+            access="READ",
+            evidence_file=_SOURCE,
+            evidence_line=12,
+        )
+        _with_usages(select, wrong)
+
+        with self.assertRaisesRegex(
+            DbmsDataAccessContractError,
+            "source differs",
+        ):
+            _link([self.routine, select], self.tables)
+
+    def test_step_returns_candidates_without_object_reference_state(self) -> None:
+        select = _statement("statement:select", label="SELECT", line=12)
+        _with_usages(
+            select,
+            _usage(
+                select,
+                raw_reference="PUBLIC.ORDERS",
+                schema="PUBLIC",
+                name="ORDERS",
+                access="READ",
             ),
         )
-        ambiguous = self.tables + [Table(db="shop", schema="TENANT2", name="ORDERS")]
 
-        edges = _link([node], ambiguous, [], SourceFileCache())
+        result = self._run_step([self.routine, select])
 
-        self.assertEqual(len(edges), 2)
-        self.assertTrue(all(edge.target_id.startswith("object-ref:") for edge in edges))
-        self.assertEqual(
-            [usage.raw_reference for usage in node.extra["unresolved_data_object_usages"]],
-            ["ORDERS", "ORDER_ITEM@REMOTE"],
-        )
+        self.assertEqual(1, len(result["reads_writes_edges"]))
+        self.assertNotIn("object_references", result)
 
-    def test_trigger_event_header_is_not_an_executable_insert(self) -> None:
-        """트리거 선언의 AFTER INSERT ON 대상은 READS가 아니다."""
-        self.source.write_text(
-            "CREATE OR REPLACE TRIGGER RWIS.TRG_INS_RDITAG_TB\n"
-            "AFTER INSERT\n"
-            "ON RDITAG_TB\n"
-            "FOR EACH ROW\n"
-            "BEGIN\n"
-            "  INSERT INTO TMP_INS_TRAN2FA_RDITAG_TB VALUES (:NEW.TAGSN);\n"
-            "END;\n",
-            encoding="utf-8",
-        )
-        trigger = CodeNode(
-            id="trigger:rditag",
-            signature="TRG_INS_RDITAG_TB",
-            file_path=str(self.source),
-            start_line=1,
-            end_line=7,
-            label="TRIGGER",
-            name="TRG_INS_RDITAG_TB",
-        )
-        insert = CodeNode(
-            id="trigger:rditag:insert@6",
-            signature="INSERT",
-            file_path=str(self.source),
-            start_line=6,
-            end_line=6,
-            label="INSERT",
-            name="INSERT",
-        )
-        tables = [
-            Table(db="rwis", schema="RWIS", name="RDITAG_TB"),
-            Table(db="rwis", schema="RWIS", name="TMP_INS_TRAN2FA_RDITAG_TB"),
-        ]
+    def _run_step(self, nodes: list[CodeNode]) -> dict:
+        import asyncio
 
-        edges = _link(
-            [trigger, insert],
-            tables,
-            [ParentOf(parent_id=trigger.id, child_id=insert.id)],
-            SourceFileCache(),
-        )
-
-        self.assertEqual(
-            [(edge.source_id, edge.target_id, edge.relation, edge.dml_type)
-             for edge in edges],
-            [(insert.id, tables[1].id, "WRITES", "INSERT")],
-        )
-
-    def test_routine_container_is_not_a_dml_fallback(self) -> None:
-        """하위 DML 누락을 루틴 재스캔으로 숨기지 않는다 — parser 계약 위반은 별도 축이다."""
-        self.source.write_text(
-            "CREATE OR REPLACE PROCEDURE P IS\n"
-            "BEGIN\n"
-            "  INSERT INTO ORDER_ITEM SELECT * FROM ORDERS;\n"
-            "END;\n",
-            encoding="utf-8",
-        )
-        routine = CodeNode(
-            id="procedure:p",
-            signature="P",
-            file_path=str(self.source),
-            start_line=1,
-            end_line=4,
-            label="PROCEDURE",
-            name="P",
-        )
-
-        self.assertEqual(
-            _link([routine], self.tables, [], SourceFileCache()),
-            [],
+        return asyncio.run(
+            link_dbms_tables_step(
+                {"code_nodes": nodes, "tables": self.tables},
+                {"configurable": {
+                    "codebase": SimpleNamespace(datasource="shop"),
+                }},
+            )
         )
 
 

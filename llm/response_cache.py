@@ -1,4 +1,4 @@
-"""LLM 응답 콘텐츠 해시 캐시 — 같은 입력이면 서버를 다시 부르지 않는다.
+"""LLM 영속 응답 캐시 — 같은 봉인 runtime의 같은 실제 요청만 재사용한다.
 
 두 가지를 동시에 해결한다.
 
@@ -8,8 +8,9 @@
 2. **재실행 비용**: 코퍼스가 그대로면 LLM 콜이 0에 수렴한다. 코드 일부만 바뀌면 그 함수의
    프롬프트만 달라지므로 그 부분만 다시 부른다.
 
-키는 **모델에 실제로 보낸 것 전부**다(프롬프트 본문·모델·max_tokens·구조화 채널·응답 스키마). 하나라도
-바뀌면 다른 키라서 **별도 무효화 로직이 필요 없다** — 프롬프트가 곧 키다.
+모델 이름은 실행환경 identity가 아니다. weights/revision·tokenizer·quantization·serving
+runtime·provider hard limit을 함께 설명하는 capability 문서 SHA-256이 없으면 캐시는 꺼진다.
+봉인 지문과 실제 메시지·요청 설정·응답 스키마 중 하나라도 바뀌면 다른 키가 된다.
 
 저장 위치는 코퍼스 옆(``ROBO_DATA_DIR/.llm-cache``)이다. 프롬프트가 코퍼스 내용을 품고
 있어 코퍼스와 수명을 같이하는 것이 맞고, 저장소를 오염시키지 않는다.
@@ -17,22 +18,68 @@
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from llm.model_runtime_capabilities import (
+    ModelRuntimeCapabilitiesError,
+    load_model_runtime_capabilities,
+)
 from shared.config.settings import SETTINGS
 from shared.events.runtime_logger import log_info, log_warning
 
 _COMPONENT = "llm.response_cache"
+_CACHE_KEY_CONTRACT = "sealed-runtime-request-v2"
+_UNSEALED_WARNING_EMITTED = False
+
+
+def is_enabled() -> bool:
+    """운영자가 요청했고 content-addressed 실행환경 정본이 맞을 때만 허용한다."""
+    global _UNSEALED_WARNING_EMITTED
+    requested = SETTINGS.analysis_llm.response_cache
+    runtime_sha256 = SETTINGS.analysis_llm.model_runtime_capabilities_sha256
+    runtime_ref = SETTINGS.analysis_llm.model_runtime_capabilities_ref
+    if requested and (not runtime_sha256 or not runtime_ref) and not _UNSEALED_WARNING_EMITTED:
+        log_warning(
+            _COMPONENT,
+            "cache_disabled_unsealed_runtime",
+            "영속 응답 캐시 비활성 — 모델 실행환경 정본 ref와 SHA-256이 모두 필요함",
+        )
+        _UNSEALED_WARNING_EMITTED = True
+    return bool(
+        requested
+        and runtime_sha256
+        and runtime_ref
+        and _runtime_ref_is_valid(runtime_ref, runtime_sha256)
+    )
+
+
+@lru_cache(maxsize=8)
+def _runtime_ref_is_valid(runtime_ref: str, expected_sha256: str) -> bool:
+    """실행환경 정본의 bytes와 필수 capability 구조를 process에서 한 번 검증한다."""
+    try:
+        load_model_runtime_capabilities(runtime_ref, expected_sha256)
+    except ModelRuntimeCapabilitiesError as error:
+        log_warning(
+            _COMPONENT,
+            "cache_disabled_invalid_runtime_capabilities",
+            "영속 응답 캐시 비활성 — 모델 실행환경 정본이 불완전하거나 hash가 다름",
+            runtime_ref=runtime_ref,
+            error=f"{type(error).__name__}: {error}",
+        )
+        return False
+    return True
 
 
 def cache_root() -> Optional[Path]:
     """캐시 폴더. 비활성이면 None."""
-    if not SETTINGS.analysis_llm.response_cache:
+    if not is_enabled():
         return None
     return SETTINGS.analysis_data.dir / ".llm-cache"
 
@@ -42,12 +89,22 @@ def make_key(
     rule_name: str,
     system_prompt: str,
     user_content: str,
+    runtime_sha256: str,
+    provider: str,
+    api_base: str,
     model: str,
     max_tokens: Any,
+    temperature: float,
+    top_p: float,
+    reasoning_effort: str,
+    extra_body: dict[str, Any],
+    repetition_guard: bool,
     structured_output_method: str,
     response_model: Optional[type[BaseModel]],
 ) -> str:
-    """모델에 보낸 것 전부를 담은 해시 — 하나라도 다르면 다른 키가 된다."""
+    """봉인 runtime과 실제 요청을 담은 해시 — 하나라도 다르면 다른 키가 된다."""
+    if re.fullmatch(r"[0-9a-f]{64}", runtime_sha256) is None:
+        raise ValueError("runtime_sha256 must be a lowercase SHA-256 hex digest")
     schema = (
         response_model.model_json_schema()
         if response_model is not None
@@ -55,11 +112,20 @@ def make_key(
     )
     payload = json.dumps(
         {
+            "cache_key_contract": _CACHE_KEY_CONTRACT,
             "rule": rule_name,
             "system": system_prompt,
             "user": user_content,
+            "runtime_sha256": runtime_sha256,
+            "provider": provider,
+            "api_base": api_base,
             "model": model,
             "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "reasoning_effort": reasoning_effort,
+            "extra_body": extra_body,
+            "repetition_guard": repetition_guard,
             "structured_output_method": structured_output_method,
             "schema": schema,
         },
@@ -180,7 +246,7 @@ def store(key: str, value: Any) -> None:
     path = _path(key)
     if path is None:
         return
-    body = value.model_dump() if isinstance(value, BaseModel) else value
+    body = value.model_dump(by_alias=True) if isinstance(value, BaseModel) else value
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # 같은 키를 여러 콜이 동시에 쓸 수 있다(3분할·폴백 조각이 동시 실행).

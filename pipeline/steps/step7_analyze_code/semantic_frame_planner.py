@@ -1,7 +1,6 @@
 """Project existing parser/linker facts into bounded semantic frame slots."""
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -280,7 +279,6 @@ def build_code_semantic_plan(
     call_refs_by_line: dict[int, list[str]] = {}
     condition_call_refs_by_fact: dict[str, list[str]] = {}
     effect_call_refs: list[str] = []
-    call_lines = tuple(ctx.extra.get("ast_call_lines") or ())
     call_occurrences = tuple(ctx.extra.get("ast_call_occurrences") or ())
     if call_occurrences:
         if not all(isinstance(item, CallOccurrenceFact) for item in call_occurrences):
@@ -288,18 +286,6 @@ def build_code_semantic_plan(
         occurrence_ids = [item.call_id for item in call_occurrences]
         if len(occurrence_ids) != len(set(occurrence_ids)):
             raise ValueError("ast_call_occurrences requires unique occurrence IDs")
-        active_occurrences = tuple(
-            item for item in call_occurrences
-            if item.context_role in {"condition", "effect"}
-        )
-        if Counter(
-            (item.line, item.callee.lower()) for item in active_occurrences
-        ) != Counter(
-            (int(line), str(name).lower()) for line, name in call_lines
-        ):
-            raise ValueError(
-                "semantic call occurrence population differs from call-line ledger"
-            )
         for occurrence in call_occurrences:
             absolute_line = fn.start_line + occurrence.line - 1
             attributes: dict[str, Any] = {
@@ -309,26 +295,16 @@ def build_code_semantic_plan(
                 "callee_kind": occurrence.callee_kind,
                 "argument_sources": list(occurrence.argument_sources),
                 "source_range": list(occurrence.source_range or ()),
-                "context_role": occurrence.context_role,
+                "structural_role": occurrence.structural_role,
                 "presence_status": occurrence.presence_status,
-                "resolution_status": occurrence.resolution_status,
-                "resolution_outcome": occurrence.resolution_outcome,
             }
             if occurrence.receiver_source is not None:
                 attributes["receiver_source"] = occurrence.receiver_source
             if occurrence.condition_fact_id is not None:
                 attributes["condition_fact_id"] = occurrence.condition_fact_id
-            if occurrence.resolution_scope is not None:
-                attributes["scope"] = occurrence.resolution_scope
-            if occurrence.resolution_reason:
-                attributes["resolution_reason"] = occurrence.resolution_reason
             if occurrence.callee_id:
                 attributes["callee_id"] = occurrence.callee_id
                 attributes["recursive"] = occurrence.callee_id == fn.id
-            if occurrence.external_identity_key:
-                attributes["external_identity_key"] = (
-                    occurrence.external_identity_key
-                )
             ref = _add_fact(evidence, _fact(
                 target_id=fn.id,
                 kind="CALL",
@@ -341,39 +317,20 @@ def build_code_semantic_plan(
             ))
             callee_refs.append(ref)
             ordered.append(ref)
-            if occurrence.context_role != "non_active":
+            if occurrence.presence_status == "active":
                 call_refs_by_line.setdefault(absolute_line, []).append(ref)
-            if occurrence.context_role == "condition":
+            if (
+                occurrence.presence_status == "active"
+                and occurrence.structural_role == "condition"
+            ):
                 condition_call_refs_by_fact.setdefault(
                     str(occurrence.condition_fact_id), [],
                 ).append(ref)
-            if occurrence.context_role == "effect":
+            if (
+                occurrence.presence_status == "active"
+                and occurrence.structural_role == "effect"
+            ):
                 effect_call_refs.append(ref)
-    else:
-        for relative_line, call_name in call_lines:
-            absolute_line = fn.start_line + int(relative_line) - 1
-            ref = _add_fact(evidence, _fact(
-                target_id=fn.id,
-                kind="CALL",
-                identity={"line": absolute_line, "name": call_name},
-                owner_id=owner_id,
-                file=fn.file_path,
-                start_line=absolute_line,
-                end_line=absolute_line,
-                attributes={
-                    "callee_id": "",
-                    "callee_name": str(call_name),
-                    "scope": "",
-                    "recursive": False,
-                    "arguments_source": "",
-                    "result_target": "",
-                },
-            ))
-            call_refs_by_line.setdefault(absolute_line, []).append(ref)
-            effect_call_refs.append(ref)
-            callee_refs.append(ref)
-            ordered.append(ref)
-
     # Linked callee identities are target-level facts because the current common context
     # does not assign every edge to an exact source occurrence.  Never guess that mapping.
     unavailable_callees = {
@@ -397,11 +354,7 @@ def build_code_semantic_plan(
             owner_id=owner_id,
             attributes={
                 "callee_id": callee_id,
-                "callee_name": "",
-                "scope": "internal",
                 "recursive": callee_id == fn.id,
-                "arguments_source": "",
-                "result_target": "",
                 "dependency_status": dependency_status,
             },
         ))
@@ -447,7 +400,7 @@ def build_code_semantic_plan(
             },
         )))
 
-    data_usages = tuple(ctx.extra.get("data_object_usages") or ())
+    data_usages = ctx.data_object_usages
     data_refs_by_line: dict[int, list[str]] = {}
     for index, usage in enumerate(data_usages):
         if not isinstance(usage, DataObjectUsageEvidence):
@@ -817,11 +770,11 @@ def semantic_concern_slots(
     """Assign every applicable slot to exactly one existing parallel concern."""
     result: dict[str, list[SlotSpec]] = {
         "summary": [],
-        "insights": [],
+        "table_usage_meanings": [],
     }
     for spec in slot_specs:
         if spec.family in {"SELECT", "INSERT", "UPDATE", "DELETE", "UPSERT"}:
-            concern = "insights"
+            concern = "table_usage_meanings"
         else:
             concern = "summary"
         result[concern].append(spec)

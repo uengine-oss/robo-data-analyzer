@@ -4,7 +4,7 @@
       → 관계확장 1홉(코사인 게이트) → 구조화 뭉치.
 ★per-request DB: 전역 `.npz`/드라이버 대신 요청 session·corpus 를 받는다. 후보 코사인(_cos)은
   전량 행렬이 아니라 요청 DB 에서 **후보 벡터만** 조회(FR-004 — 전량 로드 없음).
-판단 LLM(rewrite·judge)은 기본 off(config) — 켤 때만 lazy import(base 경로는 LLM 불필요).
+용어집 rewrite LLM은 검증된 검색 보강 경계에서만 lazy import한다.
 progress 콜백은 side-channel(코어 반환 불변) — 게이트/eval 은 None 으로 부른다.
 """
 from __future__ import annotations
@@ -20,11 +20,9 @@ from llm import embedder
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import (
     AFFECTS_TABLE,
-    HAS_CALL_OCCURRENCE,
     READS,
     WRITES,
 )
-from search.ranking.anchors import merge_clusters
 from search.ranking.graph_access import (
     callees,
     call_neighbors,
@@ -51,7 +49,7 @@ class Retriever:
         if not missing:
             return
         rows = self.s.run(
-            "MATCH (n {graph_owner:$graph_owner, generation_id:$generation_id}) "
+            "MATCH (n {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
             "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
             "RETURN n.id AS id, n.embedding AS v",
             ids=list(missing), graph_owner=ANALYZER_GRAPH_OWNER,
@@ -100,14 +98,10 @@ class Retriever:
 
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
-            "MATCH (x {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
-            f"CALL {{ WITH x OPTIONAL MATCH (x)-[:{HAS_CALL_OCCURRENCE}]->(occ:CALL_OCCURRENCE) "
-            "RETURN count(occ) AS call_total, "
-            "sum(CASE WHEN occ.outcome = 'unresolved' THEN 1 ELSE 0 END) AS call_unresolved } "
-            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
+            "MATCH (x {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
             "WHERE type(r) IN $rels "
-            "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb, "
-            "call_total, call_unresolved",
+            "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb",
             id=cid, rels=list(_TABLE_RELS), graph_owner=ANALYZER_GRAPH_OWNER,
         ).single()
         rw: dict[str, list] = {}
@@ -124,11 +118,6 @@ class Retriever:
             "writes": sorted(set(rw.get("WRITES", []))),
             "reads": sorted(set(rw.get("READS", []) + rw.get("AFFECTS_TABLE", []))),
             "calls": calls,
-            "call_resolution": {
-                "status": "insufficient" if rec and rec["call_unresolved"] else "sufficient",
-                "total": int(rec["call_total"] or 0) if rec else 0,
-                "unresolved": int(rec["call_unresolved"] or 0) if rec else 0,
-            },
             "rules": self._rules_for(cid),
             "relevance": round(score[cid][1], 3), "role": role,
         }
@@ -142,35 +131,7 @@ class Retriever:
     # ── 파이프라인 ──
     def retrieve(self, query: str, cfg: Config, pool_k: int = 30,
                  on_progress=None, meta: dict | None = None) -> list[dict]:
-        if cfg.cluster_selection_mode == "global_anchor":
-            return self._retrieve_global_anchors(query, cfg, pool_k, on_progress, meta)
-        if cfg.cluster_selection_mode == "legacy":
-            return self._retrieve_legacy(query, cfg, pool_k, on_progress, meta)
-        raise ValueError(
-            "cluster_selection_mode must be 'global_anchor' or 'legacy': "
-            f"{cfg.cluster_selection_mode!r}"
-        )
-
-    def _retrieve_legacy(self, query: str, cfg: Config, pool_k: int,
-                         on_progress=None, meta: dict | None = None) -> list[dict]:
-        """spec 044 기준선. spec 053 A/B가 끝날 때까지 삭제하지 않는다."""
-        base = self._retrieve_one(query, cfg, pool_k, on_progress)
-        if cfg.cluster_rewrite_mode != "novel_abbrev":
-            return self._judge_prune(query, base, cfg, meta, on_progress)
-        from search.query.rewrite import expand_abbrevs, rewrite_for_cluster  # lazy — LLM 경로
-
-        out = base
-        ab = expand_abbrevs(query)
-        if ab["terms"]:
-            out = merge_clusters(out, self._retrieve_one(ab["expanded"], cfg, pool_k, None))
-            if meta is not None:
-                meta["expanded_query"] = ab["expanded"]
-        rw = rewrite_for_cluster(query)
-        if rw["ok"] and rw["rewritten"].strip() != query.strip() and _has_novel_terms(base, rw):
-            out = merge_clusters(out, self._retrieve_one(rw["rewritten"], cfg, pool_k, None))
-            if meta is not None:
-                meta["rewritten_query"] = rw["rewritten"]
-        return self._judge_prune(query, out, cfg, meta, on_progress)
+        return self._retrieve_global_anchors(query, cfg, pool_k, on_progress, meta)
 
     def _hop_distances(self, anchor_ids: list[str], other_ids: list[str],
                        max_hops: int, cfg: Config | None = None) -> dict[str, int]:
@@ -191,8 +152,8 @@ class Retriever:
             if not frontier:
                 break
             rows = self.s.run(
-                "MATCH (x {graph_owner:$graph_owner, generation_id:$generation_id})-[:CALLS]-"
-                "(y {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                "MATCH (x {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})-[:CALLS]-"
+                "(y {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
                 "WHERE x.id IN $ids AND y.id IS NOT NULL "
                 "RETURN DISTINCT y.id AS id",
                 ids=list(frontier), graph_owner=ANALYZER_GRAPH_OWNER,
@@ -219,7 +180,9 @@ class Retriever:
         if cfg.cluster_rewrite_mode == "novel_abbrev":
             from search.query.rewrite import expand_abbrevs, rewrite_for_cluster
 
-            ab = expand_abbrevs(query)
+            ab = expand_abbrevs(
+                query, analysis_scope_id=self.s.analysis_scope_id,
+            )
             if ab["terms"]:
                 variants.append((
                     "abbrev", ab["expanded"],
@@ -227,14 +190,22 @@ class Retriever:
                 ))
                 if meta is not None:
                     meta["expanded_query"] = ab["expanded"]
-            rw = rewrite_for_cluster(query)
-            if rw["ok"] and rw["rewritten"].strip() != query.strip() and _has_novel_terms(base, rw):
+            rw = rewrite_for_cluster(
+                query, analysis_scope_id=self.s.analysis_scope_id,
+            )
+            if (
+                rw.glossary_substitutions
+                and rw.rewritten_query.strip() != query.strip()
+                and _has_novel_terms(base, rw)
+            ):
                 variants.append((
-                    "rewrite", rw["rewritten"],
-                    self._retrieve_one(rw["rewritten"], cfg, pool_k, None, expand=False),
+                    "rewrite", rw.rewritten_query,
+                    self._retrieve_one(
+                        rw.rewritten_query, cfg, pool_k, None, expand=False
+                    ),
                 ))
                 if meta is not None:
-                    meta["rewritten_query"] = rw["rewritten"]
+                    meta["rewritten_query"] = rw.rewritten_query
 
         candidates: dict[str, dict] = {}
         sources: dict[str, set[str]] = {}
@@ -428,29 +399,11 @@ class Retriever:
             result[bid] = self._node_row(bid, cfg, qv, score, callees[bid], "related")
         return sorted(result.values(), key=lambda x: (x["role"] != "core", -x["relevance"]))
 
-    def _judge_prune(self, query: str, out: list[dict], cfg: Config,
-                     meta: dict | None, on_progress) -> list[dict]:
-        if cfg.cluster_judge_mode != "p15" or len(out) < cfg.cluster_judge_min:
-            return out
-        from search.query.judge import judge  # lazy — LLM 경로
-
-        if on_progress:
-            on_progress("judge", "관련 없는 것 걸러내는 중",
-                        f"상위 {min(len(out), cfg.cluster_judge_top)}개 심판 (전체 {len(out)})")
-        head = out[: cfg.cluster_judge_top]
-        verdict = judge(query, head)
-        if verdict is None:
-            return out
-        pruned = [n for i, n in enumerate(head) if i in verdict] or head
-        calls = {name for n in pruned for name in n.get("calls", [])}
-        pruned += [n for n in out[cfg.cluster_judge_top:] if n["name"] in calls]
-        if meta is not None:
-            meta["judged"] = f"{len(out)}→{len(pruned)}"
-        return pruned
-
-
-def _has_novel_terms(base: list[dict], rw: dict) -> bool:
+def _has_novel_terms(base: list[dict], rw) -> bool:
     """번역의 치환 표준어가 기존 결과(이름+요약)에 없는 새 어휘인가 — 병합 근거(novelty 게이트)."""
     blob = " ".join((x.get("summary") or "").lower() for x in base)
-    subs = [(s.get("to") or "").strip().lower() for s in (rw.get("substitutions") or [])]
+    subs = [
+        item.canonical_term.strip().lower()
+        for item in rw.glossary_substitutions
+    ]
     return any(t and t not in blob for t in subs)

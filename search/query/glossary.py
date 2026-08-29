@@ -1,21 +1,28 @@
-"""요청 데이터베이스의 원천 용어사전을 로드한다.
+"""완료된 Analyzer generation의 사람 제공 용어를 읽는다.
 
-분석기가 사람 제공 입력을 검증·저장한 ``:GLOSSARY`` 노드를 **읽기만** 한다
-(검색 시점 재생성 없음 = 별칭·뜻 복권 소멸, 결정론). 질의 번역 프롬프트(rewrite)에 주입.
-DB(코퍼스)별 자산 → (uri, db) 키 캐시. 없으면 빈 사전(rewrite 는 무보강으로 degrade).
+분석 시 검증된 각 ``GlossaryTerm`` 제품을 그대로 복원하며 검색 시점에
+추론·병합·재생성하지 않는다. 입력이 없으면 빈 용어집을 반환한다.
 """
 from __future__ import annotations
 
-import json
+# (uri, db, analysis_scope_id, generation) -> glossary dict
+_cache: dict[tuple[str, str, str, str], dict] = {}
 
-from graph.ownership import ANALYZER_GRAPH_OWNER
+_GLOSSARY_TERMS_QUERY = """
+MATCH (term:GlossaryTerm {
+  analysis_scope_id: $analysis_scope_id,
+  generation_id: $generation_id
+})
+RETURN term.canonical_term AS canonical,
+       term.aliases AS colloquial,
+       term.meaning AS meaning,
+       term.category AS category
+ORDER BY term.stable_id
+"""
 
-# (uri, db, generation) -> glossary dict
-_cache: dict[tuple[str, str, str], dict] = {}
 
-
-def build() -> dict:
-    """요청 DB 의 용어사전(캐시). ``:GLOSSARY`` 노드 없으면 빈 사전."""
+def build(analysis_scope_id: str | None = None) -> dict:
+    """요청 범위의 완료 generation에서 용어 제품 전체를 한 번 읽는다."""
     from search.corpus.neo4j_reader import read_driver, resolve_target
     from search.corpus.generation import (
         CompletedGenerationUnavailable,
@@ -26,35 +33,33 @@ def build() -> dict:
     drv, db = read_driver()
     glo = {"terms": [], "actions": [], "meta": {"db": db, "source": "none"}}
     try:
-        with completed_generation_session(drv, db) as s:
-            key = (uri, db, s.generation_id)
+        with completed_generation_session(
+            drv, db, analysis_scope_id=analysis_scope_id,
+        ) as s:
+            key = (uri, db, s.analysis_scope_id, s.generation_id)
             if key in _cache:
                 return _cache[key]
-            row = s.run(
-                'MATCH (g:GLOSSARY {id:"glossary", graph_owner:$graph_owner, generation_id:$generation_id}) '
-                "RETURN g.terms_json AS tj",
-                graph_owner=ANALYZER_GRAPH_OWNER,
-            ).single()
-        if row and row["tj"]:
-            glo = json.loads(row["tj"])
+            rows = s.run(
+                _GLOSSARY_TERMS_QUERY,
+                analysis_scope_id=s.analysis_scope_id,
+                generation_id=s.generation_id,
+            ).data()
+        if rows:
+            glo = {"terms": [dict(row) for row in rows], "actions": []}
             glo["meta"] = {"db": db, "source": "graph"}
     except CompletedGenerationUnavailable:
-        key = (uri, db, "unpublished")
+        key = (uri, db, analysis_scope_id or "unresolved", "unpublished")
     finally:
         drv.close()
     _cache[key] = glo
     return glo
 
 
-def render_for_prompt(glo: dict, max_terms: int = 80) -> str:
-    """용어집을 재작성 프롬프트에 인라인할 텍스트로 렌더."""
+def render_for_prompt(glo: dict) -> str:
+    """검증된 용어를 누락·축약·중복 없이 재작성 문맥으로 렌더한다."""
     lines = ["[도메인 용어집 — 현장말투→표준어]"]
-    for t in glo.get("terms", [])[:max_terms]:
-        col = ", ".join(t.get("colloquial", [])[:6])
+    for t in glo.get("terms", []):
+        col = ", ".join(t.get("colloquial", []))
         m = t.get("meaning", "")
         lines.append(f"- 표준어「{t['canonical']}」← 현장:{col}" + (f"  · {m}" if m else ""))
-    lines.append("\n[동작 매핑 — 현장말투→DML(읽기/쓰기)]")
-    for a in glo.get("actions", []):
-        fl = ", ".join(a.get("field", [])[:8])
-        lines.append(f"- {a['canonical']}({a.get('rw', '')}) ← 현장:{fl}")
     return "\n".join(lines)

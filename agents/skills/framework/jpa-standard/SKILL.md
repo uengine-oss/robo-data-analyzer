@@ -38,7 +38,7 @@ ddl_transform:
   fallback_prefixes: ["T_", "TB_"]           # 회사 prefix 가능성
 ```
 
-## codebase_notes 예시
+## 접근 의미
 
 > Spring Data JPA 표준 프로젝트. ``@Entity`` 클래스가 DDL 테이블 1:1 대응.
 > **Repository 메서드명 prefix 가 함수의 DB 작업 종류 결정:**

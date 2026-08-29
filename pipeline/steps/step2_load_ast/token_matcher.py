@@ -45,11 +45,6 @@ _Targets = dict[str, dict[str, list[tuple[str, str]]]]
 
 # Pass 2 미지원 언어 — 언어당 1회만 log (노이즈 차단).
 
-from pipeline.steps.step2_load_ast.import_scopes import (
-    build_import_scope_plan,
-)
-
-
 def _targets_by_module(
     variables: list[Variable], constants: list[Constant],
 ) -> _Targets:
@@ -80,7 +75,6 @@ async def link_references(
     code_nodes: list[CodeNode],
     variables: list[Variable],
     constants: list[Constant],
-    import_refs: list[dict],
     source_cache: SourceFileCache | None = None,
     checkpoint: Callable[[], Awaitable[None]] | None = None,
     modules: list[Module] = (),
@@ -95,8 +89,6 @@ async def link_references(
     파일을 두 번 읽는다 (spec 046 FR-008: 종전엔 여기와 load_ast_step 이 각자 만들었다).
     """
     targets = _targets_by_module(variables, constants)
-    import_plan = build_import_scope_plan(import_refs)
-    _bind_import_resolution_entries(import_refs, import_plan.ledger)
     cache = source_cache or SourceFileCache()
     ancestors = _ancestor_map(list(modules))
     if checkpoint is not None:
@@ -107,18 +99,6 @@ async def link_references(
         ),
         await _link_init_values(variables, constants, targets, checkpoint, ancestors),
     )
-
-
-def _bind_import_resolution_entries(
-    import_refs: list[dict], ledger: list[dict],
-) -> None:
-    """Attach the canonical entry ledger without flattening statement evidence."""
-    by_fact: dict[str, list[dict]] = defaultdict(list)
-    for row in ledger:
-        by_fact[row["import_id"]].append(row)
-    for ref in import_refs:
-        import_id = str(ref.get("import_id") or "")
-        ref["resolution_entries"] = list(by_fact.get(import_id, ()))
 
 
 # ── 상속 조상 맵 (spec 111) ─────────────────────────────────

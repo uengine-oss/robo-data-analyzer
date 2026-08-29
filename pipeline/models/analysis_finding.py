@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-FindingStatus = Literal["rejected", "unverified", "unavailable"]
+FindingStatus = Literal["excluded", "rejected", "unverified", "unavailable"]
 
 
 @dataclass(frozen=True)

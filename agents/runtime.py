@@ -32,7 +32,6 @@ from llm.client import build_llm_client
 from llm.repetition_guard import RepetitionGuardCallback
 from llm.runners.model_output_error import model_output_kind
 from agents.middleware.stack import build_standard_stack
-from agents.middleware.call_limit import ModelCallLimitExceeded
 from llm.tracing import begin_agent_invoke, end_agent_invoke
 from shared.config.settings import SETTINGS
 
@@ -147,7 +146,6 @@ async def run_structured_agent(
     tools: list,
     response_format: type[_T],
     user_message: str,
-    max_calls: int,
     run_dir: Path,
     cost_budget: CostBudget,
     stream_emit: Optional[Callable[[dict], None]] = None,
@@ -162,7 +160,6 @@ async def run_structured_agent(
         tools: 에이전트 탐색 도구 목록 — 출력 도구는 자동 추가.
         response_format: 출력 강제 Pydantic 모델 — submit 도구로 wrap 된다.
         user_message: user 메시지 전문.
-        max_calls: 이 invoke 의 LLM 호출 한도 (회로 차단기).
         run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
         stream_emit: 프론트 NDJSON 스트림 emit (옵션).
@@ -171,14 +168,10 @@ async def run_structured_agent(
         ``response_format`` 인스턴스. agent 가 submit 도구를 호출하지 않고 끝나면
         ``ValueError`` (silent 실패 금지 — 표면화).
     """
-    # 에이전트 응답 상한 = 실측 정상 최대(scan 1.4k·residual 3.6k)의 여유배수 —
-    # 반복 루프 피해를 초 단위로 고정 (run10 실측: 무상한 에이전트 콜 1건이 3만 토큰·207초).
-    # 반복 폭주 실시간 차단(spec 080)도 같은 스위치로 — 상한 도달 전에 수 초 내 끊는다.
     guard_on = SETTINGS.analysis_llm.repetition_guard
-    llm_model = build_llm_client(max_tokens=8000, streaming=guard_on)
+    llm_model = build_llm_client(streaming=guard_on)
     middleware = build_standard_stack(
         agent_name=agent_name,
-        max_calls=max_calls,
         run_dir=run_dir,
         cost_budget=cost_budget,
         stream_emit=stream_emit,
@@ -212,10 +205,10 @@ async def run_structured_agent(
             )
         except Exception as error:
             kind = model_output_kind(error)
-            if kind is not None or isinstance(error, ModelCallLimitExceeded):
+            if kind is not None:
                 raise AgentModelOutputError(
                     f"agent '{agent_name}' usable submit 미산출: {type(error).__name__}: {error}",
-                    kind=kind or "call_limit",
+                    kind=kind,
                 ) from error
             raise
     finally:

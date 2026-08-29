@@ -24,6 +24,12 @@ PROMPT_FILES = tuple(sorted(
 
 
 class PromptStabilityOrderTest(unittest.TestCase):
+    def test_semantic_prompts_do_not_override_runtime_output_limit(self) -> None:
+        for path in PROMPT_FILES:
+            with self.subTest(path=path.relative_to(ROOT)):
+                raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+                self.assertNotIn("max_tokens", raw)
+
     def test_all_yaml_prompts_use_explicit_stability_sections(self) -> None:
         for path in PROMPT_FILES:
             with self.subTest(path=path.relative_to(ROOT)):
@@ -76,6 +82,10 @@ class PromptStabilityOrderTest(unittest.TestCase):
             with self.subTest(module=module):
                 source = (ROOT / "agents" / module).read_text(encoding="utf-8")
                 self.assertIn(
+                    'system_prompt=read_run_text(_SYSTEM_PROMPT_PATH, encoding="utf-8")',
+                    source,
+                )
+                self.assertNotIn(
                     'system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")',
                     source,
                 )

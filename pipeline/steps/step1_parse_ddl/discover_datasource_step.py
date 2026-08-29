@@ -3,12 +3,12 @@
 데이터소스 HTTP 접점은 **이 step 한 곳**이다 (구 step6 ``fetch_table_samples_step`` 흡수):
 catalog ``GET /tables/discovery`` 1회로 실DB 테이블·컬럼·샘플을 받아
 - DDL 단어장에 **합집합** 병합(대소문자 무시 정확 일치, DDL 정의 우선 — DDL = 진실 기준),
-- 신규 테이블의 Table/Column/HAS_COLUMN 을 Neo4j 업서트 (Schema 노드는 비범위 — 계약 문서),
+- 신규 테이블의 Table/Column/HAS_COLUMN 전체 state를 생산하고,
 - step7 이 소비하는 ``table_sample_data``(``{Table.id: {columns, sample_rows}}``) 를 생산한다.
 
 가드 1벌: catalog 비활성 / datasource 미지정 → skip. 404(미등록) → 경고 후 DDL 단어장으로
 계속. 그 외 오류 → raise (헌법 IV — 활성 상태의 실패는 심각).
-계약: specs/107-datasource-table-discovery/contracts/discovery-contract.md
+계약: specs/131-cross-node-semantic-grounding/spec.md
 """
 from __future__ import annotations
 
@@ -18,10 +18,6 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from graph.edges.has_column import upsert_has_column
-from graph.neo4j_client import Neo4jClient
-from graph.nodes.column import upsert_columns
-from graph.nodes.table import upsert_tables, update_sample_snapshots
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import Column, Table
 from graph.schema.node_ids import sql_column_id
@@ -39,11 +35,10 @@ _MAX_TABLES = 1000     # 대형 datasource 절단 상한 (초과분은 catalog �
 
 
 async def discover_datasource_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """discovery 1회 → 단어장 병합 + Neo4j 업서트 + ``table_sample_data`` 생산."""
+    """discovery 1회 → 단어장 병합 + ``table_sample_data`` 생산."""
     cfg = step_config(config)
     stream = cfg.get("stream")
     codebase = cfg.get("codebase")
-    neo: Neo4jClient | None = cfg.get("neo_client")
 
     base_url = catalog_base_url_or_skip(_STEP)
     if base_url is None:
@@ -55,6 +50,10 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
 
     started = time.monotonic()
     ddl_tables: list[Table] = list(state.get("tables") or [])
+    ddl_columns: list[Column] = list(state.get("columns") or [])
+    ddl_has_column_edges: list[HasColumn] = list(
+        state.get("has_column_edges") or []
+    )
     log_info(_STEP, "start", datasource=datasource, ddl_tables=len(ddl_tables))
 
     async with httpx.AsyncClient(timeout=SETTINGS.catalog_api.timeout_seconds) as http:
@@ -95,17 +94,6 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
         log_warning(_STEP, "degraded",
                     f"{degraded}개 테이블의 컬럼/샘플 조회 부분실패 — 해당 항목만 비움")
 
-    if neo is not None:
-        if new_tables:
-            await upsert_tables(neo, new_tables)
-        if new_columns:
-            await upsert_columns(neo, new_columns)
-        if new_edges:
-            await upsert_has_column(neo, new_edges)
-        # discovery가 이미 읽은 최대 5행을 같은 분석 그래프에 한 번만 고정한다.
-        # Architect/MCP 조회 때 실DB를 다시 접속하지 않아 지연과 부하가 늘지 않는다.
-        await update_sample_snapshots(neo, sample_data)
-
     emit_message(
         stream,
         f"✅ 데이터소스 발견 — 실DB {len(payload.get('tables') or [])}개 "
@@ -118,7 +106,12 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
         samples=len(sample_data), degraded=degraded,
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    return {"tables": merged, "table_sample_data": sample_data}
+    return {
+        "tables": merged,
+        "columns": [*ddl_columns, *new_columns],
+        "has_column_edges": [*ddl_has_column_edges, *new_edges],
+        "table_sample_data": sample_data,
+    }
 
 
 def _merge(

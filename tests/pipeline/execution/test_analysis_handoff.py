@@ -14,7 +14,8 @@ from pipeline.execution.analysis_handoff import (
     AnalysisHandoff,
     AnalysisHandoffAborted,
     ANALYSIS_LLM_LANE_WEIGHTS,
-    INSIGHTS_LANE,
+    TABLE_USAGE_MEANINGS_LANE,
+    RULES_LANE,
     SUMMARY_LANE,
     analysis_llm_slots,
     handoff_of,
@@ -92,7 +93,6 @@ class AbortTest(unittest.IsolatedAsyncioTestCase):
         waiters = [
             asyncio.ensure_future(h.summaries()),
             asyncio.ensure_future(h.analysis()),
-            asyncio.ensure_future(h.modules()),
         ]
         await asyncio.sleep(0)
         h.abort(RuntimeError("step7 폭발"))
@@ -117,12 +117,9 @@ class MergeTest(unittest.TestCase):
 
 
 class StandaloneTest(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_config_yields_an_already_open_channel(self) -> None:
-        """겹칠 상대가 없는 실행(단독 호출·테스트)에서 게이트가 교착이 되면 안 된다."""
-        h = handoff_of({})
-        self.assertEqual(await asyncio.wait_for(h.summaries(), timeout=1), [])
-        self.assertEqual(await asyncio.wait_for(h.analysis(), timeout=1), [])
-        self.assertEqual(await asyncio.wait_for(h.modules(), timeout=1), [])
+    async def test_missing_run_scoped_channel_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "analysis_handoff"):
+            handoff_of({})
 
     async def test_configured_channel_is_returned_as_is(self) -> None:
         h = _handoff()
@@ -139,8 +136,13 @@ class SharedLlmAdmissionTest(unittest.TestCase):
                 SETTINGS.analysis_pipeline.llm_max_concurrency,
             ),
         )
-        self.assertEqual({SUMMARY_LANE, INSIGHTS_LANE, "postprocess"}, set(ANALYSIS_LLM_LANE_WEIGHTS))
-        self.assertNotIn("rules", ANALYSIS_LLM_LANE_WEIGHTS)
+        self.assertEqual(
+            {
+                SUMMARY_LANE, RULES_LANE, TABLE_USAGE_MEANINGS_LANE,
+                "postprocess",
+            },
+            set(ANALYSIS_LLM_LANE_WEIGHTS),
+        )
         self.assertEqual(slots.in_use_for(SUMMARY_LANE), 0)
 
 

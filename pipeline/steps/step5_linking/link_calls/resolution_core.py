@@ -3,10 +3,14 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import fnmatch
+import hashlib
 from typing import Any, Iterable, Mapping, Sequence
 
 from graph.schema.graph_edges import Calls
 from pipeline.steps.step5_linking.link_calls.semantic_adapter import (
+    LanguageSemanticCandidateSet,
+    SemanticCallableCandidate,
     SemanticResolution,
     semantic_adapter,
 )
@@ -14,7 +18,8 @@ from pipeline.steps.step5_linking.link_calls.semantic_adapter import (
 
 _STATUSES = frozenset({
     "internal", "external", "dynamic", "configuration_dependent",
-    "ambiguous", "unsupported", "inactive",
+    "ambiguous", "unsupported", "inactive", "standard_library",
+    "framework_provided",
 })
 
 
@@ -32,16 +37,53 @@ class ResolutionCoreResult:
 def resolve_call_sites(
     call_sites: Sequence[Mapping[str, Any]],
     callable_facts: Sequence[Mapping[str, Any]],
+    parameter_facts: Sequence[Mapping[str, Any]] = (),
+    binding_target_facts: Sequence[Mapping[str, Any]] = (),
+    scope_directive_facts: Sequence[Mapping[str, Any]] = (),
+    import_refs: Sequence[Mapping[str, Any]] = (),
+    code_nodes: Sequence[CodeNode] = (),
     *,
     evidence_sources: Iterable[Mapping[str, Any]],
     evidence_completeness: Iterable[Mapping[str, Any]],
     wrapper_names: frozenset[str] = frozenset(),
+    framework_function_patterns: tuple[str, ...] = (),
 ) -> ResolutionCoreResult:
     sources = _source_index(evidence_sources)
     completeness = _completeness_index(evidence_completeness)
     callable_ids = [str(fact.get("fact_id") or "") for fact in callable_facts]
     if any(not value for value in callable_ids) or len(callable_ids) != len(set(callable_ids)):
         raise ResolutionInvariantError("callable evidence IDs must be globally exact-once")
+    parameter_ids = [str(fact.get("fact_id") or "") for fact in parameter_facts]
+    if any(not value for value in parameter_ids) or len(parameter_ids) != len(set(parameter_ids)):
+        raise ResolutionInvariantError("parameter evidence IDs must be globally exact-once")
+    binding_target_ids = [
+        str(fact.get("fact_id") or "") for fact in binding_target_facts
+    ]
+    if (
+        any(not value for value in binding_target_ids)
+        or len(binding_target_ids) != len(set(binding_target_ids))
+    ):
+        raise ResolutionInvariantError(
+            "binding target evidence IDs must be globally exact-once"
+        )
+    scope_directive_ids = [
+        str(fact.get("fact_id") or "") for fact in scope_directive_facts
+    ]
+    if (
+        any(not value for value in scope_directive_ids)
+        or len(scope_directive_ids) != len(set(scope_directive_ids))
+    ):
+        raise ResolutionInvariantError(
+            "scope directive evidence IDs must be globally exact-once"
+        )
+    import_ids = [
+        str(ref.get("import_id") or "") for ref in import_refs
+        if str(ref.get("import_id") or "")
+    ]
+    if len(import_ids) != len(set(import_ids)):
+        raise ResolutionInvariantError(
+            "import evidence IDs must be globally exact-once"
+        )
     call_ids = [str(call.get("call_id") or "") for call in call_sites]
     if any(not value for value in call_ids) or len(call_ids) != len(set(call_ids)):
         raise ResolutionInvariantError("call evidence IDs must be globally exact-once")
@@ -53,7 +95,7 @@ def resolve_call_sites(
         source_id = str(call.get("source_id") or "")
         source = sources.get(source_id)
         if not call.get("caller_id"):
-            resolution = _unsupported(call_id, "insufficient_framework_routine_owner")
+            resolution = _unsupported(call_id, "insufficient_routine_owner")
         elif source is None:
             resolution = _unsupported(call_id, "missing_evidence_source_identity")
         else:
@@ -61,6 +103,7 @@ def resolve_call_sites(
                 call,
                 completeness=completeness,
                 wrapper_names=wrapper_names,
+                framework_function_patterns=framework_function_patterns,
             )
             if resolution is None:
                 adapter = semantic_adapter(
@@ -70,7 +113,15 @@ def resolve_call_sites(
                 if adapter is None:
                     resolution = _unsupported(call_id, "unsupported_language_adapter")
                 else:
-                    resolution = adapter.resolve(call, callable_facts)
+                    candidate_set = adapter.adapt(
+                        call, callable_facts, parameter_facts, binding_target_facts,
+                        scope_directive_facts, import_refs, code_nodes,
+                    )
+                    _validate_candidate_set(
+                        candidate_set, call_id=call_id,
+                        callable_ids=frozenset(callable_ids),
+                    )
+                    resolution = resolve_candidate_set(candidate_set)
         _validate_resolution(resolution)
         row: dict[str, Any] = {
             "call_id": call_id,
@@ -88,7 +139,7 @@ def resolve_call_sites(
         if resolution.status == "internal":
             caller_id = str(call.get("caller_id") or "")
             if not caller_id:
-                resolution = _unsupported(call_id, "insufficient_framework_routine_owner")
+                resolution = _unsupported(call_id, "insufficient_routine_owner")
                 row.update({
                     "resolution_status": resolution.status,
                     "adapter_schema": resolution.adapter_schema,
@@ -111,9 +162,19 @@ def resolve_call_sites(
                 })
         elif resolution.status in {"external", "inactive"}:
             row["outcome"] = "preserved"
+        elif resolution.status in {"standard_library", "framework_provided"}:
+            row["outcome"] = "excluded"
         else:
             row["outcome"] = "unresolved"
         outcomes.append(row)
+
+    unique_edges: list[Calls] = []
+    seen_edge_pairs: set[tuple[str, str]] = set()
+    for edge in edges:
+        pair = (edge.caller_id, edge.callee_id)
+        if pair not in seen_edge_pairs:
+            seen_edge_pairs.add(pair)
+            unique_edges.append(edge)
 
     outcome_ids = [str(row.get("call_id") or "") for row in outcomes]
     if outcome_ids != call_ids:
@@ -121,7 +182,9 @@ def resolve_call_sites(
     counts = Counter(str(row["resolution_status"]) for row in outcomes)
     if sum(counts.values()) != len(call_sites) or set(counts) - _STATUSES:
         raise ResolutionInvariantError("resolution completeness equation does not close")
-    return ResolutionCoreResult(edges=edges, outcomes=outcomes, counts=dict(counts))
+    return ResolutionCoreResult(
+        edges=unique_edges, outcomes=outcomes, counts=dict(counts),
+    )
 
 
 def _source_index(values: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
@@ -151,6 +214,7 @@ def _pre_adapter_resolution(
     *,
     completeness: Mapping[tuple[str, str], Mapping[str, Any]],
     wrapper_names: frozenset[str],
+    framework_function_patterns: tuple[str, ...],
 ) -> SemanticResolution | None:
     call_id = str(call["call_id"])
     source_id = str(call.get("source_id") or "")
@@ -209,12 +273,196 @@ def _pre_adapter_resolution(
             call_id, "dynamic", "language-neutral-resolution/v1",
             reason="runtime_wrapper_target",
         )
+    call_name = str(call.get("call_text") or "")
+    if call_name and any(
+        fnmatch.fnmatchcase(call_name, pattern)
+        for pattern in framework_function_patterns
+    ):
+        return SemanticResolution(
+            call_id, "framework_provided", "language-neutral-resolution/v1",
+            reason="verified_framework_runtime_contract",
+        )
     return None
 
 
 def _unsupported(call_id: str, reason: str) -> SemanticResolution:
     return SemanticResolution(
         call_id, "unsupported", "language-neutral-resolution/v1", reason=reason,
+    )
+
+
+def _validate_candidate_set(
+    value: LanguageSemanticCandidateSet,
+    *,
+    call_id: str,
+    callable_ids: frozenset[str],
+) -> None:
+    if (
+        value.call_id != call_id
+        or not value.adapter_schema
+        or not value.language
+        or not value.source_id
+        or value.call_start < 0
+        or not value.external_identity_namespace
+    ):
+        raise ResolutionInvariantError("adapter candidate identity is incomplete")
+    if bool(value.terminal_status) != bool(value.terminal_reason):
+        raise ResolutionInvariantError("adapter terminal candidate is incomplete")
+    if value.terminal_status and value.candidates:
+        raise ResolutionInvariantError("terminal adapter outcome cannot retain candidates")
+    candidate_ids = [candidate.fact_id for candidate in value.candidates]
+    if (
+        any(not candidate_id for candidate_id in candidate_ids)
+        or len(candidate_ids) != len(set(candidate_ids))
+        or set(candidate_ids) - callable_ids
+    ):
+        raise ResolutionInvariantError("adapter candidate population is not a callable subset")
+    for candidate in value.candidates:
+        if (
+            not candidate.source_id
+            or not candidate.terminal_name
+            or candidate.role not in {"declaration", "definition"}
+            or candidate.declaration_point < 0
+            or candidate.type_compatibility not in {
+                "compatible", "incompatible", "unknown", "not_applicable",
+            }
+            or candidate.linkage_visibility not in {
+                "visible", "not_visible", "conditional", "not_applicable",
+            }
+            or not candidate.linkage_key
+            or candidate.linkage_scope not in {"source", "project"}
+            or not candidate.type_key
+            or not candidate.presence_status
+        ):
+            raise ResolutionInvariantError("adapter callable candidate is incomplete")
+
+
+def resolve_candidate_set(value: LanguageSemanticCandidateSet) -> SemanticResolution:
+    if value.terminal_status:
+        return SemanticResolution(
+            value.call_id,
+            value.terminal_status,
+            value.adapter_schema,
+            reason=value.terminal_reason,
+        )
+    visible = [
+        candidate for candidate in value.candidates
+        if candidate.terminal_name == value.terminal_name
+        and candidate.presence_status == "active"
+        and candidate.linkage_visibility == "visible"
+        and candidate.type_compatibility != "incompatible"
+    ]
+    if not visible:
+        return _external_resolution(value, "external", "project")
+    binders = visible
+    linkages = {
+        (candidate.linkage_key, candidate.linkage_scope) for candidate in binders
+    }
+    ids = _candidate_ids(binders)
+    if {linkage for linkage, _ in linkages} == {"unsupported_typedef_callable"}:
+        return SemanticResolution(
+            value.call_id, "unsupported", value.adapter_schema,
+            reason=f"unsupported_{value.language}_typedef_callable",
+            candidate_fact_ids=ids,
+        )
+    if len(linkages) != 1:
+        return SemanticResolution(
+            value.call_id, "ambiguous", value.adapter_schema,
+            reason=f"conflicting_{value.language}_linkage",
+            candidate_fact_ids=ids,
+        )
+    linkage_key, linkage_scope = next(iter(linkages))
+    type_keys = {candidate.type_key for candidate in binders}
+    if len(type_keys) != 1:
+        return SemanticResolution(
+            value.call_id, "ambiguous", value.adapter_schema,
+            reason=f"conflicting_visible_{value.language}_declarations",
+            candidate_fact_ids=ids,
+        )
+    declaration = max(binders, key=lambda candidate: candidate.declaration_point)
+    direct = [candidate for candidate in binders if candidate.role == "definition"]
+    if direct:
+        return _internal_or_ambiguous(value, declaration.fact_id, direct)
+    expected_type = next(iter(type_keys))
+    definitions = [
+        candidate for candidate in value.candidates
+        if candidate.role == "definition"
+        and candidate.terminal_name == value.terminal_name
+        and candidate.presence_status == "active"
+        and candidate.linkage_key == linkage_key
+        and candidate.linkage_scope == linkage_scope
+        and (linkage_scope != "source" or candidate.source_id == value.source_id)
+    ]
+    compatible = [
+        candidate for candidate in definitions if candidate.type_key == expected_type
+    ]
+    if compatible:
+        return _internal_or_ambiguous(value, declaration.fact_id, compatible)
+    if definitions:
+        return SemanticResolution(
+            value.call_id, "unsupported", value.adapter_schema,
+            reason=f"incompatible_{value.language}_definition_evidence",
+            declaration_fact_id=declaration.fact_id,
+            candidate_fact_ids=_candidate_ids(definitions),
+        )
+    return _external_resolution(
+        value, linkage_key, linkage_scope,
+        declaration_fact_id=declaration.fact_id,
+    )
+
+
+def _candidate_ids(values: Sequence[SemanticCallableCandidate]) -> tuple[str, ...]:
+    return tuple(sorted(candidate.fact_id for candidate in values))
+
+
+def _internal_or_ambiguous(
+    value: LanguageSemanticCandidateSet,
+    declaration_fact_id: str,
+    definitions: Sequence[SemanticCallableCandidate],
+) -> SemanticResolution:
+    candidate_ids = _candidate_ids(definitions)
+    if len(definitions) > 1:
+        return SemanticResolution(
+            value.call_id, "ambiguous", value.adapter_schema,
+            reason=f"multiple_compatible_{value.language}_definitions",
+            declaration_fact_id=declaration_fact_id,
+            candidate_fact_ids=candidate_ids,
+        )
+    definition = definitions[0]
+    if not definition.code_node_id:
+        return SemanticResolution(
+            value.call_id, "unsupported", value.adapter_schema,
+            reason="missing_callable_code_node_projection",
+            declaration_fact_id=declaration_fact_id,
+            candidate_fact_ids=candidate_ids,
+        )
+    return SemanticResolution(
+        value.call_id, "internal", value.adapter_schema,
+        target_id=definition.code_node_id,
+        declaration_fact_id=declaration_fact_id,
+        candidate_fact_ids=candidate_ids,
+    )
+
+
+def _external_resolution(
+    value: LanguageSemanticCandidateSet,
+    linkage_key: str,
+    linkage_scope: str,
+    *,
+    declaration_fact_id: str = "",
+) -> SemanticResolution:
+    source_identity = value.source_id if linkage_scope == "source" else ""
+    encoded = "\0".join((
+        value.external_identity_namespace,
+        linkage_key,
+        source_identity,
+        value.terminal_name,
+    ))
+    return SemanticResolution(
+        value.call_id, "external", value.adapter_schema,
+        reason="partial_upload_external_boundary",
+        external_identity_key=hashlib.sha256(encoded.encode()).hexdigest(),
+        declaration_fact_id=declaration_fact_id,
     )
 
 

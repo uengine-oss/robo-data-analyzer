@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import unittest
 
@@ -26,6 +25,7 @@ from pipeline.models.semantic_frame import (
     merge_semantic_frames,
     normalize_semantic_frame_response,
     profile_prompt_json,
+    semantic_evidence_wire_bindings,
     semantic_frame_response_model,
     semantic_slot_wire_ids,
     slot_specs_json,
@@ -44,9 +44,9 @@ from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     semantic_concern_slots,
 )
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
-    _run_bounded_frame_summary,
-    _summary_slot_batches,
+    _run_frame_summary,
 )
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
 def _routine() -> CodeNode:
@@ -74,6 +74,18 @@ def _context() -> AnalysisContext:
         direct_reads=("db.orders",),
         reads=("db.orders",),
         callees=("code:stock.reserve",),
+        data_object_usages=(
+            DataObjectUsageEvidence(
+                source_id="code:orders.save",
+                raw_reference="orders",
+                name="orders",
+                access="READ",
+                evidence_file="src/orders.c",
+                evidence_line=11,
+                table_id="db.orders",
+                resolution="exact",
+            ),
+        ),
         referenced_symbols=(ReferencedSymbolContext(
             id="code:orders.ORDER_LIMIT",
             name="ORDER_LIMIT",
@@ -92,19 +104,7 @@ def _context() -> AnalysisContext:
             expression="rc",
         ),
     )
-    context.extra["ast_call_lines"] = ((4, "reserve"),)
-    context.extra["data_object_usages"] = (
-        DataObjectUsageEvidence(
-            source_id="code:orders.save",
-            raw_reference="orders",
-            name="orders",
-            access="READ",
-            evidence_file="src/orders.c",
-            evidence_line=11,
-            table_id="db.orders",
-            resolution="exact",
-        ),
-    )
+    context.extra["ast_call_occurrences"] = parser_call_occurrences(((4, "reserve"),))
     context.extra["table_op"] = {"db.orders": "SELECT"}
     return context
 
@@ -145,7 +145,7 @@ class SemanticFramePlannerTest(unittest.TestCase):
             StatementFact("r6", "RETURN", 6, 6, expression="RC_ERR"),
         )
         context.extra["ast_statements"] = statements
-        context.extra["ast_call_lines"] = ()
+        context.extra["ast_call_occurrences"] = ()
         source = "\n".join((
             "switch (rc) {", "case RC_NFD:", "case RC_NRM:", "break;",
             "PFM_CATCH:", "return RC_ERR;", "}", "",
@@ -240,7 +240,7 @@ return rc;
             "c",
             line_offset=9,
             statements=_context().extra["ast_statements"],
-            call_lines=_context().extra["ast_call_lines"],
+            call_occurrences=_context().extra["ast_call_occurrences"],
         )
         profile, specs = build_code_semantic_plan(
             _routine(), _context(), inventory=inventory,
@@ -321,9 +321,10 @@ return rc;
         self.assertEqual(
             "unavailable_cycle",
             next(
-                fact["attributes"]["dependency_status"]
+                fact["dependency_status"]
                 for fact in prompt_profile["evidence"].values()
-                if fact["id"] in unavailable_refs
+                if fact["kind"] == "CALL"
+                and fact.get("dependency_status")
             ),
         )
 
@@ -331,11 +332,7 @@ return rc;
         bindings = tuple(model.__semantic_slot_bindings__)
         output = model.model_validate({
             "slots": {
-                wire_id: {
-                    "meaning": f"{spec.family}.{spec.role} 의미",
-                    "status": "sufficient",
-                    "missing_context": [],
-                }
+                wire_id: f"{spec.family}.{spec.role} 의미"
                 for wire_id, spec in bindings
             },
         })
@@ -352,11 +349,7 @@ return rc;
         wire_ids = semantic_slot_wire_ids(specs)
         payload = {
             "slots": {
-                wire_id: {
-                    "meaning": f"{spec.family}.{spec.role} 의미",
-                    "status": "sufficient",
-                    "missing_context": [],
-                }
+                wire_id: f"{spec.family}.{spec.role} 의미"
                 for spec, wire_id in zip(specs, wire_ids, strict=True)
             },
         }
@@ -375,30 +368,17 @@ return rc;
             model.model_validate(missing)
 
         extra = {"slots": dict(payload["slots"])}
-        extra["slots"]["S999"] = {
-            "meaning": "창작 slot",
-            "status": "sufficient",
-            "missing_context": [],
-        }
+        extra["slots"]["S999"] = "창작 slot"
         with self.assertRaises(ValidationError):
             model.model_validate(extra)
 
-    def test_semantic_leaf_has_no_arbitrary_character_or_diagnostic_cap(self):
+    def test_semantic_leaf_has_no_arbitrary_character_cap(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         model = semantic_frame_response_model(specs)
         wire_ids = semantic_slot_wire_ids(specs)
         long_meaning = "근거문장" * 400
-        missing = [f"근거 의무 {index}" for index in range(24)]
         payload = {"slots": {
-            wire_id: ({
-                "meaning": long_meaning,
-                "status": "partial",
-                "missing_context": missing,
-            } if index == 0 else {
-                "meaning": f"{spec.family}.{spec.role}",
-                "status": "sufficient",
-                "missing_context": [],
-            })
+            wire_id: long_meaning if index == 0 else f"{spec.family}.{spec.role}"
             for index, (spec, wire_id) in enumerate(zip(
                 specs, wire_ids, strict=True,
             ))
@@ -406,13 +386,13 @@ return rc;
 
         schema_text = json.dumps(model.model_json_schema(), sort_keys=True)
         self.assertNotIn('"maxLength": 600', schema_text)
-        self.assertNotIn('"maxItems": 8', schema_text)
         frame = normalize_semantic_frame_response(
             model.model_validate(payload), profile, specs,
         )
         slot = frame.slots[specs[0].slot_id]
         self.assertEqual(long_meaning, slot.meaning)
-        self.assertEqual(tuple(missing), slot.missing_context)
+        self.assertEqual("sufficient", slot.status)
+        self.assertEqual((), slot.missing_context)
 
     def test_projection_and_rejection_preserve_every_distinct_diagnostic(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
@@ -420,24 +400,22 @@ return rc;
         wire_ids = semantic_slot_wire_ids(specs)
         missing = [f"근거 의무 {index}" for index in range(24)]
         parsed = model.model_validate({"slots": {
-            wire_id: ({
-                "meaning": "확정된 일부 의미",
-                "status": "partial",
-                "missing_context": missing,
-            } if index == 0 else {
-                "meaning": f"{spec.family}.{spec.role}",
-                "status": "sufficient",
-                "missing_context": [],
-            })
+            wire_id: "" if index == 0 else f"{spec.family}.{spec.role}"
             for index, (spec, wire_id) in enumerate(zip(
                 specs, wire_ids, strict=True,
             ))
         }})
         frame = normalize_semantic_frame_response(parsed, profile, specs)
 
-        projected = project_summary(frame, stereotype="ApplicationService")
-        self.assertEqual(missing, projected.missing_context)
-        self.assertEqual(missing, [question.text for question in projected.questions])
+        projected = project_summary(
+            frame,
+            summary="확정된 입력 범위의 처리를 수행한다.",
+            stereotype="ApplicationService",
+        )
+        self.assertEqual(
+            [f"assigned {specs[0].family}.{specs[0].role} returned no meaning"],
+            projected.missing_context,
+        )
 
         rejected = mark_semantic_frame_insufficient(frame, missing)
         self.assertTrue(all(
@@ -454,12 +432,12 @@ return rc;
         )
         assignment = json.loads(slot_specs_json(specs))
 
-        self.assertEqual(list(wire_ids), [item["wire_id"] for item in assignment])
+        self.assertEqual(list(wire_ids), list(assignment))
         self.assertEqual(list(wire_ids), list(
             model.model_fields["slots"].annotation.model_fields
         ))
         self.assertTrue(all(spec.slot_id not in schema_text for spec in specs))
-        self.assertTrue(all("slot_id" not in item for item in assignment))
+        self.assertTrue(all("slot_id" not in item for item in assignment.values()))
 
     def test_private_wire_leak_is_quarantined_without_rewriting_business_s0(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
@@ -467,11 +445,7 @@ return rc;
         wire_ids = semantic_slot_wire_ids(specs)
 
         safe_payload = {"slots": {
-            wire_id: {
-                "meaning": "업무 상태 S0을 유지한다",
-                "status": "sufficient",
-                "missing_context": [],
-            }
+            wire_id: "업무 상태 S0을 유지한다"
             for wire_id in wire_ids
         }}
         safe_frame = normalize_semantic_frame_response(
@@ -484,11 +458,7 @@ return rc;
         ))
 
         leaked_payload = {"slots": dict(safe_payload["slots"])}
-        leaked_payload["slots"][wire_ids[0]] = {
-            "meaning": f"조건 {wire_ids[-1]}이면 처리한다",
-            "status": "sufficient",
-            "missing_context": [],
-        }
+        leaked_payload["slots"][wire_ids[0]] = f"조건 {wire_ids[-1]}이면 처리한다"
         leaked_frame = normalize_semantic_frame_response(
             model.model_validate(leaked_payload), profile, specs,
         )
@@ -505,19 +475,14 @@ return rc;
             if slot_id != specs[0].slot_id
         ))
 
-        missing_leak_payload = {"slots": dict(safe_payload["slots"])}
-        missing_leak_payload["slots"][wire_ids[0]] = {
+        obsolete_diagnostic_payload = {"slots": dict(safe_payload["slots"])}
+        obsolete_diagnostic_payload["slots"][wire_ids[0]] = {
             "meaning": "확인된 일부 의미",
             "status": "partial",
             "missing_context": [f"{wire_ids[0]}의 계약"],
         }
-        missing_leak_frame = normalize_semantic_frame_response(
-            model.model_validate(missing_leak_payload), profile, specs,
-        )
-        self.assertEqual(
-            "insufficient",
-            missing_leak_frame.slots[specs[0].slot_id].status,
-        )
+        with self.assertRaises(ValidationError):
+            model.model_validate(obsolete_diagnostic_payload)
 
     def test_compact_wire_is_total_and_unique_across_boundary_sizes(self):
         for size in (1, 7, 8, 9, 24, 65):
@@ -535,11 +500,7 @@ return rc;
                 wire_ids = semantic_slot_wire_ids(specs)
                 model = semantic_frame_response_model(specs)
                 payload = {"slots": {
-                    wire_id: {
-                        "meaning": f"meaning {index}",
-                        "status": "sufficient",
-                        "missing_context": [],
-                    }
+                    wire_id: f"meaning {index}"
                     for index, wire_id in enumerate(wire_ids)
                 }}
                 model.model_validate(payload)
@@ -579,7 +540,7 @@ return 0;
             )],
             "c", line_offset=9,
             statements=context.extra["ast_statements"],
-            call_lines=(),
+            call_occurrences=(),
         )
         profile, specs = build_code_semantic_plan(_routine(), context, inventory=inventory)
         rule_fact = next(
@@ -619,7 +580,7 @@ return 0;
             )],
             "c", line_offset=9,
             statements=context.extra["ast_statements"],
-            call_lines=(),
+            call_occurrences=(),
         )
 
         all_rows = [int(row["line"]) for row in inventory.table_rows()]
@@ -640,8 +601,7 @@ return 0;
             rule_evidence(inventory, allowed_rows), allowed_rows,
         )
         self.assertEqual(list(allowed_rows), [rule.anchor_line for rule in rules])
-        self.assertTrue(all(rule.nl == "" for rule in rules))
-        self.assertTrue(any(rule.cond for rule in rules))
+        self.assertTrue(any(rule.structural_condition for rule in rules))
 
     def test_exception_propagation_uses_the_owned_branch_termination_fact(self):
         source = """BEGIN
@@ -665,7 +625,7 @@ END;"""
             )],
             "sql", line_offset=9,
             statements=context.extra["ast_statements"],
-            call_lines=(),
+            call_occurrences=(),
         )
         handler_row = next(
             int(row["line"]) for row in inventory.table_rows()
@@ -689,8 +649,7 @@ END;"""
         rule = materialize_rule_items(
             rule_evidence(inventory, (handler_row,)), (handler_row,),
         )[0]
-        self.assertEqual("", rule.nl)
-        self.assertIn("ret", " ".join(rule.then))
+        self.assertIn("ret", " ".join(rule.structural_effects))
 
     def test_direct_child_structure_participates_in_ordered_flow(self):
         child = CodeNode(
@@ -716,7 +675,7 @@ END;"""
             )
             for line in range(1, 501)
         )
-        context.extra["ast_call_lines"] = tuple(
+        context.extra["ast_call_occurrences"] = parser_call_occurrences(
             (line, f"call_{line}") for line in range(1, 11)
         )
         profile, specs = build_code_semantic_plan(_routine(), context)
@@ -741,7 +700,10 @@ END;"""
             if ref in statement_refs
         ]
 
-        self.assertEqual(assigned_refs, set(projected["evidence"]))
+        self.assertEqual(
+            set(semantic_evidence_wire_bindings(summary_specs).values()),
+            set(projected["evidence"]),
+        )
         self.assertGreater(len(full["evidence"]), 500)
         self.assertEqual(statement_refs, set(processing_refs))
         self.assertEqual(len(statement_refs), len(processing_refs))
@@ -767,14 +729,13 @@ END;"""
 
     def test_framework_call_occurrences_each_own_one_processing_obligation(self):
         context = _context()
-        context.extra["ast_call_lines"] = tuple(
+        context.extra["ast_call_occurrences"] = parser_call_occurrences(
             (line, f"call_{line}") for line in range(1, 71)
         )
         profile, specs = build_code_semantic_plan(_routine(), context)
         summary_specs = semantic_concern_slots(specs)["summary"]
 
-        batches = _summary_slot_batches(summary_specs)
-        assigned = [spec.slot_id for batch in batches for spec in batch]
+        assigned = [spec.slot_id for spec in summary_specs]
 
         call_refs = {
             ref for ref, fact in profile.evidence.items()
@@ -831,43 +792,43 @@ END;"""
         self.assertEqual(10, len(assigned_refs))
 
         observed_payloads: list[str] = []
+        observed_external_refs: list[str] = []
 
-        async def invoke(values, response_model, _batch_label):
+        async def invoke(values, response_model):
             payload = json.loads(values["external_evidence"])
-            observed_payloads.extend(item["text"] for item in payload)
+            self.assertTrue(all(key.startswith("E") for key in payload))
+            observed_payloads.extend(payload.values())
+            observed_external_refs.extend(payload)
             response = {
                 "slots": {
-                    wire_id: {
-                        "meaning": "grounded meaning",
-                        "status": "sufficient",
-                        "missing_context": [],
-                    }
+                    wire_id: "grounded meaning"
                     for wire_id, _spec in response_model.__semantic_slot_bindings__
                 },
             }
             if "stereotype" in response_model.model_fields:
+                response["summary"] = "외부 문맥을 사용해 대상을 처리한다."
                 response["stereotype"] = "Validator"
             return response_model.model_validate(response)
 
-        asyncio.run(_run_bounded_frame_summary(
+        asyncio.run(_run_frame_summary(
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
-            common={
-                "raw_code_body": "\n".join(f"line {line}" for line in range(10, 17)),
-                "_external_evidence_by_chunk": {
-                    item.id: item.as_exact_prompt_dict()
+            analysis_inputs={
+                "raw_source_code": "\n".join(f"line {line}" for line in range(10, 17)),
+                "external_source_text_by_id": {
+                    item.id: item.text
                     for item in external
                 },
             },
             invoke=invoke,
-            max_input_tokens=1,
         ))
 
         self.assertCountEqual(
             [item.text for item in external],
             observed_payloads,
         )
+        self.assertEqual(10, len(set(observed_external_refs)))
 
     def test_each_model_call_receives_exact_assigned_evidence_and_source_closure(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
@@ -877,7 +838,7 @@ END;"""
         source = "\n".join(source_lines)
         observed_ids: list[str] = []
 
-        async def invoke(values, response_model, _batch_label):
+        async def invoke(values, response_model):
             bindings = dict(response_model.__semantic_slot_bindings__)
             assigned_specs = tuple(bindings.values())
             assigned_refs = {
@@ -886,14 +847,11 @@ END;"""
                 for ref in (spec.target_ref, *spec.evidence_refs)
             }
             prompt_profile = json.loads(values["structural_profile"])
-            self.assertEqual(assigned_refs, set(prompt_profile["evidence"]))
-
-            packet = json.loads(values["code_body"])
-            self.assertEqual("source-closure/v1", packet["schema"])
             self.assertEqual(
-                hashlib.sha256(source.encode("utf-8")).hexdigest(),
-                packet["target_sha256"],
+                set(semantic_evidence_wire_bindings(assigned_specs).values()),
+                set(prompt_profile["evidence"]),
             )
+
             owns_target = any(
                 spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
                 for spec in assigned_specs
@@ -909,37 +867,35 @@ END;"""
                     for line in range(fact.start_line, fact.end_line + 1)
                     if 10 <= line <= 16
                 })
-            self.assertEqual(expected_lines, [item["line"] for item in packet["lines"]])
-            self.assertEqual(
-                [source_lines[line - 10] for line in expected_lines],
-                [item["text"] for item in packet["lines"]],
+            expected_source = "\n".join(
+                f"{line} | {source_lines[line - 10]}" for line in expected_lines
             )
+            self.assertEqual(expected_source, values["code_body"])
             self.assertEqual(
-                "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
-                values["module_intent"],
+                {
+                    "code_body", "structural_profile", "applicable_slots",
+                    "callee_contexts", "external_evidence",
+                },
+                set(values),
             )
             observed_ids.extend(spec.slot_id for spec in assigned_specs)
             payload = {
                 "slots": {
-                    wire_id: {
-                        "meaning": f"meaning for {spec.slot_id}",
-                        "status": "sufficient",
-                        "missing_context": [],
-                    }
+                    wire_id: f"meaning for {spec.slot_id}"
                     for wire_id, spec in bindings.items()
                 },
             }
             if "stereotype" in response_model.model_fields:
+                payload["summary"] = "입력을 검사하고 처리 결과를 반환한다."
                 payload["stereotype"] = "Validator"
             return response_model.model_validate(payload)
 
-        result = asyncio.run(_run_bounded_frame_summary(
+        result = asyncio.run(_run_frame_summary(
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
-            common={"raw_code_body": source, "module_intent": "derived intent"},
+            analysis_inputs={"raw_source_code": source},
             invoke=invoke,
-            max_input_tokens=1,
         ))
 
         self.assertTrue(result.summary)
@@ -964,7 +920,7 @@ END;"""
                 start=2, end=2, expression="RC_NRM",
             ),
         )
-        context.extra["ast_call_lines"] = ()
+        context.extra["ast_call_occurrences"] = ()
         inventory = build_inventory(
             source, [], "c", statements=context.extra["ast_statements"],
         )
@@ -999,7 +955,7 @@ END;"""
         guard_context.extra["ast_statements"] = (
             StatementFact("return@2", "RETURN", 2, 2, expression="RC_ERR"),
         )
-        guard_context.extra["ast_call_lines"] = ()
+        guard_context.extra["ast_call_occurrences"] = ()
         guard_inventory = build_inventory(
             "int f(int value) {\nif (value < 0) return RC_ERR;\nreturn RC_NRM;\n}",
             [ControlSubtreeNode(
@@ -1026,7 +982,7 @@ END;"""
             ),
             StatementFact("return@3", "RETURN", 3, 3, expression="result"),
         )
-        effect_context.extra["ast_call_lines"] = ()
+        effect_context.extra["ast_call_occurrences"] = ()
 
         _profile, effect_specs = build_code_semantic_plan(fn, effect_context)
         effect_roles = {spec.role for spec in effect_specs if spec.family == "FUNCTION"}
@@ -1048,7 +1004,7 @@ return RC_NRM;
             )],
             "c", line_offset=9,
             statements=context.extra["ast_statements"],
-            call_lines=context.extra["ast_call_lines"],
+            call_occurrences=context.extra["ast_call_occurrences"],
         )
         profile, specs = build_code_semantic_plan(
             _routine(), context, inventory=inventory,
@@ -1064,17 +1020,17 @@ return RC_NRM;
         }
         payload = {
             "slots": {
-                wire_id: {
-                    "meaning": meanings[spec.role],
-                    "status": "sufficient",
-                    "missing_context": [],
-                }
+                wire_id: meanings[spec.role]
                 for spec, wire_id in zip(
                     summary_specs,
                     semantic_slot_wire_ids(summary_specs),
                     strict=True,
                 )
             },
+            "summary": (
+                "수량이 유효하지 않으면 오류로 종료하고, 유효하면 재고를 예약한 뒤 "
+                "정상 결과를 반환한다."
+            ),
             "stereotype": "ApplicationService",
         }
 
@@ -1082,10 +1038,8 @@ return RC_NRM;
             model.model_validate(payload), profile, summary_specs,
         )
 
-        self.assertEqual(
-            ["1 책임", "2 입력", "3 조건", "4 처리", "5 결과"],
-            summary.summary.splitlines(),
-        )
+        self.assertEqual(payload["summary"], summary.summary)
+        self.assertNotIn("1 책임\n2 입력", summary.summary)
 
     def test_repeated_role_fragments_project_in_exact_source_order(self):
         context = _context()
@@ -1100,8 +1054,8 @@ return RC_NRM;
             ),
             StatementFact("return@7", "RETURN", 7, 7, expression="b"),
         )
-        context.extra["ast_call_lines"] = ()
-        context.extra["data_object_usages"] = ()
+        context.extra["ast_call_occurrences"] = ()
+        context.data_object_usages = ()
         context.callees = ()
         profile, specs = build_code_semantic_plan(_routine(), context)
         summary_specs = semantic_concern_slots(specs)["summary"]
@@ -1120,25 +1074,22 @@ return RC_NRM;
 
         parsed = model.model_validate({
             "slots": {
-                wire_id: {
-                    "meaning": meaning(spec),
-                    "status": "sufficient",
-                    "missing_context": [],
-                }
+                wire_id: meaning(spec)
                 for spec, wire_id in zip(
                     summary_specs, semantic_slot_wire_ids(summary_specs), strict=True,
                 )
             },
+            "summary": "첫 번째 값을 정한 뒤 두 번째 값을 계산해 반환한다.",
             "stereotype": "Validator",
         })
         projected = normalize_frame_summary_response(parsed, profile, summary_specs)
 
         self.assertEqual(
-            ["processing line 11", "processing line 12"],
-            [line for line in projected.summary.splitlines() if line.startswith("processing")],
+            "첫 번째 값을 정한 뒤 두 번째 값을 계산해 반환한다.",
+            projected.summary,
         )
 
-    def test_summary_execution_batches_preserve_unbounded_obligation_count(self):
+    def test_summary_schema_preserves_every_obligation_without_partition(self):
         primary = tuple(
             SlotSpec(
                 slot_id=f"SL:0123456789ab:STATEMENT:DIRECT_ACTION:s{i}",
@@ -1150,179 +1101,76 @@ return RC_NRM;
             for i in range(30)
         )
 
-        batches = _summary_slot_batches(primary)
-        assigned = [spec.slot_id for batch in batches for spec in batch]
+        model = frame_summary_response_model("framework", primary)
+        assigned = [
+            spec.slot_id for _wire_id, spec in model.__semantic_slot_bindings__
+        ]
+        self.assertEqual([spec.slot_id for spec in primary], assigned)
 
-        self.assertEqual({spec.slot_id for spec in primary}, set(assigned))
-        self.assertEqual(len(primary), len(assigned))
-        self.assertEqual(len(assigned), len(set(assigned)))
-
-    def test_summary_deadline_splits_schema_without_repeating_or_losing_slots(self):
+    def test_summary_deadline_is_terminal_without_second_meaning_request(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         summary_specs = semantic_concern_slots(specs)["summary"]
         source = "\n".join(f"source line {line}" for line in range(10, 17))
-        successful_ids: list[str] = []
-        observed_common: list[tuple[str, str]] = []
-        stereotype_batches: list[list[str]] = []
+        calls = 0
 
-        async def invoke(values, response_model, _batch_label):
-            observed_common.append((values["raw_code_body"], values["module_intent"]))
-            assigned = json.loads(values["applicable_slots"])
-            if len(assigned) > 2:
-                raise ModelOutputError(
-                    rule_name="code_summary",
-                    kind="deadline",
-                    detail="test deadline",
-                    original_type="ModelGenerationDeadlineExceeded",
-                )
-            bindings = dict(response_model.__semantic_slot_bindings__)
-            self.assertEqual(set(bindings), {item["wire_id"] for item in assigned})
-            successful_ids.extend(spec.slot_id for spec in bindings.values())
-            payload = {
-                "slots": {
-                    wire_id: {
-                        "meaning": f"meaning for {spec.slot_id}",
-                        "status": "sufficient",
-                        "missing_context": [],
-                    }
-                    for wire_id, spec in bindings.items()
-                },
-            }
-            if "stereotype" in response_model.model_fields:
-                stereotype_batches.append([
-                    spec.slot_id for spec in bindings.values()
-                ])
-                payload["stereotype"] = "Validator"
-            return response_model.model_validate(payload)
+        async def invoke(values, response_model):
+            nonlocal calls
+            calls += 1
+            raise ModelOutputError(
+                rule_name="code_summary",
+                kind="deadline",
+                detail="test deadline",
+                original_type="SyntheticProviderDeadline",
+            )
 
-        result = asyncio.run(_run_bounded_frame_summary(
-            profile=profile,
-            slot_specs=summary_specs,
-            strategy_name="framework",
-            common={"raw_code_body": source, "module_intent": "derived intent"},
-            invoke=invoke,
-        ))
+        with self.assertRaises(ModelOutputError):
+            asyncio.run(_run_frame_summary(
+                profile=profile,
+                slot_specs=summary_specs,
+                strategy_name="framework",
+                analysis_inputs={"raw_source_code": source},
+                invoke=invoke,
+            ))
+        self.assertEqual(1, calls)
 
-        self.assertTrue(result.summary)
-        self.assertEqual(
-            {spec.slot_id for spec in summary_specs},
-            set(successful_ids),
-        )
-        self.assertEqual(len(successful_ids), len(set(successful_ids)))
-        self.assertTrue(observed_common)
-        self.assertIn(source, {body for body, _intent in observed_common})
-        self.assertTrue(all(
-            intent == "(없음: 파생 prose는 의미 근거로 전달하지 않음)"
-            for _body, intent in observed_common
-        ))
-        self.assertTrue(all(
-            all(line in source.splitlines() for line in body.splitlines())
-            for body, _intent in observed_common
-        ))
-        self.assertEqual(1, len(stereotype_batches))
-        self.assertTrue(any(
-            spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
-            for spec in summary_specs
-            if spec.slot_id in stereotype_batches[0]
-        ))
-
-    def test_summary_repetition_splits_without_losing_shared_context_or_slots(self):
+    def test_summary_repetition_is_terminal_without_second_meaning_request(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         summary_specs = semantic_concern_slots(specs)["summary"]
         source = "\n".join(f"source line {line}" for line in range(10, 17))
-        successful_ids: list[str] = []
-        observed_common: list[tuple[str, str]] = []
-        stereotype_batches: list[list[str]] = []
+        calls = 0
 
-        async def invoke(values, response_model, _batch_label):
-            observed_common.append((values["raw_code_body"], values["module_intent"]))
-            assigned = json.loads(values["applicable_slots"])
-            if len(assigned) > 2:
-                raise ModelOutputError(
-                    rule_name="code_summary",
-                    kind="repetition",
-                    detail="test repetition",
-                    original_type="RepetitionLoopAborted",
-                )
-            bindings = dict(response_model.__semantic_slot_bindings__)
-            self.assertEqual(set(bindings), {item["wire_id"] for item in assigned})
-            successful_ids.extend(spec.slot_id for spec in bindings.values())
-            payload = {
-                "slots": {
-                    wire_id: {
-                        "meaning": f"meaning for {spec.slot_id}",
-                        "status": "sufficient",
-                        "missing_context": [],
-                    }
-                    for wire_id, spec in bindings.items()
-                },
-            }
-            if "stereotype" in response_model.model_fields:
-                stereotype_batches.append([
-                    spec.slot_id for spec in bindings.values()
-                ])
-                payload["stereotype"] = "Validator"
-            return response_model.model_validate(payload)
+        async def invoke(values, response_model):
+            nonlocal calls
+            calls += 1
+            raise ModelOutputError(
+                rule_name="code_summary",
+                kind="repetition",
+                detail="test repetition",
+                original_type="RepetitionLoopAborted",
+            )
 
-        result = asyncio.run(_run_bounded_frame_summary(
-            profile=profile,
-            slot_specs=summary_specs,
-            strategy_name="framework",
-            common={"raw_code_body": source, "module_intent": "derived intent"},
-            invoke=invoke,
-        ))
+        with self.assertRaises(ModelOutputError):
+            asyncio.run(_run_frame_summary(
+                profile=profile,
+                slot_specs=summary_specs,
+                strategy_name="framework",
+                analysis_inputs={"raw_source_code": source},
+                invoke=invoke,
+            ))
+        self.assertEqual(1, calls)
 
-        self.assertTrue(result.summary)
-        self.assertEqual({spec.slot_id for spec in summary_specs}, set(successful_ids))
-        self.assertEqual(len(successful_ids), len(set(successful_ids)))
-        self.assertIn(source, {body for body, _intent in observed_common})
-        self.assertTrue(all(
-            intent == "(없음: 파생 prose는 의미 근거로 전달하지 않음)"
-            for _body, intent in observed_common
-        ))
-        self.assertTrue(all(
-            all(line in source.splitlines() for line in body.splitlines())
-            for body, _intent in observed_common
-        ))
-        self.assertEqual(1, len(stereotype_batches))
-
-    def test_non_owner_summary_schema_forbids_stereotype(self):
-        _profile, specs = build_code_semantic_plan(_routine(), _context())
-        summary_specs = semantic_concern_slots(specs)["summary"]
-        non_owner = tuple(
-            spec for spec in summary_specs
-            if not (spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY")
-        )[:1]
-        model = frame_summary_response_model(
-            "framework", non_owner, include_stereotype=False,
-        )
-        payload = {
-            "slots": {
-                semantic_slot_wire_ids(non_owner)[0]: {
-                    "meaning": "직접 동작을 수행한다",
-                    "status": "sufficient",
-                    "missing_context": [],
-                },
-            },
-            "stereotype": "Validator",
-        }
-        with self.assertRaises(ValidationError):
-            model.model_validate(payload)
-
-    def test_status_cross_field_contract_is_provider_visible(self):
+    def test_provider_wire_exposes_only_one_meaning_string_per_slot(self):
         _profile, specs = build_code_semantic_plan(_routine(), _context())
         model = semantic_frame_response_model(specs)
         wire_ids = semantic_slot_wire_ids(specs)
-        invalid = {
-            "slots": {
-                wire_id: {
-                    "meaning": "근거가 부족하지만 의미를 씀",
-                    "status": "insufficient",
-                    "missing_context": ["callee 계약"],
-                }
-                for spec, wire_id in zip(specs, wire_ids, strict=True)
-            },
-        }
+        schema = json.dumps(model.model_json_schema(), sort_keys=True)
+        self.assertNotIn('"status"', schema)
+        self.assertNotIn('"meaning"', schema)
+        model.model_validate({"slots": {wire_id: "입증된 의미" for wire_id in wire_ids}})
+        invalid = {"slots": {
+            wire_id: {"meaning": "중복 포장", "status": "sufficient"}
+            for wire_id in wire_ids
+        }}
         with self.assertRaises(ValidationError):
             model.model_validate(invalid)
 
@@ -1340,11 +1188,7 @@ return RC_NRM;
             model = semantic_frame_response_model(group)
             wire_ids = semantic_slot_wire_ids(group)
             output = model.model_validate({"slots": {
-                wire_id: {
-                    "meaning": f"{spec.family}.{spec.role}",
-                    "status": "sufficient",
-                    "missing_context": [],
-                }
+                wire_id: f"{spec.family}.{spec.role}"
                 for spec, wire_id in zip(group, wire_ids, strict=True)
             }})
             fragments.append(normalize_semantic_frame_response(output, profile, group))
@@ -1354,7 +1198,7 @@ return RC_NRM;
         )
         self.assertEqual({spec.slot_id for spec in specs}, set(merged.slots))
 
-    def test_legacy_summary_and_questions_are_frame_projections(self):
+    def test_whole_summary_is_model_owned_while_gap_metadata_comes_from_frame(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         model = frame_summary_response_model("framework", specs)
         responsibility = next(
@@ -1363,30 +1207,20 @@ return RC_NRM;
         )
         payload = {
             "slots": {
-                wire_id: ({
-                    "meaning": "주문 저장 책임을 수행한다",
-                    "status": "partial",
-                    "missing_context": ["reserve의 실패 반환 계약이 필요함"],
-                } if spec == responsibility else {
-                    "meaning": f"{spec.family}.{spec.role}을 수행한다",
-                    "status": "sufficient",
-                    "missing_context": [],
-                })
+                wire_id: "" if spec == responsibility else f"{spec.family}.{spec.role}을 수행한다"
                 for spec, wire_id in zip(
                     specs, semantic_slot_wire_ids(specs), strict=True,
                 )
             },
+            "summary": "주문을 검증한 뒤 저장 처리를 수행한다.",
             "stereotype": "ApplicationService",
         }
         parsed = model.model_validate(payload)
         summary = normalize_frame_summary_response(parsed, profile, specs)
         self.assertIsNotNone(summary.semantic_frame)
         self.assertEqual("partial", summary.evidence_status)
-        self.assertIn("주문 저장 책임", summary.summary)
-        self.assertEqual(
-            "reserve의 실패 반환 계약이 필요함",
-            summary.questions[0].text,
-        )
+        self.assertEqual(payload["summary"], summary.summary)
+        self.assertNotIn("FUNCTION.RESPONSIBILITY", summary.summary)
 
 
 if __name__ == "__main__":

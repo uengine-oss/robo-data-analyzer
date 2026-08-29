@@ -5,11 +5,11 @@ import unittest
 from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode, Constant
-from pipeline.steps.step2_load_ast.import_scopes import build_import_scope_plan
+from pipeline.models.import_resolution import build_import_resolution_ledger
 from pipeline.steps.step2_load_ast.token_matcher import link_references
 
 
-class ImportProfileTest(unittest.TestCase):
+class ImportResolutionLedgerTest(unittest.TestCase):
     @staticmethod
     def _ref(
         *, import_id: str = "a" * 64, evidence_version: str = "1.1.0",
@@ -31,87 +31,79 @@ class ImportProfileTest(unittest.TestCase):
         return {
             "import_id": import_id, "evidence_version": evidence_version,
             "legacy_name": "preview only", "name": "preview only",
-            "source_id": "main.c", "file": "main.c", "line": 1,
+            "source_id": "main.c", "line": 1,
             "end_line": 1, "range": {"charOffset": 0, "charLength": 20},
             "directive_kind": "include", "entries": entries or [binding],
             "grammar_rule": "includeLine", "presence_status": presence_status,
-            "presence": {"status": presence_status, "provenance": "fixture"},
             "evidence_status": evidence_status,
         }
 
     def test_internal_filename_candidate_does_not_replace_missing_binding_environment(self) -> None:
-        plan = build_import_scope_plan(
-            [self._ref()],
-        )
+        ledger = build_import_resolution_ledger([self._ref()])
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual(1, len(plan.ledger))
-        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
+        self.assertEqual(1, len(ledger))
+        self.assertEqual("unresolved", ledger[0]["outcome"])
         self.assertEqual(
-            "insufficient_import_binding_environment", plan.ledger[0]["reason"],
+            "insufficient_import_binding_environment", ledger[0]["reason"],
         )
-        self.assertEqual([], plan.ledger[0]["resolved_module_ids"])
+        self.assertEqual([], ledger[0]["resolved_module_ids"])
 
     def test_inactive_import_is_excluded_not_used_as_scope(self) -> None:
-        plan = build_import_scope_plan(
-            [self._ref(presence_status="inactive")],
-        )
+        ledger = build_import_resolution_ledger([
+            self._ref(presence_status="inactive"),
+        ])
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual("excluded", plan.ledger[0]["outcome"])
-        self.assertEqual("inactive_import", plan.ledger[0]["reason"])
+        self.assertEqual("excluded", ledger[0]["outcome"])
+        self.assertEqual("inactive_import", ledger[0]["reason"])
 
     def test_legacy_import_evidence_stays_explicitly_unresolved(self) -> None:
-        plan = build_import_scope_plan(
-            [self._ref(evidence_version="1.0.0")],
-        )
+        ledger = build_import_resolution_ledger([
+            self._ref(evidence_version="1.0.0"),
+        ])
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
+        self.assertEqual("unresolved", ledger[0]["outcome"])
         self.assertEqual(
-            "insufficient_structured_import_evidence", plan.ledger[0]["reason"],
+            "insufficient_structured_import_evidence", ledger[0]["reason"],
         )
 
     def test_v12_envelope_preserves_the_v11_structured_import_contract(self) -> None:
-        plan = build_import_scope_plan(
-            [self._ref(evidence_version="1.2.0")],
-        )
+        ledger = build_import_resolution_ledger([
+            self._ref(evidence_version="1.2.0"),
+        ])
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual(1, len(plan.ledger))
-        self.assertEqual("1.2.0", plan.ledger[0]["evidence_version"])
-        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
+        self.assertEqual(1, len(ledger))
+        self.assertEqual("1.2.0", ledger[0]["evidence_version"])
+        self.assertEqual("unresolved", ledger[0]["outcome"])
         self.assertEqual(
-            "insufficient_import_binding_environment", plan.ledger[0]["reason"],
+            "insufficient_import_binding_environment", ledger[0]["reason"],
         )
 
     def test_v20_envelope_preserves_structural_import_without_claiming_binding(self) -> None:
-        plan = build_import_scope_plan(
-            [self._ref(evidence_version="2.0.0")],
-        )
+        ledger = build_import_resolution_ledger([
+            self._ref(evidence_version="2.0.0"),
+        ])
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual(1, len(plan.ledger))
-        self.assertEqual("2.0.0", plan.ledger[0]["evidence_version"])
-        self.assertEqual("unresolved", plan.ledger[0]["outcome"])
+        self.assertEqual(1, len(ledger))
+        self.assertEqual("2.0.0", ledger[0]["evidence_version"])
+        self.assertEqual("unresolved", ledger[0]["outcome"])
         self.assertEqual(
-            "insufficient_import_binding_environment", plan.ledger[0]["reason"],
+            "insufficient_import_binding_environment", ledger[0]["reason"],
         )
 
     def test_every_binding_entry_has_one_source_ordered_outcome(self) -> None:
         first = self._ref()["entries"][0]
         second = {**first, "entry_ordinal": 1, "target": '"other.h"'}
-        plan = build_import_scope_plan(
-            [self._ref(entries=[first, second])],
-        )
+        ledger = build_import_resolution_ledger([
+            self._ref(entries=[first, second]),
+        ])
 
-        self.assertEqual([0, 1], [row["ordinal"] for row in plan.ledger])
-        self.assertEqual([0, 1], [row["entry_ordinal"] for row in plan.ledger])
-        self.assertEqual(2, len({row["occurrence_id"] for row in plan.ledger}))
+        self.assertEqual([0, 1], [row["ordinal"] for row in ledger])
+        self.assertEqual([0, 1], [row["entry_ordinal"] for row in ledger])
+        self.assertEqual(2, len({row["occurrence_id"] for row in ledger}))
 
     def test_duplicate_canonical_import_fact_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate canonical import"):
-            build_import_scope_plan([self._ref(), self._ref()])
+            build_import_resolution_ledger([self._ref(), self._ref()])
 
 
 class ReferenceLexingContractTest(unittest.IsolatedAsyncioTestCase):
@@ -137,7 +129,6 @@ class ReferenceLexingContractTest(unittest.IsolatedAsyncioTestCase):
                     id="limit", owner_id="module", name="LIMIT", file_path=str(source),
                     start_line=1, end_line=1, label="CONSTANT_FIELD", value="1",
                 )],
-                import_refs=[],
             )
         self.assertEqual([], refs)
 
@@ -155,7 +146,6 @@ class ReferenceLexingContractTest(unittest.IsolatedAsyncioTestCase):
                     id="limit", owner_id="module", name="$LIMIT", file_path=str(source),
                     start_line=1, end_line=1, label="CONSTANT_FIELD", value="1",
                 )],
-                import_refs=[],
             )
         self.assertEqual([("fn", "limit")], [
             (edge.source_id, edge.target_id) for edge in refs

@@ -46,6 +46,7 @@ from urllib.parse import quote
 CODE_NS = "code:"
 DB_NS = "db:"
 FILE_NS = "file:"
+EXTERNAL_NS = "external:"
 
 # 컨테이너 경로 구분자 (파일 → 구조체 → 필드).
 SEP = ":"
@@ -104,6 +105,20 @@ def derived_chunk_id(file_id: str, ordinal: int) -> str:
     if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
         raise ValueError("ordinal must be a non-negative integer")
     return f"{fid}:chunk:derived-{ordinal}"
+
+
+def published_external_chunk_id(
+    source_file_id: str,
+    external_key: str,
+    content_sha256: str,
+) -> str:
+    """Identity of one published exact-key external source record."""
+    file_id = _normalized_text(source_file_id, "source_file_id")
+    key = _normalized_text(external_key, "external_key")
+    digest = _normalized_text(content_sha256, "content_sha256").lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("content_sha256 must be a lowercase SHA-256 digest")
+    return f"{EXTERNAL_NS}{_semantic_hash(file_id, key, digest)}"
 
 
 def fqn(*parts: object) -> str:

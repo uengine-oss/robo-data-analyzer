@@ -21,10 +21,7 @@ class Config:
 
     # ── 요구사항→관련코드 뭉치 (spec 005, CE 게이트) ──
     cluster_top_n: int = 12               # 곁가지 컷: 상위 N만 핵심
-    # spec 053: legacy=변형별 core+확장 후 합집합 / global_anchor=후보 합집합 후 단일 선별.
-    # spec 053 A/B: shopmall full gold 30/30, average result size 18.8 -> 16.5.
-    # legacy remains available as an explicit rollback mode.
-    cluster_selection_mode: str = os.environ.get("ROBO_SEARCH_SELECTION", "global_anchor")
+    # 후보 합집합 뒤 전역 앵커를 한 번 선별한다. 과거 변형별 합집합 경로는 제거했다.
     cluster_anchor_top_n: int = int(os.environ.get("ROBO_SEARCH_ANCHOR_TOP", "3"))
     cluster_support_root_top_n: int = int(os.environ.get("ROBO_SEARCH_SUPPORT_ROOT_TOP", "12"))
     cluster_evidence_top_n: int = int(os.environ.get("ROBO_SEARCH_EVIDENCE_TOP", "15"))
@@ -32,7 +29,7 @@ class Config:
     # 동반 입장 정책 — all_candidates(구 동작·롤백) | anchors_only | gated_direct |
     # graph_gated(기본): 비앵커는 [score ≥ top1−direct_gap] OR [앵커와 CALLS 거리 ≤ hop_gate]
     # 일 때만 입장(이중 신호 — 점수만으로는 신호 .676 < 노이즈 .765 역전이 실측됨).
-    # 값은 골드 A/B 채택(specs/057 research.md 스윕 표 — 대조표 없는 임의 조정 금지).
+    # 값은 검색 회귀 테스트가 고정한다. 새 비교 근거 없이 임의 조정하지 않는다.
     # 채택값 = 2026-07-16 골드 전수 스윕 P5 h3/r2 (research.md 표): recall 29/30(기준선 동률,
     # 유일 미스 release_stock 은 P0 도 미스) · 검증질의 노이즈 14→6 · 평균크기 18.2→15.9.
     cluster_anchor_gap: float = float(os.environ.get("ROBO_SEARCH_ANCHOR_GAP", "0.12"))
@@ -55,14 +52,6 @@ class Config:
 
     # spec 006 용어집 번역 게이트 — off | novel_abbrev. 승자 = novel_abbrev(게이트 실측: skt_now 구제).
     cluster_rewrite_mode: str = os.environ.get("ROBO_SEARCH_REWRITE", "novel_abbrev")
-    # spec 007 LLM 심판 — off | p15. ★기본 off (2026-07-11 게이트 실측):
-    # 심판 p15 승자는 gpt 기준 — Qwen(GPU 통일)으로 돌리면 과잉삭제로 리콜 −2~−5(shopmall 30→25~28).
-    # off = shopmall 30/30 유지, 합산 51/53(심판 on 46~49). 소음은 표시단(core/related 접기)에서 처리.
-    # gpt 심판 복구 또는 Qwen 심판 완화 프롬프트는 TODO(랫홀 방지·별도 재측정).
-    cluster_judge_mode: str = os.environ.get("ROBO_SEARCH_JUDGE", "off")
-    cluster_judge_min: int = 12
-    cluster_judge_top: int = 15
-
     # ── CE (cluster core 게이트 재료) ──
     ce_model: str = "dragonkue/bge-reranker-v2-m3-ko"
 

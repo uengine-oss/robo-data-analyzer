@@ -6,7 +6,7 @@ else_of 참조·F() 안 함수식은 오탐하지 않는다(하네스 오탐 2�
 
 fixture 는 parser AST 계약(spec 016)을 그대로 제공한다: 조건은
 ``ControlSubtreeNode.expression``, 종료/반환/대입은 ``StatementFact``,
-호출 좌표는 ``call_lines``. analyzer 는 source 를 재탐색하지 않는다.
+호출은 정확한 Parser 발생 객체다. analyzer 는 source 를 재탐색하지 않는다.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from pipeline.quality_gates.rule_grading import (
     conditions_equal,
     grade_rules,
 )
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 SOURCE = (
     'if (strncmp(gc_Bank_Cd, "03", LEN_BANK) == 0)\n'    # 1
@@ -54,13 +55,18 @@ CALL_LINES = ((1, "strncmp"), (3, "strncpy"))
 
 def _inventory():
     return build_inventory(
-        SOURCE, TREE, "c", statements=STATEMENTS, call_lines=CALL_LINES,
+        SOURCE, TREE, "c", statements=STATEMENTS,
+        call_occurrences=parser_call_occurrences(CALL_LINES),
     )
 
 
-def _rule(anchor, cond, then, nl=""):
+def _rule(anchor, cond, then):
     # examples는 LLM 출력이 아니다 — 결정론 합성(spec 116 §21).
-    return RuleItem(anchor_line=anchor, cond=cond, then=list(then), nl=nl)
+    return RuleItem(
+        anchor_line=anchor,
+        structural_condition=cond,
+        structural_effects=list(then),
+    )
 
 
 def _grade(rules, assigned=None):
@@ -103,7 +109,8 @@ class ConditionlessLoopEvidence(unittest.TestCase):
     def _inventory(self):
         return build_inventory(
             self.SOURCE, self.TREE, "c",
-            statements=self.STATEMENTS, call_lines=((3, "step"),),
+            statements=self.STATEMENTS,
+            call_occurrences=parser_call_occurrences(((3, "step"),)),
         )
 
     def test_conditionless_loop_row_has_no_self_condition_term(self):
@@ -166,7 +173,8 @@ class CleanOutputPasses(unittest.TestCase):
         source = "void f(void)\n{\nPFM_CATCH();\n}\n"
         inventory = build_inventory(
             source, [], "c", handler_markers=("PFM_CATCH",),
-            statements=(), call_lines=((3, "PFM_CATCH"),),
+            statements=(),
+            call_occurrences=parser_call_occurrences(((3, "PFM_CATCH"),)),
         )
         report = grade_rules(
             RulesExamplesOutput(rules=[
@@ -213,7 +221,7 @@ class ExactStructuralConditionContract(unittest.TestCase):
 
 class InjectedDefectsAreCaught(unittest.TestCase):
     def test_fabricated_anchor_row(self):
-        report = _grade([_rule(999, None, ['call("x")'])])
+        report = _grade([_rule(999, None, ['call("x", None, [])'])])
         self.assertEqual([999], report.fabricated_rows)
 
     def test_or_to_and_inversion_is_contradiction(self):
@@ -299,14 +307,15 @@ class ThenBranchCalleeComparison(unittest.TestCase):
     def _grade(self, rules):
         inventory = build_inventory(
             self.SOURCE, self.TREE, "c",
-            statements=(), call_lines=((3, "x"), (7, "y")),
+            statements=(),
+            call_occurrences=parser_call_occurrences(((3, "x"), (7, "y"))),
         )
         return grade_rules(RulesExamplesOutput(rules=rules), inventory, self.SOURCE)
 
     def test_call_outside_branch_callees_is_a_finding_not_rejection(self):
         report = self._grade([
-            _rule(1, 'F("a") == "1"', ['call("y")']),   # y 는 else 분기의 호출이다
-            _rule(5, 'else_of("IF@1")', ['call("y")']),
+            _rule(1, 'F("a") == "1"', ['call("y", None, [])']),
+            _rule(5, 'else_of("IF@1")', ['call("y", None, [])']),
         ])
         self.assertTrue(report.verdicts[0].accepted)     # 거절 아님
         self.assertTrue(
@@ -503,7 +512,7 @@ class SourceIntrinsicGroundingBoundary(unittest.TestCase):
     def _grade(self, cond):
         inventory = build_inventory(
             self.SOURCE, self.TREE, "c", statements=self.STATEMENTS,
-            call_lines=((1, "strlen"),),
+            call_occurrences=parser_call_occurrences(((1, "strlen"),)),
         )
         return grade_rules(
             RulesExamplesOutput(rules=[
@@ -565,10 +574,10 @@ class SourceIntrinsicGroundingBoundary(unittest.TestCase):
                                 expression="ix < 13")],
             "c",
             statements=(),
-            call_lines=((3, "work"),),
+            call_occurrences=parser_call_occurrences(((3, "work"),)),
         )
         report = grade_rules(
-            RulesExamplesOutput(rules=[_rule(1, None, ["call(\"work\")"])]),
+            RulesExamplesOutput(rules=[_rule(1, None, ['call("work", None, [])'])]),
             inventory,
             source,
         )
@@ -584,10 +593,10 @@ class SourceIntrinsicGroundingBoundary(unittest.TestCase):
             )],
             "c",
             statements=(),
-            call_lines=((2, "work"),),
+            call_occurrences=parser_call_occurrences(((2, "work"),)),
         )
         report = grade_rules(
-            RulesExamplesOutput(rules=[_rule(1, None, ['call("work")'])]),
+            RulesExamplesOutput(rules=[_rule(1, None, ['call("work", None, [])'])]),
             inventory,
             source,
         )

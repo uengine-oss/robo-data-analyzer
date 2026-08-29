@@ -15,7 +15,7 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
     def test_link_step_has_no_llm_edge_deletion_boundary(self) -> None:
         source = (
             ROOT
-            / "pipeline/steps/step5_linking/link_calls/link_calls_by_name_step.py"
+            / "pipeline/steps/step5_linking/link_calls/link_parser_calls_step.py"
         ).read_text(encoding="utf-8")
 
         for forbidden in (
@@ -44,6 +44,12 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, settings)
+
+    def test_legacy_dbms_call_paths_are_removed(self) -> None:
+        call_dir = ROOT / "pipeline/steps/step5_linking/link_calls"
+        self.assertFalse((call_dir / "call_linker.py").exists())
+        self.assertFalse((call_dir / "link_calls_by_ast_step.py").exists())
+        self.assertFalse((call_dir / "link_calls_by_name_step.py").exists())
 
     def test_actual_contradiction_population_remains_external(self) -> None:
         caller = CodeNode(
@@ -105,9 +111,9 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
             population,
             {
                 name: sum(
-                    row["terminal_name"] == name
+                    site["call_text"] == name
                     and row["resolution_status"] == "external"
-                    for row in result.ledger
+                    for site, row in zip(call_sites, result.ledger, strict=True)
                 )
                 for name in population
             },

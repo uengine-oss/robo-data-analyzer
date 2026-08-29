@@ -13,7 +13,7 @@ provider: openai
 api_base: https://api.openai.com/v1
 
 # OpenAI 표준 slug (prefix 없음)
-model: gpt-5.4-mini
+model: gpt-5.4-mini-2026-03-17
 
 # 비용 절감용 작은 모델 — 안 박으면 model 사용
 

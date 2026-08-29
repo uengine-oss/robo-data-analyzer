@@ -1,6 +1,6 @@
-"""spec 114 — 검문소 3지표 (support/contradiction/ambiguity).
+"""테이블 접근 패턴의 로컬 검증 계약.
 
-현행 구멍의 재현을 그대로 고정한다: "넓게 오탐하는 규칙이 운 좋은 엣지 1개로 통과".
+모델이 제안한 규칙은 로컬 DDL과 대조하고, 등록된 계약은 partial upload를 허용한다.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _pattern(regex: str) -> TableAccessPattern:
     )
 
 
-class ThreeIndicatorGateTest(unittest.IsolatedAsyncioTestCase):
+class TablePatternValidationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -46,18 +46,31 @@ class ThreeIndicatorGateTest(unittest.IsolatedAsyncioTestCase):
             tables=[Table(db="d", schema="S", name=n) for n in tables],
         )
 
-    async def test_lucky_single_edge_with_mass_contradiction_is_rejected(self):
-        """구멍 재현 — 매치 다수·진짜 1건. 종전엔 통과, 3지표로 탈락."""
+    async def test_one_unknown_table_rejects_a_model_pattern(self):
+        """모델 제안은 비율과 무관하게 모든 매치가 로컬 DDL로 해소돼야 한다."""
         source = "\n".join(
-            ['x("SELECT A FROM ORDERS");']                       # 진짜 1건
-            + [f'log("read FROM garbage_{i}");' for i in range(9)]   # 단어장 밖 9건
+            [f'x("SELECT A FROM ORDERS");' for _ in range(9)]
+            + ['log("read FROM garbage");']
         )
         verdict = await self._verify(
             source, ["ORDERS"],
             r'(?P<op_token>FROM)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)',
         )
         self.assertFalse(verdict.ok)
-        self.assertIn("모순 90%", verdict.summary)
+        self.assertIn("DDL미해소 10%", verdict.summary)
+
+    async def test_one_unknown_operation_token_rejects_a_pattern(self):
+        source = (
+            'x("SELECT A FROM ORDERS");\n'
+            'x("SELECT A JOIN ORDERS");'
+        )
+        verdict = await self._verify(
+            source, ["ORDERS"],
+            r'(?P<op_token>FROM|JOIN)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)',
+        )
+
+        self.assertFalse(verdict.ok)
+        self.assertIn("token인식 50%", verdict.summary)
 
     async def test_precise_rule_still_passes(self):
         """회귀 — 정밀한 규칙(모순 0)은 종전대로 통과."""
@@ -67,7 +80,7 @@ class ThreeIndicatorGateTest(unittest.IsolatedAsyncioTestCase):
             r'(?P<op_token>FROM)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)',
         )
         self.assertTrue(verdict.ok)
-        self.assertIn("모순 0%", verdict.summary)
+        self.assertIn("DDL미해소 0%", verdict.summary)
 
     async def test_ambiguous_resolution_is_counted_and_gated(self):
         """fallback prefix 로 T_USER·TB_USER 둘 다 존재 → 중의 계수 + 탈락."""
@@ -82,8 +95,34 @@ class ThreeIndicatorGateTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_node(str(src), 1)],
             tables=[Table(db="d", schema="S", name=n) for n in ("T_USER", "TB_USER")],
         )
-        self.assertFalse(verdict.ok)                 # 중의 100% > 상한 20%
+        self.assertFalse(verdict.ok)
         self.assertIn("중의 100%", verdict.summary)
+
+    async def test_one_ambiguous_match_rejects_a_pattern(self):
+        src = self.root / "a.c"
+        src.write_text(
+            "\n".join(
+                ['x("SELECT A FROM ORDERS");' for _ in range(9)]
+                + ['x("SELECT A FROM USER");']
+            ),
+            encoding="utf-8",
+        )
+        verdict = await verify_table_patterns(
+            patterns=[_pattern(
+                r'(?P<op_token>FROM)\s+(?P<entity>[A-Za-z_][A-Za-z0-9_]*)'
+            )],
+            ddl_transform=DdlTransform(
+                ddl_naming_rule="as_is", fallback_prefixes=["T_", "TB_"],
+            ),
+            project_root=self.root,
+            code_nodes=[_node(str(src), 10)],
+            tables=[Table(db="d", schema="S", name=name) for name in (
+                "ORDERS", "T_USER", "TB_USER",
+            )],
+        )
+
+        self.assertFalse(verdict.ok)
+        self.assertIn("중의 10%", verdict.summary)
 
     async def test_dead_pattern_cannot_hide_behind_verified_sibling(self):
         src = self.root / "a.c"
@@ -104,7 +143,7 @@ class ThreeIndicatorGateTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(verdict.ok)
-        self.assertEqual(("dead",), verdict.failed_rule_ids)
+        self.assertEqual(("dead",), verdict.invalid_access_rule_ids)
         self.assertIn("dead(매치 0", verdict.summary)
 
     async def test_duplicate_rule_ids_are_rejected(self):

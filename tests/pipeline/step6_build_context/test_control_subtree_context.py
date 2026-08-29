@@ -101,3 +101,68 @@ class ControlSubtreeWiringTest(unittest.IsolatedAsyncioTestCase):
             [("IF", 4, 21), ("LOOP", 26, 36)],
         )
         self.assertNotIn("control_subtree", contexts["fn:IF@103"].extra)
+
+    async def test_dbms_call_node_is_not_counted_again_beside_parser_occurrence(self):
+        routine = _node("fn", "PROCEDURE", 100, 120, None)
+        call_node = _node("fn:CALL@105", "CALL", 105, 105, "fn")
+        call_node.name = "work"
+        call_site = {
+            "call_id": "parser-call-1",
+            "caller_id": "fn",
+            "owner_status": "resolved",
+            "call_text": "work",
+            "callee_kind": "named",
+            "source_id": "sample.sql",
+            "file": "sample.sql",
+            "line": 105,
+            "range": {"charOffset": 40, "charLength": 6},
+            "callee_range": {"charOffset": 40, "charLength": 4},
+            "call_source": "work()",
+            "callee_source": "work",
+            "argument_ranges": [],
+            "argument_sources": [],
+            "receiver_source": None,
+            "receiver_range": None,
+            "scope_path": [{
+                "kind": "function",
+                "range": {"charOffset": 0, "charLength": 100},
+            }],
+            "grammar_rule": "call_statement",
+            "presence_status": "active",
+        }
+        resolution = {
+            "call_id": "parser-call-1",
+            "ordinal": 0,
+            "caller_id": "fn",
+            "resolution_status": "external",
+            "adapter_schema": "test/v1",
+            "outcome": "preserved",
+            "reason": "outside_analysis_scope",
+            "scope": None,
+            "callee_id": "",
+            "external_identity_key": "work",
+            "declaration_fact_id": "",
+            "candidate_fact_ids": [],
+            "preprocessing_evidence_ids": [],
+            "macro_fact_ids": [],
+        }
+        strategy = SimpleNamespace(
+            context_builder=FrameworkContextBuilder(),
+            analysis_targets=framework_analysis_targets,
+        )
+
+        result = await build_context_step(
+            {
+                "code_nodes": [routine, call_node],
+                "call_sites": [call_site],
+                "call_resolution_ledger": [resolution],
+            },
+            {"configurable": {"strategy": strategy}},
+        )
+
+        context = result["analysis_contexts"]["fn"]
+        self.assertNotIn("ast_call_lines", context.extra)
+        self.assertEqual(
+            ("parser-call-1",),
+            tuple(item.call_id for item in context.extra["ast_call_occurrences"]),
+        )

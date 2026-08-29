@@ -24,7 +24,6 @@ from pipeline.steps.step7_analyze_code.framework_per_node import (
 from pipeline.models.data_object_usage import (
     DatabaseLinkComponentEvidence,
     DataObjectUsageEvidence,
-    object_reference_id,
 )
 
 
@@ -95,6 +94,12 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
             code_text="SELECT value FROM RDITAG_TB", owner_id="sample.sql",
             parent_id=routine.id,
         )
+        select.extra["data_object_evidence_version"] = 3
+        select.extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=select.id, raw_reference="RDITAG_TB", name="RDITAG_TB",
+            access="READ", evidence_file="sample.sql", evidence_line=3,
+            table_id="db:RDITAG_TB", resolution="exact",
+        ),)
         strategy = SimpleNamespace(
             context_builder=FrameworkContextBuilder(),
             analysis_targets=framework_analysis_targets,
@@ -105,17 +110,17 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
                 "reads_writes_edges": [
                     _edge(
                         "READS", "db:RDITAG_TB", "SELECT",
-                        source_id=select.id, evidence_line=3,
+                        source_id=routine.id, evidence_line=3,
                     ),
                 ],
             },
             {"configurable": {"strategy": strategy}},
         )
         contexts = result["analysis_contexts"]
-        self.assertEqual(("db:RDITAG_TB",), contexts[select.id].reads)
+        self.assertEqual((), contexts[select.id].reads)
         self.assertEqual(("db:RDITAG_TB",), contexts[routine.id].reads)
-        self.assertEqual(("db:RDITAG_TB",), contexts[select.id].direct_reads)
-        self.assertEqual((), contexts[routine.id].direct_reads)
+        self.assertEqual((), contexts[select.id].direct_reads)
+        self.assertEqual(("db:RDITAG_TB",), contexts[routine.id].direct_reads)
         self.assertEqual(
             ((3, "select", "RDITAG_TB"),),
             contexts[routine.id].extra["ast_table_ops"],
@@ -140,7 +145,7 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
         context = result["analysis_contexts"][routine.id]
         self.assertEqual(("db:COMM_CODE",), context.reads)
         self.assertNotIn("ast_table_ops", context.extra)
-        usages = context.extra["data_object_usages"]
+        usages = context.data_object_usages
         self.assertEqual(1, len(usages))
         self.assertEqual(
             ("db:COMM_CODE", "READ", "linked_edges", "exact"),
@@ -156,6 +161,11 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
             code_text="SELECT value FROM T", owner_id="sample.sql",
             parent_id=routine.id,
         )
+        select.extra["data_object_evidence_version"] = 3
+        select.extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=select.id, raw_reference="T", name="T", access="READ",
+            evidence_file="sample.sql", evidence_line=20,
+        ),)
         strategy = SimpleNamespace(
             context_builder=FrameworkContextBuilder(),
             analysis_targets=framework_analysis_targets,
@@ -164,17 +174,12 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
             await build_context_step(
                 {
                     "code_nodes": [routine, select],
-                    "reads_writes_edges": [
-                        _edge(
-                            "READS", "db:T", "SELECT",
-                            source_id=select.id, evidence_line=20,
-                        ),
-                    ],
+                    "reads_writes_edges": [],
                 },
                 {"configurable": {"strategy": strategy}},
             )
 
-    async def test_unresolved_object_uses_raw_reference_in_rule_evidence_and_id_alias(self):
+    async def test_unresolved_usage_keeps_raw_rule_evidence_without_table_alias(self):
         routine = _routine("fn")
         insert = CodeNode(
             id="insert", signature="INSERT", file_path="sample.sql",
@@ -191,7 +196,6 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
         )
         insert.extra["data_object_evidence_version"] = 3
         insert.extra["data_object_usages"] = (usage,)
-        target_id = object_reference_id("shop", usage)
         strategy = SimpleNamespace(
             context_builder=FrameworkContextBuilder(),
             analysis_targets=framework_analysis_targets,
@@ -200,12 +204,7 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
         result = await build_context_step(
             {
                 "code_nodes": [routine, insert],
-                "reads_writes_edges": [
-                    _edge(
-                        "WRITES", target_id, "INSERT",
-                        source_id=insert.id, evidence_line=3,
-                    ),
-                ],
+                "reads_writes_edges": [],
             },
             {"configurable": {
                 "strategy": strategy,
@@ -218,10 +217,9 @@ class AuthoritativeTableOpTest(unittest.IsolatedAsyncioTestCase):
             ((3, "insert", "ORDERS@REMOTE"),),
             routine_context.extra["ast_table_ops"],
         )
-        self.assertEqual(
-            target_id,
-            routine_context.extra["table_identity_aliases"]["ORDERS@REMOTE"],
-        )
+        self.assertNotIn("table_identity_aliases", routine_context.extra)
+        self.assertEqual((), routine_context.reads)
+        self.assertEqual((), routine_context.writes)
 
 
 if __name__ == "__main__":

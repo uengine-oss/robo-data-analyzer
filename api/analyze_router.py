@@ -18,7 +18,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.strategies import get_pipeline
 from pipeline.models.analysis_meta import Codebase
@@ -39,15 +39,16 @@ class AnalyzeRequest(BaseModel):
     catalog **접속 설정**(base_url/enabled)은 운영 영역 (``ROBO_CATALOG_*`` 환경변수).
     단 ``datasource`` ("이번 분석에서 어느 DB 를 샘플링")는 분석 입력값.
 
-    입구 통일(antlr spec 006 · analyzer spec 014): 분석기는 입력 모드와 무관하게 항상
-    표준 ``SETTINGS.analysis_data.dir/{source, ddl, analysis}`` 만 소비한다. 소스의 data/ 반입과
-    DDL/source 내용 분류는 상류 파서(antlr)가 단독 책임진다. ``project_root`` 는 역호환
-    위해 받기만 하고 **무시(inert)** — 소스를 바꾸지 않는다.
+    입구 통일: 분석기는 항상 표준
+    ``SETTINGS.analysis_data.dir/{source, ddl, analysis}`` 만 소비한다. 소스의 data/ 반입과
+    DDL/source 내용 분류는 상류 Parser가 단독 책임진다. 호출자가 별도 경로를 보내면
+    조용히 무시하지 않고 요청 계약 오류로 거부한다.
     """
-    project_root: Optional[str] = None       # (역호환) 수용하되 무시 — 소스는 항상 data/source
+    model_config = ConfigDict(extra="forbid")
+
     strategy: str                            # "framework" / "dbms"
-    ddl_dir: Optional[str] = None            # (역호환) 수용하되 무시 — DDL은 항상 data/ddl
     locale: str = "ko"
+    selected_source_ids: list[str] = Field(default_factory=list)
     datasource: Optional[str] = None         # 메타 보강 시 샘플링할 DB(MindsDB datasource). None=skip.
 
 
@@ -80,7 +81,7 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
     # 입구 통일: 입력 모드와 무관하게 표준 data/ 만 소비. 소스의 data/ 반입·내용 분류는
-    # 상류 파서(antlr spec 006)가 책임진다. req.project_root 는 받되 무시(inert).
+    # 상류 Parser가 책임진다.
     source_root = SETTINGS.analysis_data.dir / "source"
     if not source_root.exists():
         raise HTTPException(status_code=400, detail=f"source dir not found: {source_root}")
@@ -88,12 +89,11 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
     codebase = Codebase(
         root=source_root,
         strategy=req.strategy,  # type: ignore[arg-type]
-        # Like project_root, the legacy ddl_dir is inert. Parser owns ingress and
-        # Analyzer consumes only the canonical data/ddl directory.
         ddl_dir=SETTINGS.analysis_data.dir / "ddl",
         locale=req.locale,
         datasource=req.datasource,
         corpus_root=SETTINGS.analysis_data.dir,
+        selected_source_ids=tuple(req.selected_source_ids),
     )
 
     stream = NDJSONStream()

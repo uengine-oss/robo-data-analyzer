@@ -16,7 +16,7 @@ from langchain_core.runnables import RunnableConfig
 
 from shared.files.cache import SourceFileCache
 from shared.files.source_excerpt import raw_node_text
-from pipeline.execution.step_config import step_config
+from pipeline.execution.step_config import require_step_config_value, step_config
 
 from pipeline.steps.step6_build_context.control_subtree import (
     build_control_subtrees,
@@ -24,18 +24,19 @@ from pipeline.steps.step6_build_context.control_subtree import (
 )
 from pipeline.steps.step6_build_context.referenced_symbols import _build_reference_context
 from pipeline.steps.step6_build_context.external_evidence import build_external_evidence_context
-from pipeline.languages import ROUTINE_LABELS, callsite_labels, dml_effect_ops
-from pipeline.quality_gates.evidence_matching import identity_leaf
+from pipeline.languages import ROUTINE_LABELS, dml_effect_ops
+from pipeline.dml_semantics import dml_type_of
 from pipeline.models.analysis_context import AnalysisContext, CallOccurrenceFact
-from pipeline.models.call_resolution import normalize_call_resolution_ledger
+from pipeline.models.call_resolution import (
+    normalize_call_resolution_ledger,
+    normalize_call_resolution_subset,
+)
 from pipeline.models.data_object_usage import (
-    is_object_reference_id,
-    object_reference_id,
     usages_from_linked_tables,
 )
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
-from shared.events.runtime_logger import log_info, log_warning
+from shared.events.runtime_logger import log_info
 
 _STEP = "step6.build_context"
 
@@ -63,98 +64,83 @@ def _owning_routine(node: CodeNode, by_id: dict[str, CodeNode]) -> CodeNode | No
 
 
 def _table_op_lines(
-    rw_edges: list,
     code_nodes: list[CodeNode],
-    unresolved_names: dict[str, str] | None = None,
 ) -> dict[str, list[tuple[int, str, str]]]:
-    """소유 routine → ``(routine 상대 줄, 효과 op, 테이블명)`` (spec 119).
+    """소유 routine → (routine 상대 줄, 효과 op, 원문 객체명).
 
-    step5 DBMS 링커는 **모든 CodeNode(=DML 노드 포함)의 자기 줄**을 스캔해
-    ``ReadsWrites(source_id=그 노드, target_id=테이블, dml_type=구문 종류)`` 를 이미 만든다.
-    즉 "몇 번째 줄이 어떤 테이블을 어떤 DML 로 건드리는가"는 결정론으로 존재하는데
-    rule 증거까지 흐르지 않아, DBMS 규칙의 ``then`` 이 비어 있었다(59행 중 19행만 효과 보유,
-    framework 는 83%).
-
-    미선언 ``dml_type`` 은 조용히 버리지 않고 좌표와 함께 실패한다(헌법 IV).
+    Parser의 data-object occurrence가 좌표와 접근 방향의 단일 출처다. 제품
+    READS/WRITES 관계에서 문장 위치를 역추정하지 않으며, unresolved occurrence도
+    별도 graph node 없이 원문 표기 그대로 Rule 구조 근거에 남긴다.
     """
     by_id = {node.id: node for node in code_nodes}
     ops = dml_effect_ops()
 
     result: dict[str, set[tuple[int, str, str]]] = {}
-    for edge in rw_edges:
-        node = by_id.get(edge.source_id)
-        dml = (getattr(edge, "dml_type", "") or "").upper()
-        if node is None or not dml:
-            continue
-        # RULE의 DML 행 효과는 실제 statement CodeNode만 소유한다. Framework 링커는
-        # SQL 문자열을 찾더라도 R/W를 루틴 노드에 달며, 그 관계는 ctx.reads/writes로 이미
-        # 전달된다. 이를 DML statement처럼 승격하면 framework 증거 계약을 바꾸고 함수
-        # 선언행을 가짜 entry로 만든다. 언어/전략명이 아니라 AST 소유 형태로 구분한다.
+    for node in code_nodes:
         if node.label in ROUTINE_LABELS:
+            continue
+        usages = tuple((node.extra or {}).get("data_object_usages") or ())
+        if not usages:
             continue
         routine = _owning_routine(node, by_id)
         if routine is None:
-            continue    # 모듈 레벨 — routine 효과가 아니다
-        # **op 는 관계가 결정한다** (F-D2 계약). 엣지의 dml_type 은 그 구문의 사실이라
-        # READS 엣지에도 쓰기 키워드가 실린다 — 트리거 헤더 `AFTER INSERT ON T` 의 대상
-        # 테이블이 그렇다. 구문 dml 을 그대로 op 로 쓰면 읽기 테이블에 insert 보기가 붙어
-        # 권위 table op(READ)와 충돌한다(2026-08-08 실측 finding).
-        if edge.relation == "READS":
-            op = "select"
-        else:
-            op = ops.get(dml)
-        if op is None:
             raise ValueError(
-                f"미선언 dml_type {dml!r} — {node.file_path}:{node.start_line} "
-                f"({node.id}). ontology_roles.yaml 의 dml_effect_ops 에 선언하라 (spec 119)"
+                "data-object occurrence has no owning routine: "
+                f"{node.file_path}:{node.start_line} ({node.id})"
             )
-        # 효과 좌표는 source CodeNode 의 시작점이 아니라 링커가 발견한 **실제 증거 줄**이
-        # 소유한다. 현재 DBMS DML 노드에서는 두 값이 같지만, 좌표 계약은 관계의 증거가
-        # 정본이다. 파생·확장 링커가 들어와도 노드 시작점으로 다시 추정하지 않는다.
-        evidence_line = int(getattr(edge, "evidence_line", 0) or 0)
-        if evidence_line <= 0:
-            raise ValueError(
-                f"DML 효과 evidence_line 부재 — {node.file_path}:{node.start_line} "
-                f"({node.id}, {dml} {edge.target_id})"
-            )
-        line = evidence_line - routine.start_line + 1
-        if line < 1 or evidence_line > routine.end_line:
-            raise ValueError(
-                f"DML 효과 좌표가 소유 routine 범위 밖 — evidence="
-                f"{getattr(edge, 'evidence_file', '')}:{evidence_line}, routine="
-                f"{routine.file_path}:{routine.start_line}-{routine.end_line} ({routine.id})"
-            )
-        # 규칙 어휘는 `insert("테이블")` — **원문 표기**다. 그래프 ID(`db:…`)를 그대로
-        # 실으면 근거 검사(원문 문자열 대조)가 접두사에서 막히고, 규칙 카드에 내부
-        # 식별자가 새어 나간다. 허용 집합 대조는 `resolve_qualified_name` 이 같은
-        # leaf 정의로 흡수한다(2026-08-08 실측 21건).
-        display_name = (unresolved_names or {}).get(
-            edge.target_id, identity_leaf(edge.target_id),
-        )
-        result.setdefault(routine.id, set()).add((line, op, display_name))
+        dml = dml_type_of(node.label)
+        for usage in usages:
+            access = str(getattr(usage, "access", "") or "").upper()
+            if access == "READ":
+                op = "select"
+            elif access == "WRITE":
+                op = ops.get(dml)
+            else:
+                op = None
+            if op is None:
+                raise ValueError(
+                    f"미선언 data-object access/dml {access!r}/{dml!r} — "
+                    f"{node.file_path}:{node.start_line} ({node.id})"
+                )
+            evidence_line = int(getattr(usage, "evidence_line", 0) or 0)
+            evidence_file = str(getattr(usage, "evidence_file", "") or "")
+            if evidence_line <= 0 or not evidence_file:
+                raise ValueError(
+                    f"DML 효과 좌표 부재 — {node.file_path}:{node.start_line} ({node.id})"
+                )
+            line = evidence_line - routine.start_line + 1
+            if line < 1 or evidence_line > routine.end_line:
+                raise ValueError(
+                    "DML 효과 좌표가 소유 routine 범위 밖 — evidence="
+                    f"{evidence_file}:{evidence_line}, routine="
+                    f"{routine.file_path}:{routine.start_line}-{routine.end_line} "
+                    f"({routine.id})"
+                )
+            display_name = str(
+                getattr(usage, "raw_reference", "")
+                or getattr(usage, "name", "")
+            ).strip()
+            if not display_name:
+                raise ValueError(f"DML 효과 원문 객체명 부재 — {node.id}")
+            result.setdefault(routine.id, set()).add((line, op, display_name))
     return {key: sorted(values) for key, values in result.items()}
 
 
 def _data_object_identity_aliases(
-    code_nodes: list[CodeNode], datasource: str,
-) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
-    """Build unambiguous source spelling → graph target mappings per owning routine."""
+    code_nodes: list[CodeNode],
+) -> dict[str, dict[str, str]]:
+    """Build unambiguous source spelling → resolved Table mappings per routine."""
     by_id = {node.id: node for node in code_nodes}
     candidates: dict[str, dict[str, set[str]]] = {}
-    unresolved_names: dict[str, str] = {}
     for node in code_nodes:
         routine = _owning_routine(node, by_id)
         owner_ids = {node.id}
         if routine is not None:
             owner_ids.add(routine.id)
         for usage in node.extra.get("data_object_usages") or ():
-            target_id = (
-                usage.table_id
-                if usage.resolution == "exact" and usage.table_id
-                else object_reference_id(datasource, usage)
-            )
-            if is_object_reference_id(target_id):
-                unresolved_names.setdefault(target_id, usage.raw_reference)
+            if usage.resolution != "exact" or not usage.table_id:
+                continue
+            target_id = usage.table_id
             spellings = {usage.raw_reference, usage.name}
             if usage.schema:
                 spellings.add(f"{usage.schema}.{usage.name}")
@@ -170,7 +156,7 @@ def _data_object_identity_aliases(
         }
         for owner_id, by_spelling in candidates.items()
     }
-    return aliases, unresolved_names
+    return aliases
 
 
 def _canonical_call_range(value: object) -> tuple[int, int] | None:
@@ -189,12 +175,9 @@ def build_parser_call_evidence(
     call_sites: list[dict],
     call_resolution_ledger: list[dict],
     code_nodes: list[CodeNode],
-) -> tuple[
-    dict[str, list[tuple[int, str]]],
-    dict[str, list[CallOccurrenceFact]],
-]:
+) -> dict[str, list[CallOccurrenceFact]]:
     """Join Parser call structure, Analyzer binding, and expression-owned context."""
-    normalized_ledger = normalize_call_resolution_ledger(call_resolution_ledger)
+    normalized_ledger = normalize_call_resolution_subset(call_resolution_ledger)
     if len(call_sites) != len(normalized_ledger):
         raise ValueError(
             "parser call projection population mismatch: "
@@ -213,7 +196,6 @@ def build_parser_call_evidence(
     routines = {
         fn.id: fn for fn in code_nodes if fn.label in ROUTINE_LABELS
     }
-    call_lines_by_fn: dict[str, list[tuple[int, str]]] = {}
     call_occurrences_by_fn: dict[str, list[CallOccurrenceFact]] = {}
     accounted = 0
     for ordinal, (site, resolution) in enumerate(zip(
@@ -221,76 +203,27 @@ def build_parser_call_evidence(
     )):
         call_id = site_ids[ordinal]
         caller = str(site.get("caller_id") or "")
-        site_owner_status = str(site.get("owner_status") or "")
-        owner_status = str(resolution.get("owner_status") or "")
-        structural_pairs = (
-            ("source_id", str(site.get("source_id") or ""), resolution["source_id"]),
-            ("caller_id", caller, resolution["caller_id"]),
-            ("owner_status", site_owner_status, owner_status),
-            ("file", str(site.get("file") or ""), resolution["file"]),
-            ("line", site.get("line"), resolution["line"]),
-            ("callee_kind", site.get("callee_kind"), resolution["callee_kind"]),
-            (
-                "terminal_name", str(site.get("call_text") or ""),
-                resolution["terminal_name"],
-            ),
-            (
-                "grammar_rule", str(site.get("grammar_rule") or ""),
-                resolution["grammar_rule"],
-            ),
-            (
-                "presence_status", site.get("presence_status"),
-                resolution["presence_status"],
-            ),
-            ("presence", site.get("presence"), resolution["presence"]),
-        )
-        mismatched = [
-            name for name, parser_value, analyzer_value in structural_pairs
-            if parser_value != analyzer_value
-        ]
-        if mismatched:
+        owner_status = str(site.get("owner_status") or "")
+        if caller != str(resolution.get("caller_id") or ""):
             raise ValueError(
-                "parser call structure differs from resolution ledger: "
-                f"call_id={call_id!r}, fields={mismatched}"
+                "parser call owner differs from resolution ledger: "
+                f"call_id={call_id!r}"
             )
         site_argument_ranges = site.get("argument_ranges")
         if not isinstance(site_argument_ranges, list):
             raise ValueError(
                 f"invalid parser call argument ranges: call_id={call_id!r}"
             )
-        range_pairs = (
-            (
-                "range", _canonical_call_range(site.get("range")),
-                _canonical_call_range(resolution["range"]),
-            ),
-            (
-                "callee_range",
-                _canonical_call_range(site.get("callee_range")),
-                _canonical_call_range(resolution["callee_range"]),
-            ),
-            (
-                "argument_ranges",
-                tuple(
-                    _canonical_call_range(value) for value in site_argument_ranges
-                ),
-                tuple(
-                    _canonical_call_range(value)
-                    for value in resolution["argument_ranges"]
-                ),
-            ),
+        call_range = _canonical_call_range(site.get("range"))
+        callee_range = _canonical_call_range(site.get("callee_range"))
+        argument_ranges = tuple(
+            _canonical_call_range(value) for value in site_argument_ranges
         )
-        mismatched_ranges = [
-            name for name, parser_value, analyzer_value in range_pairs
-            if parser_value != analyzer_value
-        ]
-        if mismatched_ranges or any(
-            value is None for value in (
-                range_pairs[0][1], range_pairs[1][1], *range_pairs[2][1],
-            )
-        ):
+        if any(value is None for value in (
+            call_range, callee_range, *argument_ranges,
+        )):
             raise ValueError(
-                "parser call ranges differ from resolution ledger: "
-                f"call_id={call_id!r}, fields={mismatched_ranges}"
+                f"parser call ranges are invalid: call_id={call_id!r}"
             )
 
         argument_sources = site.get("argument_sources")
@@ -343,7 +276,7 @@ def build_parser_call_evidence(
                         f"call_id={call_id!r}"
                     )
             scope_path.append((kind, scope_range))
-        call_offset, call_length = range_pairs[0][1]
+        call_offset, call_length = call_range
         inner_offset, inner_length = scope_path[-1][1]
         if not (
             inner_offset <= call_offset
@@ -370,8 +303,8 @@ def build_parser_call_evidence(
             )
         call_source = site.get("call_source")
         callee_source = site.get("callee_source")
-        callee_kind = str(resolution.get("callee_kind") or "")
-        terminal_name = str(resolution.get("terminal_name") or "")
+        callee_kind = str(site.get("callee_kind") or "")
+        terminal_name = str(site.get("call_text") or "")
         name = terminal_name or str(callee_source or "")
         if (
             not isinstance(call_source, str)
@@ -392,7 +325,7 @@ def build_parser_call_evidence(
             raise ValueError(
                 f"invalid parser call receiver source: call_id={call_id!r}"
             )
-        offset, length = range_pairs[0][1]
+        offset, length = call_range
         if offset < 0 or length <= 0:
             raise ValueError(f"parser call range is invalid: call_id={call_id!r}")
         condition_owners = []
@@ -412,14 +345,10 @@ def build_parser_call_evidence(
             raise ValueError(
                 f"parser call condition ownership is ambiguous: call_id={call_id!r}"
             )
-        presence_status = str(resolution.get("presence_status") or "")
+        presence_status = str(site.get("presence_status") or "")
         if presence_status not in {"active", "inactive", "conditional", "unknown"}:
             raise ValueError(f"parser call presence is invalid: call_id={call_id!r}")
-        context_role = (
-            "non_active"
-            if presence_status != "active"
-            else "condition" if condition_owners else "effect"
-        )
+        structural_role = "condition" if condition_owners else "effect"
         occurrence = CallOccurrenceFact(
                 call_id=call_id,
                 line=line,
@@ -428,14 +357,14 @@ def build_parser_call_evidence(
                 argument_sources=tuple(argument_sources),
                 receiver_source=receiver_source,
                 source_range=(offset, length),
-                callee_range=range_pairs[1][1],
-                argument_ranges=range_pairs[2][1],
+                callee_range=callee_range,
+                argument_ranges=argument_ranges,
                 receiver_range=receiver_range,
                 scope_path=tuple(scope_path),
-                grammar_rule=str(resolution.get("grammar_rule") or ""),
+                grammar_rule=str(site.get("grammar_rule") or ""),
                 callee_source=callee_source,
                 callee_kind=callee_kind,
-                context_role=context_role,
+                structural_role=structural_role,
                 condition_fact_id=(condition_owners[0] if condition_owners else None),
                 presence_status=presence_status,
                 resolution_status=str(resolution.get("resolution_status") or ""),
@@ -447,16 +376,12 @@ def build_parser_call_evidence(
                     resolution.get("external_identity_key") or ""
                 ),
             )
-        if context_role != "non_active":
-            call_lines_by_fn.setdefault(caller, []).append((line, occurrence.callee))
         call_occurrences_by_fn.setdefault(caller, []).append(
             occurrence
         )
         accounted += 1
     if accounted != len(call_sites):
         raise ValueError("parser call projection is not exact-once")
-    for lines in call_lines_by_fn.values():
-        lines.sort()
     for occurrences in call_occurrences_by_fn.values():
         occurrences.sort(key=lambda item: (
             item.line,
@@ -464,16 +389,13 @@ def build_parser_call_evidence(
             if item.source_range is not None else 2**63,
             item.call_id,
         ))
-    return call_lines_by_fn, call_occurrences_by_fn
+    return call_occurrences_by_fn
 
 
 async def build_context_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """모든 CodeNode 에 ``AnalysisContext`` 생성."""
     cfg = step_config(config)
-    strategy = cfg.get("strategy")
-    if strategy is None:
-        log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
-        return {}
+    strategy = require_step_config_value(cfg, "strategy", step=_STEP)
 
     started = time.monotonic()
 
@@ -554,32 +476,30 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     )
     # parser FUNCTION_CALL 좌표 (spec 016) — branch 직접 호출 귀속의 AST 정본.
     # (routine 상대 1-based line, 호출명) 쌍. source 정규식 `이름(` 재탐색을 대체한다.
-    call_lines_by_fn, call_occurrences_by_fn = build_parser_call_evidence(
-        list(state.get("call_sites", []) or []),
-        list(state.get("call_resolution_ledger", []) or []),
+    parser_call_sites = list(state.get("call_sites", []) or [])
+    complete_call_ledger = normalize_call_resolution_ledger(
+        list(state.get("call_resolution_ledger", []) or [])
+    )
+    parser_call_ids = [str(site.get("call_id") or "") for site in parser_call_sites]
+    required_call_ids = parser_call_ids
+    ledger_ids = [str(row.get("call_id") or "") for row in complete_call_ledger]
+    if (
+        any(not value for value in required_call_ids)
+        or len(required_call_ids) != len(set(required_call_ids))
+        or len(ledger_ids) != len(required_call_ids)
+        or set(ledger_ids) != set(required_call_ids)
+    ):
+        raise ValueError(
+            "call resolution ledger differs from Parser and AST CALL occurrences"
+        )
+    ledger_by_id = {str(row["call_id"]): row for row in complete_call_ledger}
+    call_occurrences_by_fn = build_parser_call_evidence(
+        parser_call_sites,
+        [ledger_by_id[call_id] for call_id in parser_call_ids],
         code_nodes,
     )
-    # CodeNode 자체가 호출 자리인 언어(DBMS `CALL`)의 좌표 — ontology 가 라벨을 소유한다.
-    # framework 는 이 집합이 비어 있어 아무것도 더해지지 않는다(증거 불변, spec 119).
-    node_callsite_labels = callsite_labels()
-    if node_callsite_labels:
-        nodes_by_id = {node.id: node for node in code_nodes}
-        for node in code_nodes:
-            if node.label not in node_callsite_labels or not node.name:
-                continue
-            routine = _owning_routine(node, nodes_by_id)
-            if routine is None:
-                continue
-            line = node.start_line - routine.start_line + 1
-            if line >= 1:
-                call_lines_by_fn.setdefault(routine.id, []).append((line, node.name))
-    for lines in call_lines_by_fn.values():
-        lines.sort()
-    datasource = (getattr(cfg.get("codebase"), "datasource", None) or "").strip()
-    table_aliases_by_fn, unresolved_names = _data_object_identity_aliases(
-        code_nodes, datasource,
-    )
-    table_ops_by_fn = _table_op_lines(rw_edges, code_nodes, unresolved_names)
+    table_aliases_by_fn = _data_object_identity_aliases(code_nodes)
+    table_ops_by_fn = _table_op_lines(code_nodes)
     for fn in code_nodes:
         # 원문은 step2 가 이미 채웠다 (code_text) — 같은 (file,start,end) 를 여기서 다시
         # 잘라내지 않는다 (spec 046 FR-007: 슬라이싱 계산은 한 곳). 없을 때만 캐시에서 슬라이스
@@ -605,24 +525,17 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         )
         ctx = await builder.augment(ctx, fn, state)
         if fn.extra.get("data_object_evidence_version"):
-            ctx.extra["data_object_evidence_version"] = fn.extra["data_object_evidence_version"]
-            ctx.extra["data_object_usages"] = tuple(fn.extra.get("data_object_usages") or ())
-            ctx.extra["unresolved_qualified_columns"] = tuple(
-                fn.extra.get("unresolved_qualified_columns") or ()
-            )
+            ctx.data_object_usages = tuple(fn.extra.get("data_object_usages") or ())
             if int(fn.extra.get("data_object_evidence_version") or 0) >= 2:
-                ctx.extra["unqualified_identifier_references"] = tuple(
+                ctx.unqualified_identifier_references = tuple(
                     fn.extra.get("unqualified_identifier_references") or ()
                 )
-            ctx.extra["unresolved_data_object_usages"] = tuple(
-                fn.extra.get("unresolved_data_object_usages") or ()
-            )
         if fn.extra.get("source_language"):
             ctx.extra["source_language"] = fn.extra["source_language"]
         else:
             # Framework and legacy DBMS edges enter the same prompt contract with explicit
             # linked-edge provenance; no alias/column facts are invented.
-            ctx.extra["data_object_usages"] = usages_from_linked_tables(
+            ctx.data_object_usages = usages_from_linked_tables(
                 source_id=fn.id,
                 edges=rw_edges,
             )
@@ -634,13 +547,11 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
         # 반환식·대입·entry 를 이것으로만 조립한다. statement 가 없는 routine 도
         # "없음"이 사실이므로 빈 튜플을 명시 제공한다(source 재탐색 금지).
         ctx.extra["ast_statements"] = tuple(statement_facts.get(fn.id, ()))
-        ctx.extra["ast_call_lines"] = tuple(call_lines_by_fn.get(fn.id, ()))
         ctx.extra["ast_call_occurrences"] = tuple(
             call_occurrences_by_fn.get(fn.id, ())
         )
-        # DBMS DML 효과 좌표 (spec 119) — step5 링커가 DML 노드마다 이미 만든
-        # (테이블, dml_type) 을 소유 routine 상대 줄로 옮긴다. framework 는 DML 노드가
-        # 없어 항상 빈 튜플이며 증거가 달라지지 않는다.
+        # DBMS DML 효과 좌표 — Parser data-object occurrence를 소유 routine 상대 줄로
+        # 옮긴다. Framework는 해당 occurrence가 없어 항상 빈 튜플이다.
         table_op_lines = tuple(table_ops_by_fn.get(fn.id, ()))
         if table_op_lines:
             ctx.extra["ast_table_ops"] = table_op_lines

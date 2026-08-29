@@ -2,16 +2,13 @@
 # ───────────────────────────────────────────────────────────
 # 실행 코드가 직접 사용하는 패키지만 유지한다. 호환 세부 버전은 배포 잠금 파일에서 고정한다.
 
-# Core LangChain / LangGraph (deepagents 가 1.x 를 끌어올림)
+# Core LangChain / LangGraph
 langchain>=1.0.0
 langchain-core>=1.0.0
 langchain-openai>=1.0.0
 langchain-anthropic>=1.0.0
 langgraph>=1.0.0
 langgraph-checkpoint>=2.1.0
-
-# DeepAgent 프레임워크 (Scan / Linking 에이전트 — middleware import)
-deepagents>=0.2.0
 
 # 데이터 검증
 pydantic>=2.10.0
@@ -27,7 +24,7 @@ neo4j>=5.27.0
 leidenalg>=0.10.0
 igraph>=0.11.0
 
-# 임베딩(embed_step) + 검색 재채점 크로스인코더(search/ranking/rerank — CE 게이트)
+# 검색 결과 벡터 생성 + 검색 재채점 크로스인코더(search/ranking/rerank — CE 게이트)
 sentence-transformers>=3.3.0
 
 # 검색 리콜 희소채널 — BM25 키워드 매칭 (search/ranking/recall)

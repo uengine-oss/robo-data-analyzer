@@ -79,16 +79,11 @@ class GlobalAnchorTests(unittest.TestCase):
     def setUp(self):
         _Retriever.assert_expand_flags = []
 
-    def test_unknown_selection_mode_fails_instead_of_silent_legacy_fallback(self):
-        with self.assertRaisesRegex(ValueError, "cluster_selection_mode"):
-            _Retriever().retrieve("query", Config(cluster_selection_mode="typo"))
-
     @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
     def test_three_anchors_then_one_hop_code_and_table_evidence(self, _encode):
         # 구 동작(P0) 명시 고정 — spec 057 롤백 모드의 회귀 기준선.
         retriever = _Retriever()
         cfg = Config(
-            cluster_selection_mode="global_anchor",
             cluster_anchor_top_n=3,
             cluster_evidence_top_n=3,
             cluster_rewrite_mode="off",
@@ -113,7 +108,6 @@ class GlobalAnchorTests(unittest.TestCase):
 
     def _cfg(self, **kw) -> Config:
         base = dict(
-            cluster_selection_mode="global_anchor",
             cluster_anchor_top_n=3,
             cluster_evidence_top_n=5,
             cluster_rewrite_mode="off",

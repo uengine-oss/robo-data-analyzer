@@ -18,7 +18,10 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_rest_top_n_reaches_shared_service(self) -> None:
         captured: list[int | None] = []
 
-        def fake_search(query, on_progress=None, *, top_n=None):
+        def fake_search(
+            query, on_progress=None, *, top_n=None, analysis_scope_id=None,
+        ):
+            del analysis_scope_id
             captured.append(top_n)
             return [{"score": 1.0, "nodes": [{"id": "n1"}]}], {"ok": True}
 
@@ -60,8 +63,10 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
                 return []
 
         @contextmanager
-        def scoped_session(_driver, _database):
+        def scoped_session(_driver, _database, *, analysis_scope_id=None):
+            del analysis_scope_id
             yield SimpleNamespace(
+                analysis_scope_id="scope:1",
                 generation_id="generation:1",
                 quality_status="completed_with_findings",
                 call_resolution={"total": 2, "unresolved": 1},
@@ -72,7 +77,9 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 service, "load_corpus",
-                return_value=SimpleNamespace(ids=[], generation_id="generation:1"),
+                return_value=SimpleNamespace(
+                    ids=[], analysis_scope_id="scope:1", generation_id="generation:1",
+                ),
             ),
             patch.object(service, "read_driver", return_value=(Driver(), "neo4j")),
             patch.object(service, "Retriever", Retriever),

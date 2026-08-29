@@ -1,9 +1,9 @@
 """Canonical bounded semantic-frame contracts.
 
-Deterministic code owns target, evidence and slot metadata.  The model owns only a
-meaning plus the evidence sufficiency state for every preassigned slot.  Boundedness
-comes from deterministic evidence-closure partitioning, never from truncating a
-canonical meaning or diagnostic leaf.
+Deterministic code owns target, evidence, slot metadata and evidence sufficiency.
+The model owns only one meaning string for every preassigned slot.  Boundedness comes
+from deterministic evidence-closure partitioning, never from truncating a canonical
+meaning or diagnostic leaf.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
-from typing import Annotated, Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
@@ -53,12 +53,10 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
         "terminates",
     }),
     "CALL": frozenset({
-        "callee_id", "callee_name", "scope", "recursive", "arguments_source",
-        "result_target", "dependency_status", "occurrence_id", "callee_source",
+        "callee_id", "callee_name", "recursive", "dependency_status",
+        "occurrence_id", "callee_source",
         "callee_kind", "argument_sources", "receiver_source", "source_range",
-        "context_role", "condition_fact_id", "presence_status",
-        "resolution_status", "resolution_outcome", "resolution_reason",
-        "external_identity_key",
+        "structural_role", "condition_fact_id", "presence_status",
     }),
     "DATA_OBJECT": frozenset({
         "table_id", "access", "operation", "direct", "resolution",
@@ -81,11 +79,11 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
         "nested_control", "fallthrough_to", "at_label", "after_control",
     }),
     "TABLE": frozenset({
-        "table_id", "db", "schema", "name", "source_description", "sample_refs",
-        "direct_operations", "usage_refs",
+        "table_id", "db", "schema", "name", "source_description",
+        "observed_operations", "usage_meanings",
     }),
     "COLUMN": frozenset({
-        "table_id", "name", "source_description", "usage_lines", "ownership",
+        "table_id", "name", "source_description", "usage_evidence",
     }),
     "MODULE": frozenset({
         "module_id", "type", "member_refs", "comment_ref",
@@ -181,7 +179,7 @@ class EvidenceFact(BaseModel):
         if self.kind == "CALL" and self.attributes.get("occurrence_id") is not None:
             occurrence_id = self.attributes.get("occurrence_id")
             source_range = self.attributes.get("source_range")
-            context_role = self.attributes.get("context_role")
+            structural_role = self.attributes.get("structural_role")
             presence_status = self.attributes.get("presence_status")
             condition_fact_id = self.attributes.get("condition_fact_id")
             if not isinstance(occurrence_id, str) or not occurrence_id:
@@ -197,15 +195,13 @@ class EvidenceFact(BaseModel):
                 or source_range[1] <= 0
             ):
                 raise ValueError("CALL occurrence source_range must be exact")
-            if context_role not in {"condition", "effect", "non_active"}:
-                raise ValueError("unsupported CALL occurrence context_role")
+            if structural_role not in {"condition", "effect"}:
+                raise ValueError("unsupported CALL occurrence structural_role")
             if presence_status not in {
                 "active", "inactive", "conditional", "unknown",
             }:
                 raise ValueError("unsupported CALL occurrence presence_status")
-            if (context_role == "non_active") != (presence_status != "active"):
-                raise ValueError("CALL occurrence role differs from presence")
-            if (context_role == "condition") != bool(condition_fact_id):
+            if (structural_role == "condition") != bool(condition_fact_id):
                 raise ValueError("CALL occurrence condition ownership is incomplete")
         return self
 
@@ -258,36 +254,6 @@ class SlotSpec(BaseModel):
     evidence_refs: tuple[str, ...] = Field(..., min_length=1)
 
 
-class SufficientSlotValue(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    meaning: str = Field(..., min_length=1)
-    status: Literal["sufficient"]
-    missing_context: list[str] = Field(..., max_length=0)
-
-
-class PartialSlotValue(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    meaning: str = Field(..., min_length=1)
-    status: Literal["partial"]
-    missing_context: list[str] = Field(..., min_length=1)
-
-
-class InsufficientSlotValue(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    meaning: Literal[""]
-    status: Literal["insufficient"]
-    missing_context: list[str] = Field(..., min_length=1)
-
-
-SlotValue = Annotated[
-    Union[SufficientSlotValue, PartialSlotValue, InsufficientSlotValue],
-    Field(discriminator="status"),
-]
-
-
 class SemanticSlot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -331,12 +297,6 @@ class SemanticFrame(BaseModel):
         return _canonical(self.model_dump(mode="json", by_alias=True))
 
 
-def _wire_slot_type(fingerprint: str) -> object:
-    # Give each dynamic schema a stable named union while retaining the common leaf contract.
-    del fingerprint
-    return SlotValue
-
-
 def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
     """Return request-local compact keys for an exact ordered slot assignment.
 
@@ -357,20 +317,41 @@ def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
     return tuple(f"W{namespace}_{index}" for index in range(len(specs)))
 
 
+def semantic_evidence_wire_bindings(
+    slot_specs: Iterable[SlotSpec],
+) -> dict[str, str]:
+    """Map assigned canonical facts to request-local prompt references.
+
+    Canonical evidence IDs remain in the Analyzer ledger and graph.  The model only
+    needs stable references inside one request so a slot can point at its facts without
+    receiving target digests, producer identities, and the same ID in both a map key and
+    value.
+    """
+    specs = tuple(slot_specs)
+    if not specs:
+        raise ValueError("semantic evidence bindings require at least one slot")
+    target_refs = {spec.target_ref for spec in specs}
+    if len(target_refs) != 1:
+        raise ValueError("one prompt assignment cannot mix target evidence")
+    refs = tuple(dict.fromkeys(
+        ref
+        for spec in specs
+        for ref in spec.evidence_refs
+        if ref not in target_refs
+    ))
+    namespace = stable_digest(refs, length=8)
+    return {ref: f"E{namespace}_{index}" for index, ref in enumerate(refs)}
+
+
 def semantic_expression_wire_bindings(
     slot_specs: Iterable[SlotSpec],
 ) -> dict[str, str]:
-    """Map canonical EXPRESSION evidence IDs to request-local prompt keys."""
-    refs = sorted({
-        ref
-        for spec in slot_specs
-        for ref in spec.evidence_refs
+    """Return the EXPRESSION subset of the common evidence bindings."""
+    return {
+        ref: wire_id
+        for ref, wire_id in semantic_evidence_wire_bindings(slot_specs).items()
         if ":EXPRESSION:" in ref
-    })
-    if not refs:
-        return {}
-    namespace = stable_digest(refs, length=10)
-    return {ref: f"Q{namespace}_{index}" for index, ref in enumerate(refs)}
+    }
 
 
 def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
@@ -385,10 +366,7 @@ def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseMo
     specs = tuple(slot_specs)
     wire_ids = semantic_slot_wire_ids(specs)
     fingerprint = stable_digest([spec.model_dump(mode="json") for spec in specs])
-    fields = {
-        wire_id: (_wire_slot_type(fingerprint), Field(...))
-        for wire_id in wire_ids
-    }
+    fields = {wire_id: (str, Field(...)) for wire_id in wire_ids}
     slots_model = create_model(
         f"AssignedSemanticSlotMap_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
@@ -419,7 +397,7 @@ def normalize_semantic_frame_response(
     slots: dict[str, SemanticSlot] = {}
     private_wire_ids = (
         *wire_ids,
-        *semantic_expression_wire_bindings(specs).values(),
+        *semantic_evidence_wire_bindings(specs).values(),
     )
     for spec, wire_id in zip(specs, wire_ids, strict=True):
         if spec.target_ref != target_ref:
@@ -428,7 +406,7 @@ def normalize_semantic_frame_response(
         if missing:
             raise ValueError(f"slot spec references unknown evidence: {sorted(missing)}")
         leaf = getattr(output.slots, wire_id)
-        leaf_texts = (leaf.meaning, *leaf.missing_context)
+        leaf_texts = (leaf,)
         unavailable_callees = sorted({
             str(fact.attributes.get("callee_id") or "")
             for ref in spec.evidence_refs
@@ -449,9 +427,11 @@ def normalize_semantic_frame_response(
                 "model output referenced a request-local private response key",
             )
         else:
-            meaning = leaf.meaning.strip()
-            status = leaf.status
-            missing_context = tuple(item.strip() for item in leaf.missing_context)
+            meaning = leaf.strip()
+            status = "sufficient" if meaning else "insufficient"
+            missing_context = () if meaning else (
+                f"assigned {spec.family}.{spec.role} returned no meaning",
+            )
         if unavailable_callees:
             dependency_reasons = tuple(
                 f"callee semantic dependency unavailable in call cycle: {callee_id}"
@@ -481,19 +461,18 @@ def normalize_semantic_frame_response(
 def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
     specs = tuple(slot_specs)
     wire_ids = semantic_slot_wire_ids(specs)
-    expression_bindings = semantic_expression_wire_bindings(specs)
-    return _canonical([
-        {
-            "wire_id": wire_id,
-            "family": spec.family,
-            "role": spec.role,
-            "target_ref": spec.target_ref,
-            "evidence_refs": tuple(
-                expression_bindings.get(ref, ref) for ref in spec.evidence_refs
+    evidence_bindings = semantic_evidence_wire_bindings(specs)
+    return _canonical({
+        wire_id: {
+            "kind": f"{spec.family}.{spec.role}",
+            "evidence": tuple(
+                evidence_bindings[ref]
+                for ref in spec.evidence_refs
+                if ref in evidence_bindings
             ),
         }
         for spec, wire_id in zip(specs, wire_ids, strict=True)
-    ])
+    })
 
 
 def _compact_prompt_expression(value: Mapping[str, Any]) -> list[Any]:
@@ -575,6 +554,81 @@ def _prompt_expression_entry(fact: EvidenceFact) -> list[Any]:
     ]
 
 
+_PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
+    "TARGET": ("signature", "name", "params", "return_type"),
+    "CONTROL": (
+        "type", "role", "condition", "condition_timing", "parent_ref",
+        "complement_of", "implicit_false",
+    ),
+    "STATEMENT": (
+        "type", "expression", "target", "operator", "effects", "terminates",
+    ),
+    "DATA_OBJECT": (
+        "table_id", "access", "operation", "direct", "resolution",
+        "qualified_columns",
+    ),
+    "SYMBOL": (
+        "name", "scope", "data_type", "declared_value", "value_semantics",
+        "initialization_sources",
+    ),
+    "EXTERNAL": ("semantic_kind", "matched_key"),
+    "RULE": (
+        "type", "role", "condition", "condition_timing", "effects", "when",
+        "complement_of", "implicit_false", "nested_control", "fallthrough_to",
+        "at_label", "after_control",
+    ),
+    "TABLE": (
+        "table_id", "db", "schema", "name", "source_description",
+        "observed_operations", "usage_meanings",
+    ),
+    "COLUMN": (
+        "table_id", "name", "source_description", "usage_evidence",
+    ),
+    "MODULE": ("module_id", "type", "member_refs", "comment_ref"),
+}
+
+
+def _prompt_fact_attributes(
+    fact: EvidenceFact,
+    evidence_bindings: Mapping[str, str],
+    node_bindings: Mapping[str, str],
+) -> dict[str, Any]:
+    """Keep only attributes that can change the model-owned meaning leaf."""
+    source = fact.attributes
+    if fact.kind == "CALL":
+        selected: dict[str, Any] = {
+            "callee": source.get("callee_source") or source.get("callee_name"),
+            "callee_kind": source.get("callee_kind"),
+            "arguments": source.get("argument_sources"),
+            "receiver": source.get("receiver_source"),
+            "role": source.get("structural_role"),
+            "dependency_status": source.get("dependency_status"),
+            "recursive": source.get("recursive"),
+        }
+    else:
+        selected = {
+            name: source.get(name)
+            for name in _PROMPT_FACT_FIELDS.get(fact.kind, ())
+        }
+
+    def localize(value: Any) -> Any:
+        if isinstance(value, str):
+            return evidence_bindings.get(value, node_bindings.get(value, value))
+        if isinstance(value, list):
+            return [localize(item) for item in value]
+        if isinstance(value, tuple):
+            return [localize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: localize(item) for key, item in value.items()}
+        return value
+
+    return {
+        name: localize(value)
+        for name, value in selected.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+
+
 def profile_prompt_json(
     profile: StructuralProfile,
     slot_specs: Iterable[SlotSpec] | None = None,
@@ -586,58 +640,69 @@ def profile_prompt_json(
     child, rule, call and symbol in every concern made large real routines exceed provider
     context limits before inference began.
     """
-    projected = slot_specs is not None
-    if not projected:
-        prompt_profile = profile
-        specs: tuple[SlotSpec, ...] = ()
-    else:
-        specs = tuple(slot_specs)
-        refs = {
-            ref
-            for spec in specs
-            for ref in (spec.target_ref, *spec.evidence_refs)
-        }
-        if not refs:
-            refs = {
-                ref for ref, fact in profile.evidence.items() if fact.kind == "TARGET"
-            }
-        evidence = {
-            ref: fact for ref, fact in profile.evidence.items() if ref in refs
-        }
-        prompt_profile = StructuralProfile(
-            target=profile.target,
-            evidence=evidence,
-            child_refs=[ref for ref in profile.child_refs if ref in evidence],
-            ordered_flow=[ref for ref in profile.ordered_flow if ref in evidence],
-            callee_refs=[ref for ref in profile.callee_refs if ref in evidence],
-            data_object_refs=[ref for ref in profile.data_object_refs if ref in evidence],
-            symbol_refs=[ref for ref in profile.symbol_refs if ref in evidence],
-            expression_refs=[ref for ref in profile.expression_refs if ref in evidence],
-            unsupported=profile.unsupported,
-        )
-    payload = prompt_profile.model_dump(mode="json", by_alias=True)
-    expression_facts = {
-        ref: fact for ref, fact in prompt_profile.evidence.items()
-        if fact.kind == "EXPRESSION"
+    if slot_specs is None:
+        return _canonical(profile.model_dump(mode="json", by_alias=True))
+
+    specs = tuple(slot_specs)
+    evidence_bindings = semantic_evidence_wire_bindings(specs)
+    target_refs = {spec.target_ref for spec in specs}
+    if len(target_refs) != 1:
+        raise ValueError("one prompt profile cannot mix targets")
+    target_ref = next(iter(target_refs))
+    if target_ref not in profile.evidence:
+        raise ValueError(f"prompt assignment references unknown target: {target_ref}")
+    missing = set(evidence_bindings) - set(profile.evidence)
+    if missing:
+        raise ValueError(f"prompt assignment references unknown evidence: {sorted(missing)}")
+    facts = {
+        ref: profile.evidence[ref] for ref in evidence_bindings
     }
-    if expression_facts and projected:
-        expression_bindings = semantic_expression_wire_bindings(specs)
-        if set(expression_facts) != set(expression_bindings):
-            raise ValueError(
-                "prompt expression closure differs from assigned expression refs"
-            )
-        payload["evidence"] = {
-            ref: record for ref, record in payload["evidence"].items()
-            if ref not in expression_facts
-        }
-        payload["ordered_flow"] = [
-            ref for ref in payload["ordered_flow"] if ref not in expression_facts
-        ]
-        payload.pop("expression_refs", None)
+    node_bindings = {
+        str(fact.attributes["node_id"]): evidence_bindings[ref]
+        for ref, fact in facts.items()
+        if fact.attributes.get("node_id")
+    }
+    expression_facts = {
+        ref: fact for ref, fact in facts.items() if fact.kind == "EXPRESSION"
+    }
+
+    evidence_payload: dict[str, dict[str, Any]] = {}
+    for ref, fact in facts.items():
+        if fact.kind == "EXPRESSION":
+            continue
+        record: dict[str, Any] = {"kind": fact.kind}
+        if fact.start_line:
+            if fact.start_line == fact.end_line:
+                record["line"] = fact.start_line
+            else:
+                record["lines"] = [fact.start_line, fact.end_line]
+        attributes = _prompt_fact_attributes(
+            fact, evidence_bindings, node_bindings,
+        )
+        record.update(attributes)
+        evidence_payload[evidence_bindings[ref]] = record
+
+    payload: dict[str, Any] = {
+        "target": {
+            "kind": profile.target.type,
+            **_prompt_fact_attributes(
+                profile.evidence[target_ref], evidence_bindings, node_bindings,
+            ),
+        },
+        "evidence": evidence_payload,
+        "ordered_flow": [
+            evidence_bindings[ref]
+            for ref in profile.ordered_flow
+            if ref in evidence_bindings and ref not in expression_facts
+        ],
+    }
+    if expression_facts:
         payload["expression_closure"] = {
-            expression_bindings[ref]: _prompt_expression_entry(fact)
+            evidence_bindings[ref]: _prompt_expression_entry(fact)
             for ref, fact in expression_facts.items()
         }
+    if profile.unsupported:
+        payload["unsupported"] = profile.unsupported
     return _canonical(payload)
 
 

@@ -10,12 +10,14 @@ import unittest
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.coverage_residue import coverage_residue
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
-def _inventory(source, tree, statements, call_lines=(), handler_markers=()):
+def _inventory(source, tree, statements, calls=(), handler_markers=()):
     return build_inventory(
         source, tree, "c", handler_markers=handler_markers,
-        statements=statements, call_lines=call_lines,
+        statements=statements,
+        call_occurrences=parser_call_occurrences(calls),
     )
 
 
@@ -32,7 +34,7 @@ class CoverageResidueTest(unittest.TestCase):
         report = coverage_residue(_inventory(
             source, [],
             statements=(StatementFact("r4", "RETURN", 4, 4, expression="0"),),
-            call_lines=((2, "init"),),
+            calls=((2, "init"),),
         ))
         self.assertEqual([3], [entry["line"] for entry in report["residue"]])
         self.assertTrue(report["residue"][0]["shape"])
@@ -77,7 +79,7 @@ class CoverageResidueTest(unittest.TestCase):
                 StatementFact("r3", "RETURN", 3, 3, expression="1"),
                 StatementFact("r6", "RETURN", 6, 6, expression="0"),
             ),
-            call_lines=((2, "setjmp"),),
+            calls=((2, "setjmp"),),
         ))
         kinds = {u["kind"] for u in report["unsupported"]}
         self.assertEqual({"nonlocal_jump", "dynamic_call"}, kinds)

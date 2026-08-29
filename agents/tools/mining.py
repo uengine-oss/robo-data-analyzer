@@ -11,15 +11,19 @@ from langchain.tools import tool
 from pipeline.steps.step4_scan_project.structure_miner import mine_rule_candidates
 
 
+_CANDIDATE_PAGE_SIZE = 8
+
+
 def make_structure_candidate_tool(samples: list[str]):
     """samples 를 묶은 후보 조회 도구를 만든다 (마이닝은 1회 수행 후 캐시)."""
     cached: list | None = None
 
     @tool
-    def list_structure_candidates() -> str:
+    def list_structure_candidates(offset: int = 0) -> str:
         """결정론 구조 마이너가 samples 전체에서 합성한 후보 규칙 목록.
 
-        **언제 사용**: 관찰 직후 1회 — 규칙을 직접 발명하기 전에 반드시 확인.
+        **언제 사용**: 관찰 직후 — 규칙을 직접 발명하기 전에 반드시 확인한다.
+        결과에 next_offset 이 있으면 그 offset 으로 다음 페이지를 계속 읽을 수 있다.
 
         **결과 읽는 법**: 각 후보의 pattern 은 이미 samples 에서 실측 검증된
         것이다. `verify_external_rule` 로 재확인한 뒤 맞는 후보를 그대로(또는
@@ -36,8 +40,17 @@ def make_structure_candidate_tool(samples: list[str]):
             cached = mine_rule_candidates(samples)
         if not cached:
             return "후보 없음 — 반복 구조를 결정론으로 찾지 못했다. 직접 관찰·설계하라."
-        lines = [f"결정론 후보 {len(cached)}개 (전부 samples 실측 검증 통과):"]
-        for index, candidate in enumerate(cached):
+        if offset < 0:
+            return "INVALID_OFFSET: offset must be non-negative"
+        end = min(offset + _CANDIDATE_PAGE_SIZE, len(cached))
+        next_offset = end if end < len(cached) else None
+        lines = [
+            f"PAGE offset={offset} returned={end - offset} total={len(cached)} "
+            f"next_offset={next_offset if next_offset is not None else 'null'} "
+            "(전부 samples 실측 검증 통과)"
+        ]
+        for index in range(offset, end):
+            candidate = cached[index]
             keys = ", ".join(candidate.sample_keys[:4])
             lines.append(
                 f"[{index}] kind={candidate.kind} · 근거 {candidate.evidence_lines}건 · {candidate.note}\n"

@@ -96,5 +96,19 @@ def test_control_nodes_have_no_llm_fields():
             assert n.owner_id  # 소속은 채워짐(결정론)
 
 
+def test_parser_file_path_is_required_instead_of_inventing_a_source_path():
+    raw = _sample_raw()
+    del raw["filePath"]
+    with unittest.TestCase().assertRaisesRegex(ValueError, "Parser filePath"):
+        _read_framework(raw, "c", Path("."), Path("cart.c.json"))
+
+
+def test_parser_file_path_cannot_escape_the_source_root():
+    raw = _sample_raw()
+    raw["filePath"] = "../cart.c"
+    with unittest.TestCase().assertRaisesRegex(ValueError, "Parser filePath"):
+        _read_framework(raw, "c", Path("."), Path("cart.c.json"))
+
+
 def load_tests(_loader, standard_tests, _pattern):
     return load_function_cases(standard_tests, globals())

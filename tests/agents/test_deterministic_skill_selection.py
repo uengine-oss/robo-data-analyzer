@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from agents.contracts import ScanResult
+from agents.contracts import ScanProposal
 from agents.scan import SkillSelectionAmbiguityError, run_scan_agent
 from graph.schema.graph_nodes import CodeNode, Table
 from llm.usage.cost_budget import CostBudget
@@ -31,11 +31,33 @@ def _generic_contract() -> dict:
             "op_mappings": [{"token": "r", "op": "SELECT"}],
         }],
         "ddl_transform": {"ddl_naming_rule": "as_is", "fallback_prefixes": []},
-        "codebase_notes": "documented wrapper",
     }
 
 
 class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_upload_selects_registered_skill_from_one_source_match(self) -> None:
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "sample.c"
+            source.write_text(
+                'void f(void) { mpfmdbio("orders_s0001"); }\n',
+                encoding="utf-8",
+            )
+            invoke = AsyncMock(side_effect=AssertionError("registered SKILL called the Agent"))
+            with patch("agents.scan._run_agent", new=invoke):
+                result = await run_scan_agent(
+                    project_root=root,
+                    scanner_input={},
+                    run_dir=root,
+                    cost_budget=CostBudget(limit_usd=1.0),
+                    code_nodes=[_node(source, 1)],
+                    tables=[],
+                )
+
+        invoke.assert_not_awaited()
+        self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
+        self.assertEqual("completed", result.table_access_status)
+
     async def test_unique_verified_skill_uses_zero_agent_calls(self) -> None:
         with TemporaryDirectory() as td:
             root = Path(td)
@@ -73,7 +95,7 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
         invoke.assert_not_awaited()
         self.assertEqual(1, split_source.call_count)
         self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
-        self.assertGreaterEqual(len(set(result.evidence_locations)), 3)
+        self.assertFalse(hasattr(result, "evidence_locations"))
         self.assertEqual(["PFM_CATCH"], result.handler_markers)
         self.assertTrue(result.api_contracts)
         self.assertEqual(1, len(result.table_access_exclusion_rules))
@@ -83,12 +105,8 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
             root = Path(td)
             source = root / "sample.c"
             source.write_text("void f(void) {}\n", encoding="utf-8")
-            draft = ScanResult(
+            draft = ScanProposal(
                 matched_skill=None,
-                confidence=0.2,
-                evidence="unknown source evidence",
-                evidence_locations=["sample.c:1", "sample.c:2", "sample.c:3"],
-                no_match_reason="no reusable table syntax",
             )
             invoke = AsyncMock(return_value=draft)
             with (
@@ -117,6 +135,10 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
         invoke.assert_awaited_once()
         self.assertEqual(1, split_source.call_count)
         self.assertIsNone(result.matched_skill)
+        self.assertEqual("unavailable", result.table_access_status)
+        self.assertEqual(
+            "model proposed no table access rule", result.no_match_reason,
+        )
 
     async def test_multiple_verified_skills_fail_instead_of_first_match(self) -> None:
         with TemporaryDirectory() as td:

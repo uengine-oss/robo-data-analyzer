@@ -39,7 +39,12 @@ class Neo4jClient:
         await client.close()
     """
 
-    def __init__(self, *, generation_id: str | None = None):
+    def __init__(
+        self,
+        *,
+        generation_id: str | None = None,
+        analysis_scope_id: str | None = None,
+    ):
         override = get_override()
         if override is not None:
             uri, user, password = override.uri, override.user, override.password
@@ -50,6 +55,7 @@ class Neo4jClient:
         self._driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
         self._closed = False
         self.generation_id = generation_id
+        self.analysis_scope_id = analysis_scope_id
 
         # SIGTERM graceful close (메인 스레드에서만 가능 — 백그라운드 thread 면 실패).
         # 실패해도 운영 진행 가능 (서버 강제 종료 시 driver 자동 정리됨) — 그러나 사유는 명시.
@@ -101,7 +107,10 @@ class Neo4jClient:
             with attempt:
                 async with self._driver.session(database=self._database) as session:
                     result = await session.run(
-                        query, items=items, generation_id=getattr(self, "generation_id", None),
+                        query,
+                        items=items,
+                        generation_id=getattr(self, "generation_id", None),
+                        analysis_scope_id=getattr(self, "analysis_scope_id", None),
                     )
                     return await result.consume()
 
@@ -128,7 +137,10 @@ class Neo4jClient:
 
         async def _write(transaction) -> int:
             result = await transaction.run(
-                guard_query, ids=ids, generation_id=getattr(self, "generation_id", None),
+                guard_query,
+                ids=ids,
+                generation_id=getattr(self, "generation_id", None),
+                analysis_scope_id=getattr(self, "analysis_scope_id", None),
             )
             record = await result.single(strict=True)
             matched = int(record["matched"])
@@ -137,7 +149,10 @@ class Neo4jClient:
                     f"guarded batch matched {matched} of {len(items)} update IDs"
                 )
             result = await transaction.run(
-                write_query, items=items, generation_id=getattr(self, "generation_id", None),
+                write_query,
+                items=items,
+                generation_id=getattr(self, "generation_id", None),
+                analysis_scope_id=getattr(self, "analysis_scope_id", None),
             )
             await result.consume()
             return matched
@@ -150,6 +165,9 @@ class Neo4jClient:
         async with self._driver.session(database=self._database) as session:
             arguments = dict(params or {})
             arguments.setdefault("generation_id", getattr(self, "generation_id", None))
+            arguments.setdefault(
+                "analysis_scope_id", getattr(self, "analysis_scope_id", None),
+            )
             result = await session.run(query, **arguments)
             return await result.consume()
 
@@ -158,6 +176,9 @@ class Neo4jClient:
         async with self._driver.session(database=self._database) as session:
             arguments = dict(params or {})
             arguments.setdefault("generation_id", getattr(self, "generation_id", None))
+            arguments.setdefault(
+                "analysis_scope_id", getattr(self, "analysis_scope_id", None),
+            )
             result = await session.run(query, **arguments)
             return await result.data()
 

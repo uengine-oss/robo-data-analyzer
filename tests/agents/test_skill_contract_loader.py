@@ -9,23 +9,23 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from agents.contracts import ScanResult
+from agents.contracts import ScanProposal, ScanResult
 from agents.rule_compiler import compile_exclusion_rules, compile_rules, split_rules
 from agents.scan import _finalize, _hydrate_skill_contract
 from agents.skills.catalog import SkillCatalogError, load_skill_contract
 from graph.schema.graph_nodes import CodeNode, Table
+from pipeline.steps.step5_linking.link_tables.regex_table_linker import PatternVerdict
 
 
 def _draft(matched_skill: str | None, **overrides) -> ScanResult:
-    values = {
-        "matched_skill": matched_skill,
-        "confidence": 0.5,
-        "evidence": "source evidence",
-        "evidence_locations": ["a.c:1", "a.c:2", "a.c:3"],
-        "no_match_reason": None if matched_skill else "no framework pattern",
-    }
+    values = {"matched_skill": matched_skill}
+    if matched_skill is None and not overrides:
+        values.update({
+            "table_access_status": "unavailable",
+            "no_match_reason": "no framework pattern",
+        })
     values.update(overrides)
     return ScanResult(**values)
 
@@ -43,7 +43,7 @@ class LoadSkillContractTest(unittest.TestCase):
             ["proframe_mpfmdbio_sequence"],
             [r["id"] for r in contract["table_access_exclusion_rules"]],
         )
-        self.assertNotIn("본 테이블 READ로 단일화", contract["codebase_notes"])
+        self.assertNotIn("codebase_notes", contract)
         self.assertEqual(
             [{"wrapper": "mpfm_dlcall", "callee_from": "first_arg_string"}],
             contract["call_wrappers"],
@@ -56,10 +56,6 @@ class LoadSkillContractTest(unittest.TestCase):
         api_names = [entry["name"] for entry in contract["api_contracts"]]
         self.assertEqual(["mpfmdbio", "mpfm_dlcall"], api_names)
         self.assertEqual("RC_NRM", contract["api_contracts"][0]["success_value"])
-        self.assertIn(
-            "PFM_TRY(expr)는 expr 결과가 RC_NRM이 아니면",
-            contract["codebase_notes"],
-        )
 
     def test_missing_skill_returns_empty(self):
         self.assertEqual({}, load_skill_contract("no-such-skill"))
@@ -106,7 +102,6 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("as_is", result.ddl_transform.ddl_naming_rule)
         self.assertIn("PFM_TRY", result.framework_runtime_functions)
         self.assertEqual(["PFM_CATCH"], result.handler_markers)
-        self.assertIn("PFM_CATCH", result.codebase_notes)
 
     async def test_finalize_preserves_every_hydrated_skill_fact(self):
         with tempfile.TemporaryDirectory() as td:
@@ -133,6 +128,36 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("RC_NRM", result.api_contracts[0].success_value)
         self.assertEqual(1, len(result.table_access_exclusion_rules))
 
+    async def test_table_verification_failure_isolates_only_table_access_facet(self):
+        """An unrelated R/W rule failure must not erase handler/API/call facts."""
+        hydrated = _hydrate_skill_contract(_draft("proframe-c-pfm-dbio"))
+        verdict = PatternVerdict(
+            ok=False,
+            resolved_ratio=0.48,
+            summary=(
+                "matches=23 edges=11 unresolved=12 resolved=48% contradiction=52% "
+                "failed_exclusions=proframe_mpfmdbio_sequence"
+            ),
+        )
+
+        with patch(
+            "agents.scan.verify_table_patterns",
+            new=AsyncMock(return_value=verdict),
+        ):
+            result = await _finalize(hydrated, Path("."), [], [])
+
+        self.assertEqual("completed", result.analysis_status)
+        self.assertEqual("unavailable", result.table_access_status)
+        self.assertEqual([], result.table_access_rules)
+        self.assertEqual([], result.table_access_patterns)
+        self.assertEqual([], result.table_access_exclusion_rules)
+        self.assertIn("proframe_mpfmdbio_sequence", result.no_match_reason or "")
+        self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
+        self.assertEqual(["PFM_CATCH"], result.handler_markers)
+        self.assertEqual("RC_NRM", result.api_contracts[0].success_value)
+        self.assertEqual("mpfm_dlcall", result.call_wrappers[0].wrapper)
+        self.assertIn("PFM_TRY", result.framework_runtime_functions)
+
     def test_no_matched_skill_keeps_agent_output(self):
         draft = _draft(None)
         self.assertIs(draft, _hydrate_skill_contract(draft))
@@ -152,11 +177,10 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
             framework_runtime_functions=["invented_*"],
             handler_markers=["INVENTED_HANDLER"],
             api_contracts=[{"name": "invented_api", "arg_roles": {}}],
-            codebase_notes="invented notes",
         )
         with patch(
             "agents.scan.load_skill_contract",
-            return_value={"codebase_notes": "trusted notes"},
+            return_value={"handler_markers": []},
         ):
             result = _hydrate_skill_contract(injected)
 
@@ -164,7 +188,6 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], result.framework_runtime_functions)
         self.assertEqual([], result.handler_markers)
         self.assertEqual([], result.api_contracts)
-        self.assertEqual("trusted notes", result.codebase_notes)
 
     def test_unmatched_scan_cannot_invent_non_table_exclusions(self):
         with self.assertRaisesRegex(ValueError, "matched SKILL"):
@@ -181,19 +204,21 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "no_match_reason"):
             ScanResult(
                 matched_skill=None,
-                confidence=0.5,
-                evidence="source evidence",
-                evidence_locations=["a.c:1", "a.c:2", "a.c:3"],
             )
 
-    def test_three_evidence_locations_are_enforced_by_model(self):
-        with self.assertRaisesRegex(ValueError, "3개 이상"):
-            ScanResult(
-                matched_skill="proframe-c-pfm-dbio",
-                confidence=0.5,
-                evidence="source evidence",
-                evidence_locations=["a.c:1", "a.c:2"],
-            )
+    def test_model_proposal_cannot_emit_provenance_metadata(self):
+        with self.assertRaises(ValueError):
+            ScanProposal.model_validate({
+                "matched_skill": None,
+                "evidence_locations": ["a.c:1"],
+            })
+
+    def test_model_proposal_cannot_emit_no_match_prose(self):
+        with self.assertRaises(ValueError):
+            ScanProposal.model_validate({
+                "matched_skill": None,
+                "no_match_reason": "no reusable table syntax",
+            })
 
 
 if __name__ == "__main__":

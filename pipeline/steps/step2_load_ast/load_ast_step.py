@@ -6,7 +6,6 @@ antlr-parser 가 소스를 미리 파싱해 ``data/analysis/`` (``data/source`` 
 """
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +13,7 @@ from typing import Optional, TypeVar
 
 from langchain_core.runnables import RunnableConfig
 
-from pipeline.execution.step_config import step_config
+from pipeline.execution.step_config import require_step_config_value, step_config
 
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots, read_antlr_json
 from pipeline.steps.step2_load_ast.source_ast_closure import (
@@ -29,24 +28,10 @@ from pipeline.steps.step2_load_ast.expression_ownership import (
 from pipeline.steps.step2_load_ast.rule_condition_projection import (
     attach_routine_rule_condition_bundles,
 )
-from pipeline.models.import_resolution import normalize_import_resolution_ledger
+from pipeline.models.import_resolution import build_import_resolution_ledger
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
 from shared.files.cache import SourceFileCache
-from graph.edges.belongs_to import upsert_belongs_to
-from graph.edges.has_member import upsert_has_member
-from graph.edges.init_by import upsert_init_by
-from graph.edges.next import upsert_statement_next
-from graph.edges.parent_of import upsert_parent_of
-from graph.edges.references import upsert_references
-from graph.neo4j_client import Neo4jClient
-from graph.nodes.constant import upsert_constants
-from graph.nodes.data_type import upsert_data_types
-from graph.nodes.code_node import upsert_code_nodes
-from graph.nodes.module import upsert_modules
-from graph.nodes.package import upsert_packages
-from graph.nodes.variable import upsert_variables
-from graph.nodes.import_occurrence import upsert_import_occurrences
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 
@@ -131,16 +116,12 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     antlr JSON 디렉토리가 없으면 ``FileNotFoundError`` — silent skip 하지 않는다.
     """
     cfg = step_config(config)
-    project = cfg.get("codebase")
-    neo: Neo4jClient | None = cfg.get("neo_client")
+    project = require_step_config_value(cfg, "codebase", step=_STEP)
     pause: PauseController = cfg.get("pause") or NULL_PAUSE
-    if project is None:
-        log_warning(_STEP, "config_missing", "project 누락 — step skip")
-        return {}
 
     started = time.monotonic()
     ast_dir, source_root = ast_and_source_roots(
-        Path(project.root), getattr(project, "corpus_root", None),
+        Path(project.root), Path(project.corpus_root),
     )
 
     if not ast_dir.is_dir():
@@ -158,6 +139,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             ast_root=ast_dir,
             source_root=source_root,
             source_cache=source_cache,
+            selected_source_ids=getattr(project, "selected_source_ids", ()),
         )
 
     log_info(_STEP, "start", root=str(project.root), ast_dir=str(ast_dir))
@@ -166,7 +148,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     variables, constants, data_types = [], [], []
     parent_of = []
     has_member, belongs_to, statement_next = [], [], []
-    call_sites, callable_facts, structural_expression_facts = [], [], []
+    call_sites, callable_facts, parameter_facts, binding_target_facts = [], [], [], []
+    scope_directive_facts = []
+    structural_expression_facts = []
     semantic_expression_facts = []
     resolved_expression_facts = []
     macro_facts, import_refs = [], []
@@ -182,6 +166,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
             expected_sha256=artifact.ast_sha256,
             source_language=artifact.language,
             source_cache=source_cache,
+            sealed_ast_document=artifact.ast_document,
         )
         code_nodes.extend(result.code_nodes)
         modules.extend(result.modules)
@@ -195,6 +180,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         statement_next.extend(result.statement_next_edges)
         call_sites.extend(result.call_sites)
         callable_facts.extend(result.callable_facts)
+        parameter_facts.extend(result.parameter_facts)
+        binding_target_facts.extend(result.binding_target_facts)
+        scope_directive_facts.extend(result.scope_directive_facts)
         structural_expression_facts.extend(result.structural_expression_facts)
         semantic_expression_facts.extend(result.semantic_expression_facts)
         resolved_expression_facts.extend(result.resolved_expression_facts)
@@ -216,6 +204,32 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         or len(callable_fact_ids) != len(set(callable_fact_ids))
     ):
         raise ValueError("common evidence callable fact IDs are not globally exact-once")
+    parameter_fact_ids = [fact.get("fact_id") for fact in parameter_facts]
+    if (
+        any(not fact_id for fact_id in parameter_fact_ids)
+        or len(parameter_fact_ids) != len(set(parameter_fact_ids))
+    ):
+        raise ValueError("common evidence parameter fact IDs are not globally exact-once")
+    binding_target_fact_ids = [
+        fact.get("fact_id") for fact in binding_target_facts
+    ]
+    if (
+        any(not fact_id for fact_id in binding_target_fact_ids)
+        or len(binding_target_fact_ids) != len(set(binding_target_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence binding target fact IDs are not globally exact-once"
+        )
+    scope_directive_fact_ids = [
+        fact.get("fact_id") for fact in scope_directive_facts
+    ]
+    if (
+        any(not fact_id for fact_id in scope_directive_fact_ids)
+        or len(scope_directive_fact_ids) != len(set(scope_directive_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence scope directive fact IDs are not globally exact-once"
+        )
     expression_fact_ids = [
         fact.get("fact_id") for fact in structural_expression_facts
     ]
@@ -307,15 +321,11 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
     # import_refs는 문자열 scope가 아니라 canonical entry outcome ledger로 닫는다.
     references, init_by = await link_references(
-        code_nodes, variables, constants, import_refs, source_cache,
+        code_nodes, variables, constants, source_cache,
         checkpoint=pause.gate,
         modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
     )
-    import_resolution_ledger = normalize_import_resolution_ledger([
-        row
-        for ref in import_refs
-        for row in ref.get("resolution_entries") or []
-    ])
+    import_resolution_ledger = build_import_resolution_ledger(import_refs)
 
     await pause.gate()
     # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.
@@ -347,34 +357,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         code_nodes, resolved_expression_facts, structural_expression_facts,
     )
 
-    if neo is not None:
-        # 노드는 라벨이 달라 동시쓰기 안전 → 병렬. 엣지는 노드 선행 필요 +
-        # 같은 노드 락 경합 가능 → 순차.
-        await asyncio.gather(
-            upsert_code_nodes(neo, code_nodes),
-            upsert_modules(neo, modules),
-            upsert_packages(neo, packages),
-            upsert_variables(neo, variables),
-            upsert_constants(neo, constants),
-            upsert_data_types(neo, data_types),
-        )
-        await pause.gate()
-        await upsert_import_occurrences(neo, import_resolution_ledger)
-        await pause.gate()
-        await upsert_parent_of(neo, parent_of)
-        await pause.gate()
-        await upsert_has_member(neo, has_member)
-        await pause.gate()
-        await upsert_belongs_to(neo, belongs_to)
-        await pause.gate()
-        await upsert_statement_next(neo, statement_next)
-        await pause.gate()
-        await upsert_references(neo, references)
-        await pause.gate()
-        await upsert_init_by(neo, init_by)
-        await pause.gate()
-
-    # 라이브 스트림 — 저장 그래프와 같은 골격을 발신한다. NEXT를 포함한 기본 숨김 여부는
+    # 라이브 스트림 — 준비된 골격을 진행 화면에 발신한다. NEXT를 포함한 기본 숨김 여부는
     # 생산 단계에서 누락하지 않고 프론트의 단일 가시성 정책이 결정한다.
     stream = cfg.get("stream")
     await emit_nodes(stream, code_nodes)
@@ -403,7 +386,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     await pause.gate()
     emit_message(
         stream,
-        f"✅ 코드 구조 적재 완료 — 노드 {len(code_nodes)}, 소속·부모 {len(has_member) + len(parent_of)}",
+        f"✅ 코드 구조 준비 완료 — 노드 {len(code_nodes)}, 소속·부모 {len(has_member) + len(parent_of)}",
     )
 
     # 불변식 감시 — file_path 가 있는데 원문이 빈 노드가 있으면 소스를 못 읽은 것 (FR-005).
@@ -455,6 +438,9 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         "init_by_edges": init_by,
         "call_sites": call_sites,
         "callable_facts": callable_facts,
+        "parameter_facts": parameter_facts,
+        "binding_target_facts": binding_target_facts,
+        "scope_directive_facts": scope_directive_facts,
         "structural_expression_facts": structural_expression_facts,
         "semantic_expression_facts": semantic_expression_facts,
         "resolved_expression_facts": resolved_expression_facts,

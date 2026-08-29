@@ -44,20 +44,24 @@ from pipeline.steps.step7_analyze_code.batch_analyze import (
     dbms_analysis_targets,
     run_dbms_batch_analysis,
 )
-from pipeline.steps.step8_post_processing.embed_step import embed_step
+from pipeline.steps.step8_post_processing.build_search_segments_step import (
+    build_search_segments_step,
+)
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
 )
-from pipeline.steps.step8_post_processing.summarize_module_step import summarize_module_step
+from pipeline.steps.step8_post_processing.build_module_summary_rollups_step import (
+    build_module_summary_rollups_step,
+)
 from pipeline.steps.step8_post_processing.build_components_step import build_components_step
-from pipeline.steps.step8_post_processing.build_glossary_step import build_glossary_step
-from pipeline.steps.step8_post_processing.health_metrics_step import health_metrics_step
 
 # Framework 전용 step
 from pipeline.steps.step4_scan_project.scan_codebase_step import scan_codebase_step
 from pipeline.steps.step4_scan_project.scan_external_step import scan_external_step
-from pipeline.steps.step5_linking.link_calls.link_calls_by_name_step import (
-    link_calls_by_name_step,
+from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
+from pipeline.steps.step5_linking.link_calls.link_parser_calls_step import (
+    CallClassificationContext,
+    link_parser_calls_step,
 )
 from pipeline.steps.step5_linking.link_tables.link_residual_patterns_step import (
     link_residual_patterns_step,
@@ -65,9 +69,28 @@ from pipeline.steps.step5_linking.link_tables.link_residual_patterns_step import
 
 # DBMS 전용 step
 from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import link_dbms_tables_step
-from pipeline.steps.step5_linking.link_calls.link_calls_by_ast_step import (
-    link_calls_by_ast_step,
-)
+
+
+def _framework_call_classification_context(
+    state: dict,
+) -> CallClassificationContext:
+    """Expose only repository-verified framework exclusions to call resolution."""
+    scan_result = require_scan_result(state)
+    return CallClassificationContext(
+        framework_function_patterns=frozenset(
+            scan_result.framework_runtime_functions
+            if scan_result.matched_skill is not None else ()
+        ),
+        wrappers=tuple(scan_result.call_wrappers),
+    )
+
+
+def _dbms_call_classification_context(
+    state: dict,
+) -> CallClassificationContext:
+    """DBMS dialect adapters own builtin and external decisions from Parser facts."""
+    del state
+    return CallClassificationContext()
 
 
 @dataclass(frozen=True)
@@ -94,6 +117,7 @@ class Strategy:
     code_analyzer: Callable
     analysis_targets: Callable
     prompts_dir: str
+    call_classification_context: Callable[[dict], CallClassificationContext]
     steps: tuple[Callable, ...]
 
 
@@ -107,6 +131,7 @@ FRAMEWORK_PIPELINE = Strategy(
     code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
     analysis_targets=framework_analysis_targets,    # routine 만 — 위 엔진의 필터와 같은 함수
     prompts_dir="llm/prompts/framework",
+    call_classification_context=_framework_call_classification_context,
     steps=(
         parse_ddl_step,
         # discover: 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합 — 데이터소스 HTTP 접점은
@@ -116,7 +141,7 @@ FRAMEWORK_PIPELINE = Strategy(
         scan_codebase_step,                # ★ Framework 만 — Scan Agent 1회
         scan_external_step,                # unknown text만 — external skill reload/agent
         link_deterministic_step,
-        link_calls_by_name_step,              # ★ Framework 만 — 결정론 Call 분류 + wrapper 통합 (LLM 0)
+        link_parser_calls_step,               # Parser facts → language adapter → neutral core (LLM 0)
         link_residual_patterns_step,          # ★ Framework 만 — 잔여 패턴 루프 (테이블 미해결)
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
@@ -128,13 +153,11 @@ FRAMEWORK_PIPELINE = Strategy(
         #   (총 동시 요청은 안 늘어난다 — 세마포어가 run 에 하나뿐이다.)
         (
             analyze_code_step,
-            summarize_module_step,            # 게이트: 전 노드 #1 summary
-            build_components_step,            # 게이트: 전 노드 #1 summary (Leiden + 병렬 naming)
-            build_glossary_step,              # 사람 제공 glossary 독립 적재
-            enrich_table_description_step,    # 게이트: 전 노드 완료 (insights 가 rules 와 함께 확정)
-            health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
+            build_module_summary_rollups_step,  # 게이트: 전 함수 #1 summary
+            build_components_step,            # 검증된 사용자 함수 CALLS로 결정론 군집화
+            enrich_table_description_step,    # 게이트: 전 노드 table-usage/rule 완료
         ),
-        embed_step,
+        build_search_segments_step,
     ),
 )
 
@@ -149,6 +172,7 @@ DBMS_PIPELINE = Strategy(
     code_analyzer=run_dbms_batch_analysis,    # analyze_code_step 이 주입받음 (형제 배치 1콜)
     analysis_targets=dbms_analysis_targets,   # 유효 트리 잔존 노드 — 위 엔진과 같은 집합
     prompts_dir="llm/prompts/dbms",
+    call_classification_context=_dbms_call_classification_context,
     steps=(
         parse_ddl_step,
         (load_ast_step, load_external_step),
@@ -160,7 +184,7 @@ DBMS_PIPELINE = Strategy(
         link_dbms_tables_step,                # ★ DBMS 만 — DML range → DDL 테이블 결정론 매칭 (LLM 0)
         # link_deterministic_step 없음 — DBMS R/W의 단일 생산자는 위
         # link_dbms_tables_step이다. 이 부재는 test_dbms_pipeline_contract가 고정한다.
-        link_calls_by_ast_step,               # ★ DBMS 만 — AST CALL 노드 분류 (빌트인·자기루프 드롭)
+        link_parser_calls_step,                # Parser facts → SQL adapter → 같은 neutral core (LLM 0)
         # 잔여 패턴 루프 없음 — DBMS 는 에이전트 링킹을 안 씀
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
@@ -170,13 +194,11 @@ DBMS_PIPELINE = Strategy(
         #   확정되므로 #1 게이트와 완료 게이트가 사실상 같은 시점이다.
         (
             analyze_code_step,
-            summarize_module_step,            # 게이트: 전 노드 요약
-            build_components_step,            # 게이트: 전 노드 요약
-            build_glossary_step,              # 사람 제공 glossary 독립 적재
+            build_module_summary_rollups_step,  # 게이트: 전 함수 요약
+            build_components_step,            # 검증된 사용자 함수 CALLS로 결정론 군집화
             enrich_table_description_step,    # 게이트: 전 노드 완료
-            health_metrics_step,              # 게이트 없음 — 결정론 그래프(step2·5)만 읽는다
         ),
-        embed_step,
+        build_search_segments_step,
     ),
 )
 

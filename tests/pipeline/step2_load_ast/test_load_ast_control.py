@@ -13,7 +13,7 @@ from pipeline.steps.step2_load_ast.node_builders import ParseResult
 from pipeline.steps.step2_load_ast import load_ast_step as subject
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
 from pipeline.steps.step2_load_ast.token_matcher import link_references
-from pipeline.steps.step2_load_ast.import_scopes import build_import_scope_plan
+from pipeline.models.import_resolution import build_import_resolution_ledger
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
 
@@ -61,15 +61,14 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
                 ast_and_source_roots(foreign, corpus)
 
     async def test_import_without_canonical_fact_cannot_create_a_scope(self):
-        plan = build_import_scope_plan(
+        ledger = build_import_resolution_ledger(
             [{
                 "name": '"shopmall.h"', "file": "order.c",
                 "import_id": "", "evidence_status": "unsupported",
             }],
         )
 
-        self.assertEqual({}, plan.scopes)
-        self.assertEqual([], plan.ledger)
+        self.assertEqual([], ledger)
 
     def _fixture(self):
         temporary = tempfile.TemporaryDirectory()
@@ -80,9 +79,14 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
         source_root.mkdir()
         (ast_dir / "a.json").write_text("{}", encoding="utf-8")
         (ast_dir / "b.json").write_text("{}", encoding="utf-8")
-        project = SimpleNamespace(root=source_root)
+        project = SimpleNamespace(root=source_root, corpus_root=root)
         closure = SimpleNamespace(artifacts=tuple(
-            SimpleNamespace(ast_path=path, ast_sha256="", language="")
+            SimpleNamespace(
+                ast_path=path,
+                ast_sha256="",
+                language="",
+                ast_document={},
+            )
             for path in sorted(ast_dir.glob("*.json"))
         ))
         return temporary, ast_dir, source_root, project, closure
@@ -158,7 +162,7 @@ class LoadAstControlTest(unittest.IsolatedAsyncioTestCase):
                     file_path="a.c", start_line=1, end_line=1,
                     label="FUNCTION", name="f", owner_id="code:fixture/a.c",
                 )],
-                [], [], [], checkpoint=stop_during_linking,
+                [], [], checkpoint=stop_during_linking,
             )
         self.assertEqual(checkpoints, 2)
 

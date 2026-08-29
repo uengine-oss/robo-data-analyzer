@@ -19,7 +19,11 @@ class RuleAnchorContractTest(unittest.TestCase):
     def test_anchor_is_required_positive_strict_integer(self):
         for value in (None, 0, -1, True, "7"):
             with self.subTest(value=value):
-                payload = {"cond": None, "then": [], "examples": []}
+                payload = {
+                    "structural_condition": None,
+                    "structural_effects": [],
+                    "examples": [],
+                }
                 if value is not None:
                     payload["anchor_line"] = value
                 with self.assertRaises(ValidationError):
@@ -35,10 +39,9 @@ class RuleAnchorContractTest(unittest.TestCase):
             label="FUNCTION",
             extra={
                 "rules": [{
-                    "rule_id": "R-0",
                     "anchor_line": 0,
-                    "cond": "",
-                    "then": [],
+                    "structural_condition": "",
+                    "structural_effects": [],
                     "examples": [],
                 }]
             },

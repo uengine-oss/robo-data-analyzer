@@ -20,6 +20,7 @@ _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
 _QUERY_NODES = (
     "CALL db.index.vector.queryNodes($name, $k, $qv) YIELD node, score "
     "WHERE node.id IS NOT NULL AND node.graph_owner = $graph_owner "
+    "AND node.analysis_scope_id = $analysis_scope_id "
     "AND node.generation_id = $generation_id "
     "RETURN node.id AS id, score AS score"
 )

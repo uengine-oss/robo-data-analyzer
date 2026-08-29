@@ -1,273 +1,374 @@
-# spec 131 현재 Tasks
+# Analyzer 의미 무손실 작업 목록
 
-## 2026-08-20 문서 메모리 정리
+**Updated**: 2026-08-29
 
-- [x] D131-01 Codex 단일 진입점과 원문 손상 경고 작성
-- [x] D131-02 절대규칙·현재상태·역사·evidence의 단일 소유권 분리
-- [x] D131-03 handoff 00/NEW-SESSION/HANDOFF의 낡은 현재 진입점 표시 제거
-- [x] D131-04 문서 참조·중복 현재상태·diff 최종 감사
-- [x] D131-04a 정본 handoff·raw 실험·루트 `_runs`를 spec 131 아래로 이동하고
-  `docs/핸드오프`에는 링크 README만 유지
-- [x] D131-05 상황·배경·확정/미확정·권장 방향 설명 후 사용자 피드백 반영
+완료 표시는 현재 worktree와 정적 증거가 직접 입증한 범위에만 사용한다.
 
-사용자가 2026-08-20 전체 목표와 방향을 승인해 이 단계는 종료됐다.
+## A. 완료된 정적 책임 slice
 
-## 2026-08-21 Strategy A 실제 데이터 단계 검증
+- [x] **A01 Parser 구조 사실과 Analyzer 의미 책임 경계**
+  - v2 Parser/Analyzer 계약과 formal boundary tests를 고정했다.
+  - Analyzer의 언어별 정규식 재파싱·추측 경로를 제품 해법으로 사용하지 않는다.
 
-- [x] A131-SA-01 기존 shopmall 20함수 source/sample/gold와 prompt ledger 원본 SHA-256을 재검증한다.
-  - actual source 11/11 hash 일치, sample/gold hash 일치, selected 20함수 77 record/519 row 확인
-- [x] A131-SA-02 결과 열람 전 1단계 영역과 확대 조건을 봉인한다.
-  - complex `member_authenticate`, medium `apply_point_balance`, state-transition `next_ship_status`,
-    negative control `db_commit`
-  - 4함수/15 actual prompt records/104 exact rows/18 sealed gold cases
-  - `evidence/strategy-a-progressive-pilot-seal-20260821.json`
-- [x] A131-SA-03 tracked 역사 결과를 덮어쓰지 않고 spec 131 `_runs/framework/strategy-a`에만 쓰는
-  안전 runner와 preflight/red test를 고정한다. 임의 meaning maxLength와 content retry는 두지 않는다.
-  - 구현 전 `ModuleNotFoundError` red 확인 후 7/7 green, preflight source 11/11·record 15·row 104·gold 18·
-    history mismatch 0, output root escape/existing run 거부, duplicate JSON/row/Python/grounding failure 검사
-- [x] A131-SA-04 현재 모델에서 역사 wire control 15호출과 maxLength를 제거한 candidate 15호출을 실행하고
-  raw/parsed/usage/finish reason/actual system-user-schema hash와 transport/schema/row/Python/grounding ledger를
-  exact-once 보존한다.
-- [x] A131-SA-05 동일 15입력의 이전 모델 3회↔현재 control 1회로 모델 변화를, 현재 control↔candidate로
-  계약 변화를 비교한다. 반복 안정성은 미검증으로 분리하고, candidate의 18 gold 의미 사례를 주 에이전트가
-  직접 판정한다.
-- [x] A131-SA-06 세 층 전부 통과할 때만 20함수/77호출/519행 1회로 확대한다. 한 축이라도 실패하면
-  첫 오좌표 원인을 확정하기 전 확대하지 않는다.
-  - 확대 거부: candidate 7/15 valid, 직접 판정 exact 6/18·contradiction 2·omission 1
-  - 첫 원인 좌표 `R730`: 호출 전/후 `rc` 조건을 한 시점으로 합친 deterministic evidence 결함
-- [x] A131-SA-07 `D:\work\robo\docs\작업보고내용`에 2026-08-21 쉬운 비교 보고서를 작성한다.
-  기존 C-080/IR 2.0 개선 작업은 항목별 한 줄 상태만 남긴다.
-  - `2026-08-21-Strategy-A-모델변경-비교.md`
-- [x] A131-SA-08 사용자 지적대로 `92/104` 1회와 `284/312` 3회를 정식 모델 비교로 쓴 오류를 철회하고,
-  동일 4함수·104행·3회인 `312 대 312`와 회차별 `104 대 104` 계약으로 고친다.
-- [x] A131-SA-09 actual prompt와 Python 실패 12행을 전수 감사해 prompt 개선이 끝나지 않았음을 확정한다.
-  - 직접 효과 없는 행은 14개이며 현재 9개가 `exact+빈 then_relation`으로 실패했다.
-  - 나머지 3개 실패 record는 `0L`, 주소 연산, source-language cast를 Python에 복사했다.
-  - row-local symbolic identity 대신 전역 선언값을 쓴 grounding 실패 18건이 있다.
-  - 시간순서/같은 target 여러 write, final complement, call argument/value 결손은 upstream evidence owner다.
-- [x] A131-SA-10 범용 prompt 후보와 반복 동일성 evaluator를 formal red→green으로 고정한다.
-  - `no_direct_effect()`, symbolic identity 보존, source-language syntax fail-closed,
-    value-version 없는 unreachable 금지, temporal/argument 결손 `needs_context`
-  - raw/canonical JSON/status/Python AST/직접 의미의 3회 동일성 축
-- [x] A131-SA-11 workers=8인 기존 current 1회는 예비 결과로 보존하고, 과거와 같은 workers=16에서
-  current historical wire 3회와 개선 prompt 3회를 새로 실행해 각각 312행을 만든다. content retry 0·
-  actual prompt/raw/usage/finish reason을 한 run에 보존한다.
-- [x] A131-SA-12 이전 312↔현재 control 312↔현재 개선 312의 Python 표기 자동 회계와 반복 동일성을
-  봉인하고, 표기 전용 작업보고와 CURRENT_STATUS를 수정한다.
-  - `evidence/strategy-a-notation-comparison-20260821.md`
-- [ ] A131-SA-13 의미 정확도는 upstream evidence producer 수정 뒤 자동 회귀·결정론 전수 회계·봉인 직접
-  의미 판정의 3층으로 별도 검증한다. 표기 결과를 의미 정확도나 제품 합격으로 승격하지 않는다.
+- [x] **A02 Summary·Table 입력/출력 노이즈 제거**
+  - 내부 ID·hash·range·근거 복창·죽은 질문/confidence 필드를 제거했다.
+  - source/symbol/table/callee/external 문맥을 소비 위치에 한 번만 결속했다.
+  - Summary·TableDescription의 각 배정 칸은 의미 문자열 하나만 출력한다. 모델 자체
+    `status`·부족 사유·`meaning` 포장 객체를 제거하고 Analyzer가 실제 실패 사실로 상태를 판정한다.
+  - FunctionTableUsage도 FT key→의미 문자열의 exact root만 사용한다. 반복 `results`·mapped/insufficient
+    branch·고정 reason code는 제거하고 빈 의미의 내부 실패 사유는 Analyzer가 만든다.
+  - Framework·DBMS prompt가 이 direct-string strict schema와 byte-for-byte 같은 출력 형태를 지시하는지
+    회귀로 고정했다. 폐기 wrapper가 prompt에 다시 들어오면 테스트가 실패한다.
+  - unknown-project Scan Agent의 도구에 이미 결속된 절대 project root는 모델 user message에서 제거했다.
+    선택 source 가시성은 도구 allowlist가 계속 강제하고 inventory·skill·DDL 문맥은 보존한다. glob/grep과
+    code-node 조회 사이의 모델-visible 경로도 프로젝트 상대경로로 통일했다.
+  - residual table-pattern 입력은 현재 미해결 모집단 전체를 매 라운드에 제공한다. 임의 30건 sample과
+    3-round 상한·환경변수를 제거하고, verified progress가 있으면 모집단이 감소하는 동안 계속하며
+    무패턴·진전 없음에서만 종료한다. 모델 hard limit을 넘으면 자르지 않고 실패한다.
+  - 신규·residual table pattern은 임의 허용 비율 없이 모든 op token 인식, 부분 추출·중의성 0,
+    모든 로컬 DDL 해소를 요구한다. 검증된 등록 SKILL만 partial upload의 범위 밖 테이블을 허용한다.
 
-## 2026-08-20 의미 무손실 전수조사
+- [x] **A03 LLM 진입점 감사**
+  - production 생성 callsite 승인 목록을 정적 테스트로 고정했다.
+  - hidden judge/repair와 동일 concern 중복 호출이 없음을 검사한다.
+  - provider SDK와 Analyzer runner retry를 모두 0으로 고정했다. 이미 전달된 Summary 실패를 slot 재분할로
+    다시 묻는 경로, 210초 application wall timeout, invalid JSON escape 자동 수정도 제거했다.
+  - 제거된 Agent call-limit middleware의 소비처 없는 `ROBO_AGENT_SCAN_MAX_CALLS`와
+    `ROBO_AGENT_RESIDUAL_MAX_CALLS` 예시 설정도 제거했다.
+  - OpenRouter config의 cross-provider `allow_fallbacks`를 false로 고정해 선택 provider 실패가 다른
+    serving runtime의 자동 성공으로 바뀌지 않게 했다.
 
-- [x] A131-01 Analyzer 전체 상한·절단·Top-N·sampling·skip/fallback·중간 LLM·summary-of-summary·
-  timeout/retry/cache/batch/concurrency 생산자·소비자 inventory 완성
-- [x] A131-02 각 후보의 source→AST→actual prompt→raw/parsed→validator→Neo4j→API/MCP 배선,
-  실제 값, 유입 commit 확정
-- [x] A131-03 실제 의미 손실/안전한 실행 분할/표시 preview/검색 파생 제한/명시적 degraded 분류와
-  원인·영향도 보고
-- [ ] A131-04 계약·실패/경계/과대 입력 red test 고정 후 책임 슬라이스별 근본 구현·검증·commit/push
-  - [x] A131-04a F-001/C-001/C-002 및 동일 canonical diagnostic leaf의 문자·항목 상한 제거,
-    red→green과 step7/schema/API 집중 회귀 검증
-  - [x] A131-04b FUNCTION role taxonomy와 evidence-anchor obligation slot 분리, exact source/evidence
-    closure call 및 canonical ID exact-once merge
-    - [x] A131-04b-FW 공통 planner evidence-anchor 귀속, Framework token-derived exact closure 분할,
-      source-order projection, length/deadline/repetition exact-once merge
-    - [x] A131-04b-DBMS 기존 node batch envelope를 effective AST CodeNode별 exact
-      source/evidence fragment runner로 교체
-  - [x] A131-04c 중간 prose 권위 입력·source literal 비가역 projection·SCC dependency 누락 제거
-    - [x] A131-04c-EXT linked external chunk 8건/6000자 canonical 선택 상한 제거,
-      chunk별 exact evidence obligation과 downstream token 분할 회계 연결
-    - [x] A131-04c-PROSE module/component·agent 중간 prose 권위 입력 제거
-      - [x] C-010 Framework module pre-analysis producer·prompt·23회 호출·module_intents 배선 제거
-      - [x] C-009c step8 module/component 후속 LLM·prompt·response model 제거, canonical member slot
-        source-order exact-once 결정론 projection과 display/stereotype explicit degraded 계약 고정
-      - [x] C-016 Agent context compaction과 `ScanResult.codebase_notes` downstream LLM 권위 배선 제거
-    - [x] A131-04c-SOURCE source literal 비가역 projection producer·호출·replay switch 제거,
-      Framework/DBMS prompt literal/escape exact-text 계약과 반대 fixture 고정
-    - [x] A131-04c-SCC suppressed `(caller, callee)`를 canonical CALL unavailable evidence로
-      exact-once 물질화하고 prompt·normalizer·missing_context까지 연결
-  - [x] A131-04d source/AST/diagnostic closure와 completed generation 원자 publish/consumer guard
-    - [x] A131-04d-CLOSURE parser-supported source↔AST↔EXACT diagnostic SHA/status 전수 one-to-one
-      회계, strict UTF-8, malformed/unknown AST fail-closed, Neo4j mutation 전 immutable closure artifact
-    - [x] A131-04d-GENERATION same-DB completed generation 원자 publish와 API/MCP/search consumer guard
-    - [x] A131-04d-C065 Framework canonical call occurrence를 evidence node로 exact-once 저장하고
-      generation count/hash/outcome/reason closure, unresolved run quality, REST/MCP search meta와 owner detail까지
-      보존 — aggregate CALLS와 routine 의미 owner는 유지
-    - [x] A131-04d-C062 C translation-unit type-name environment를 grammar declaration/scope와 configured
-      preprocessing evidence가 소유하도록 전환하고, project-global regex 및 header/platform hardcode seed를
-      제거한다. unresolved type-dependent parse choice는 Parser AST JSON의 exact coordinate·parse/completeness
-      진단으로 보존하고 Analyzer는 graph mutation 전에 strict validation/run finding 또는 fail-closed한다.
-      Neo4j/API/MCP symbol 진단 객체·owner property ledger는 만들지 않는다.
-      - [x] Parser 1차 formal red와 grammar-local definition/lookup producer focused 10/10
-      - [x] actual APAS AST 23/23 변경·대형 recovery 회귀를 막는 declaration-only/true-ambiguity/cast/
-        external-return red 및 grammar-owned 구조 보존 구현 — formal 18/18, Parser 전체 203/0/0/10,
-        accepted 의미 node count 동일, diagnostics/recovery 0/0, 유일 delta는 source typedef 4개
-      - [x] Parser 전체/actual APAS 전수 회계와 층화 봉인 직접 판정 — full 203/0/0/10,
-        accepted baseline 23/23 비-TYPEDEF delta 0, symbol exact-once 4,659, 봉인 40/40 exact
-      - [x] Analyzer IR 1.2 strict consumer→run finding/fail-closed, graph mutation 0 검증 — formal red
-        10건 green, actual 23파일 symbol 4,659 exact-once, syntax ambiguity 0, 봉인 40/40 exact,
-        NodeBuildResult/CodeNode projection 0·Neo4j/API/MCP 생산 배선 검색 0·DB write 0,
-        전체 1,258 passed/7 skipped
-    - [ ] A131-04d-C067 Parser structural facts→Analyzer language adapter/core로 name-only binder를 제거한다.
-      - [x] C-067~C-072 source→Parser→Analyzer→Neo4j→API/MCP 배선, actual 값, 유입 commit, 공식 근거,
-        원인·영향도 전수 감사
-      - [x] 역사 Common Evidence IR 1.3 callable/call-binding wire와 C listener 실험을 고정했다.
-        2026-08-21 책임 재감사에서 Parser listener가 final binding/type/linkage를 소유한 결함이 확인되어
-        Analyzer canonical consumer 계약으로는 폐기하고 IR 2.0 forward wire로 교체한다.
-      - [x] Parser C callable/binding formal red: direct visible declaration, cross-TU external linkage,
-        same-TU static, declaration 부재, incompatible/duplicate/configuration, supplied header, conditional/macro
-        — 최초 6 tests/6 failures, callable/binding/version/header 결손 확인
-      - [x] Analyzer formal red: opaque key exact join, direct-definition fact 직접 결합, target 0/1/N,
-        source/configuration 격리, name/language fallback 0, external occurrence와 unresolved graph entity 0,
-        unsupported candidate 보존, missing binding/reference fail-closed
-        — final wire 권위 unittest 9 tests/9 errors, `callable_facts` 계약 부재 확인
-      - [x] Parser 1.3 역사 producer 구현·전체/actual exact-once 회계·봉인 직접 판정·commit/push
-        - [x] C grammar/listener callable/binding producer, header definition 보존, function-pointer dynamic,
-          macro configuration-dependent, block visibility, exact-once sealer 구현
-        - [x] typedef/tag 및 general token-equality의 거짓 compatibility, inactive/conditional callable,
-          non-static inline dialect 의존을 C-073~C-076 반례로 고정하고 canonical builtin/direct-definition/
-          explicit unavailable/configuration-dependent 경계로 교체 — 최초 17건 중 6 red, 교체 후 19/19 green
-        - [x] C-077 `unsupported` 판정이 원인이 된 visible callable fact ID를 버리는 증거 closure 누락 교정
-          — formal 19건 중 1 red(`candidateFactIds` expected 1, actual 0) → 19/19 green
-        - [x] C-078 봉인 직접 판정의 `declaration_bound` 단일 층이 direct-definition만 뽑고
-          compatible-definition 40건을 0개 뽑는 표본 공백 교정 — resolution mode별 별도 층 r13/r14 재봉인
-        - [x] C-079 parenthesized C function declarator에서 callable 이름은 보존되지만 legacy FUNCTION AST
-          이름이 바깥 Identifier 조회로 누락되는 producer 불일치 red/교정 — 20건 중 1 red,
-          callable/direct binding은 exact지만 FUNCTION name absent 재현 → grammar name owner 통합 후 20/20 green
-        - [x] 교체 후 formal/actual 전수 회계·새 봉인 직접 판정 재실행:
-          actual 23 source call 12,113/callable 796, binding 57 bound + 11,493 external +
-          76 configuration-dependent + 487 unsupported, target join
-          `57 = unique 57 + zero 0 + ambiguous 0`, same-source 57/cross-source 0,
-          accepted AST 23/23, sealed direct 40/40 exact
-        - [x] Parser 전체 회귀·diff 감사·commit/push — `5dd6410`, 전체 223/0/0/10,
-          golden 5/5 exact, origin/main 일치, clean
-      - [x] Parser IR 1.3 ownership correction 조사: `CAstListener.bindCall/effectiveTargetScope/
-        functionCompatibility/canonicalBuiltinType`가 final semantic decision을 수행하고 별도 adapter가 없음을
-        source→sealer→Analyzer red까지 확인. actual r14 bound 57건이 전부 same-source이고 cross-TU positive
-        0임을 분리. `evidence/call-binding-ownership-correction-20260821.md`
-      - [ ] Common Evidence IR 2.0 structural callable/call syntax 계약과 Parser red 고정
-        - [ ] explicit language/frontend schema와 typed scope/specifier/declarator/parameter/attribute range
-        - [ ] call payload binding/status/key 0, Parser semantic completeness 0
-        - [ ] function-pointer/object shadowing, conditional/header/parenthesized declarator 반대 fixture
-      - [ ] Parser IR 2.0 producer로 listener semantic binding을 제거하고 전체/actual/봉인 3층 검증·commit/push
-      - [ ] Analyzer language adapter registry와 C/Java/Python/SQL capability contract red 고정
-        - [ ] direct/compatible/external/internal-linkage/ambiguous/unsupported/dynamic/configuration/inactive 전수
-        - [ ] name/extension/stdlib/framework glob/scan wrapper/정렬 첫 후보 fallback 0
-      - [ ] Analyzer C adapter와 language-neutral resolution core 구현
-      - [ ] `astNodeRange→CodeNode` exact 결합, occurrence/generation/Neo4j/REST/MCP/search 동일 ledger 이행
-      - [ ] Framework/DBMS actual과 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정·commit/push
-      - [ ] ontology primary role과 독립 callable/control/effect facet 계약을 분리하고 SQL EXIT 순서 의존을 제거
-  - [ ] A131-04e 남은 구조 closure(C-004/C-017~021/C-031/C-034~C-042) 책임 슬라이스별 해결
-    - [x] A131-04e-C004-C017-C031 Catalog truncated inventory pre-merge fail-closed, unknown external
-      non-whitespace source span exact-once closure, 순환 dead Catalog lineage consumer 제거 — red 3건,
-      집중 37 tests와 전체 1122/6 green, 보호 WIP/Neo4j 무변경
-    - [x] A131-04e-C024 Parser listener inheritance AST field 보존·Neo4j 투영과 cycle-safe finite graph 전수 closure
-    - [x] A131-04e-C028 Parser `2e33720` evidence v2 unqualified SQL identifier exact-once 생산과
-      Analyzer sqlglot tokenizer/alias heuristic/silent-empty fallback 제거 — cross-repo red 3건 green
-    - [x] A131-04e-C033 quoted DDL column identity를 Column/Neo4j/step7/MCP detail까지 보존하고
-      case-sensitive exact identity로 투영 — DDL/parser red 2건 green, Neo4j rollback 검증
-    - [x] A131-04e-C034 quoted DDL PK/UNIQUE/FK/comment exact AST identity와 literal 보존 — red 4건 green,
-      Neo4j rollback 저장·조회/잔여 0
-    - [x] A131-04e-C035 step8 quoted column source-line focus를 공통 exact identity로 투영 — red 1건 green
-    - [x] A131-04e-C036 Catalog/Fabric 응답→DDL Table 재결합 schema/quoted identity 해결 —
-      bulk schema+table exact key, scoped quoted proof 없는 confirmed fail-closed
-    - [x] A131-04e-C037 Oracle physical-option/VARCHAR/slash normalization을 token 구조 위치로 제한
-    - [x] A131-04e-C038 dialect marker의 string/comment 오인을 syntax token detector로 제거
-    - [x] A131-04e-C039 quoted SET search_path exact token→Schema/Table canonical identity 보존
-    - [x] A131-04e-C040 Parser AST usage→DDL Table Q/U exact linker와 ambiguous legacy scanner fail-closed
-    - [x] A131-04e-C041 quoted unresolved ObjectReference canonical ID·edge·node 충돌 해결 —
-      red 2건 green, Neo4j rollback 두 node/두 READS/잔여 0
-    - [x] A131-04e-C042 Parser `de4e792` evidence v3 database-link component exact identity 생산과
-      Analyzer fail-closed 소비 — Parser 158/0/0/8, Neo4j rollback 두 node/두 READS/잔여 0
-    - [x] A131-04e-C019-C021-C043 CREATE VIEW AST physical dependency canonical ID·무상한 finite closure,
-      external wrapper monotone fixpoint, 240자 exact key producer/consumer gate 제거 — red 7건 green,
-      전체 1115/6, Neo4j rollback dependency property·기저 READS·잔여 0
-    - [x] A131-04e-C044-C045 Parser v4 3-part catalog producer와 Analyzer datasource/catalog 분리
-      Schema/Table/Column/ObjectReference/FK/view/linker/writer 소비, unqualified FK source namespace 상속 —
-      Parser 159/0/0/8, Analyzer 1120/6, Neo4j test/dbms rollback 잔여 0
-- [ ] A131-05 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층 완료
+- [x] **A03-1 영속 응답 cache 실행환경 동일성 경계**
+  - 모델 이름만 같으면 이전 답을 재사용하던 경로를 제거했다.
+  - 실행환경 capability 정본 ref와 SHA-256이 모두 맞을 때만 cache를 허용한다.
+  - 실제 필터 적용 메시지와 provider·endpoint·sampling·reasoning·extra body·출력 한도·schema를 key에 넣는다.
+  - 의미 없이 중복되던 LangChain 전역 cache 설정을 제거하고 항상 비활성화했다.
 
-## 보존된 기준선
+- [x] **A03-2 분석 입력 단일 봉인과 동일 bytes 소비**
+  - source·AST/diagnostic 대응표·DDL·외부 입력·설정·prompt·계약·정답지·모델 실행환경을 Neo4j client 생성 전에
+    `sealed-analysis-inputs.json` 하나로 봉인한다.
+  - run manifest는 중복 필드 묶음 대신 단일 봉인 artifact의 ref와 SHA-256만 가리킨다.
+  - prompt·LLM 설정·skill·용어집·외부 문서·table linker는 봉인 때 읽은 bytes를 run 전체에서 공유한다.
+  - partial upload에서는 선택하지 않은 source를 inventory·봉인·Scan Agent가 읽지 않고, root manifest와
+    source가 아닌 실제 외부 입력만 보존한다.
+  - 외부 문서 subprocess가 원본 경로를 재개방하던 경로와 run output이 project 입력으로 재유입될 경로를 닫는다.
+  - 모델 runtime 정본 부재·hash 불일치는 Neo4j 접속 전에 실패한다.
+  - DDL·AST·Framework table linking·context·table description 필수 step 설정 누락은 빈 결과로 skip하지 않고
+    공통 `StepConfigurationError`로 실패한다.
+  - Framework 함수 의미 분석은 배정 대상 전부가 완료되어야 하며, 죽은 `failed/skipped` 계수나 경고 뒤 부분
+    성공 없이 DBMS와 동일하게 불완전 집계를 즉시 실패시킨다.
 
-- [x] C131-01 봉인40과 source/prompt/output/stored 직접 판정 기준선 보존
-- [x] C131-02 배치 상한과 source 의미 상한 분리, full node ID 의미 identity, 입력 충분성 상태 보존
-- [x] C131-03 기존 계약 기준 `39/40=97.5%`, fabrication 0, contradiction 0 기록 보존
-- [x] C131-04 동적 의미 프레임 방향과 complete-source Architect 기본 전달 폐기를 문서 정본에 고정
+- [x] **A03-3 partial source population 공개 격리**
+  - 전체 population, 서로 다른 partial selection, 같은 partial selection의 scope identity를 구분한다.
+  - 동일한 root·strategy라도 `selected_source_ids`가 다르면 active generation pointer를 공유하지 않는다.
+  - 선택 순서만 다른 동일 집합은 같은 scope가 되어 반복 실행 안정성을 보존한다.
 
-## 동적 의미 프레임 전환
+- [x] **A04 Strategy B Rule/Example 정적 구현**
+  - 한 Rule 호출에서 exact atom 의미 문자열과 row 분류 문자열만 받는다. atom별 모델 자체
+    status와 `meaning`·`disposition` 포장 객체는 출력하지 않는다.
+  - Parser 종료문 식을 Rule 행에 옮길 때 160자 절단 없이 전체 식을 보존한다.
+  - Analyzer가 Python·제품 공개를 소유하고 Example은 0-call로 만든다.
+  - implementation detail·불충분·호출 실패를 제품 Rule에서 격리한다.
+  - 반복 상수 `business_meaning_status`와 복원 가능한 Rule/Example 필드를 제거했다.
+  - graph transport가 구조-only 후보를 거부한다.
 
-- [x] T131-19 Framework/DBMS 전체 자연어 의미 producer→schema→normalizer→validator→storage→
-  graph/API/MCP→Architect consumer inventory와 WIP keep/adapt/remove 단일 영향표 작성·후속 재사용
-- [x] T131-20 공통 `StructuralProfile`, frame family, stable slot/evidence ID, `semantic-frame/v1` 계약 고정
-- [x] T131-21 shallow dynamic schema와 stable-prefix prompt를 구현하고 schema/token/repetition/KV 관측 기준 고정
-- [x] T131-22 SUMMARY·RULE·EXAMPLE·CALL·TABLE·COLUMN·MODULE·logical name을 frame-first 생산으로 전환
-- [x] T131-23 legacy summary/description/nl을 frame projection으로 전환하고 자연어 이중 생산자 제거
-- [x] T131-24 sufficiency/grounding/completeness/ownership validator와 population inventory 전환
-- [x] T131-25 graph/storage/API/MCP semantic-frame 정본과 deduplicated Architect projection 구현
-- [x] T131-26 Architect complete-source 기본 전달 WIP 제거·적응 및 spec055 Simplified/Detailed 소비 동기화
-- [x] T131-27 Framework/DBMS 범용·반대 fixture, prompt/schema 성능, 전체 회귀 검증
-- [x] T131-28 새 격리 DB/output의 최소 actual Analyzer 실행과 봉인 직접 의미 판정
-- [x] T131-29 Analyzer 합격 뒤 Architect 두 실제 경로 GWT/evidence ref 원문 대조
-- [x] T131-30 작업보고·HANDOFF 결과 교체, 임시 실행물 정리, diff 감사, 요청 범위 commit/push
+- [x] **A05 실행 산출물의 spec 밖 이관**
+  - `_runs` 8,713파일과 `_artifacts` 164파일을 Analyzer 루트로 이동했다.
+  - notation experiment 9파일을 `_artifacts`로 이동했다.
+  - audit 47파일, archive 22파일, seal script를 역할별 위치로 이동했다.
+  - 활성 spec은 현재 SDD 7파일과 비추적 Python cache 1개만 남겼다.
 
-## 불변
+- [x] **A06 현재 정적 회귀**
+  - 실제·Neo4j integration·봉인 Strategy A 테스트를 제외해 `1,283 passed`, `5 skipped`,
+    `351 subtests passed`.
+  - prompt hash 17개 byte-identical, `git diff --check` 통과.
 
-- A Python 관계식은 KEEP이며 수정·재실험하지 않는다.
-- 기존 dirty WIP·보존 DB·logs를 reset/checkout/clean/overwrite하지 않는다.
-- Architect 정상 생성 packet에 complete source나 새 source 조각을 넣지 않는다.
-- `accept/apply`를 호출하지 않는다.
+## B. 남은 구현·감사
 
-## 2026-08-18 APAS 재개
+- [x] **B01 언어 adapter와 중립 resolution core 완결성 감사**
+  - C·Java·Python·SQL capability와 binding/type/linkage 반례별 producer→consumer를 닫는다.
+  - partial external, standard/framework exclusion, ambiguous/dynamic 회계 잔차를 확인한다.
+  - [x] C adapter는 구조 사실을 후보로만 정규화하고 neutral core가 visibility·type·linkage와 최종
+    internal/external/ambiguous를 결정하도록 분리했다.
+  - [x] C 선언 순서와 lexical scope/shadowing 계산을 neutral core에서 C adapter의 candidate별
+    `linkage_visibility`로 이동했다. 다른 class scope의 visible Java형 후보를 core가 C 규칙으로 다시
+    탈락시키지 않는 formal 반례를 통과했다.
+  - [x] Java·Python Parser가 callable/call lexical scope와 grammar component를 생산하도록 보강하고
+    Parser 집중 회귀 `35 passed`를 통과했다.
+  - [x] Python 대문자 호출을 constructor/variable type으로 승격하던 대소문자·initializer regex
+    추측 producer를 제거했다. 대문자 함수·소문자 callable class 반례와 Analyzer capability 회귀를
+    통과했다.
+  - [x] exact callable identity registry가 아닌 C/Java/Python stdlib JSON과 Oracle package-name
+    목록을 제거했다. 검증된 framework skill 계약만 별도 주입하며 이름만으로 표준 라이브러리를 추측하지 않는다.
+  - [x] 소비처 없이 항상 빈 값이던 `ImportScopePlan.scopes`와 wrapper를 제거하고 canonical import
+    occurrence ledger를 실제 소비 위치에서 직접 만든다. import binding이 생긴 것처럼 보이던 우회 이름은 없다.
+  - [x] Java의 receiver 없는 같은 enclosing type 직접 호출은 ANTLR scope와 parameter arity만으로 후보를
+    만들고 neutral core가 최종 internal/external을 결정한다. 선언 순서가 뒤인 method, overload arity,
+    다른 class 동명이인, receiver·constructor 반례를 통과했다.
+  - [x] Python adapter는 binding-site 사실이 없는 현재 이름 일치로 내부 CALLS를 만들지 않고 모든 call을
+    언어별 dynamic 사유로 exact-once 종료한다.
+  - [x] Python function/lambda parameter 이름·원문 범위·lexical scope를 Parser `parameter` 사실로 완전
+    회계하고, Analyzer가 같은 scope의 parameter collision을 `python_parameter_binding`으로 닫는다.
+    Parser는 최종 binding/type을 만들지 않고 이 내부 사실은 LLM에 보내지 않는다.
+  - [x] Python assignment·annotated/augmented assignment·for·with·except·comprehension target을 Parser
+    `binding_target` 구조 사실로 exact-once 회계한다. Analyzer는 문법 tree로 단순 이름·unpacking과
+    attribute/subscript mutation을 구분하고, 안전한 function/lambda 지역 이름 충돌만
+    `python_local_binding_target`으로 닫는다. comprehension은 가시성 환경이 완결될 때까지 승격하지 않는다.
+  - [x] Python `global|nonlocal`에 나열된 각 이름을 Parser `scope_directive` fact로 exact-once 회계한다.
+    Analyzer는 같은 function/lambda scope의 명시 지시를 지역 target보다 우선하며 실제 외부·상위 binding은
+    추측하지 않고 `python_global_binding|python_nonlocal_binding` dynamic으로 닫는다.
+  - [x] 기존 Python import entry에 lexical `scopePath`를 보강해 별도 중복 fact 없이 결속 이름을 해석한다.
+    명시 import 충돌은 `python_import_binding`, wildcard는 `python_wildcard_import_binding`으로 닫으며 sibling
+    function import는 보이지 않는 반례를 통과한다. 실제 module/member 연결은 아직 승격하지 않는다.
+  - [x] Java static import는 Parser의 정확한 type path·member·wildcard와 Analyzer CodeNode의 owner ID 및
+    callable modifier tree를 결합한다. 명시적/와일드카드 import의 사용자 static method만 연결하고 instance
+    method·다른 source import·이름 전용 후보는 연결하지 않는다.
+  - [x] 일반 Java constructor callable fact를 기존 함수 분석 단위 `METHOD` AST node와 exact-once로 투영하고,
+    같은 type/package 또는 정확한 type/namespace import로 보이는 업로드 정의만 arity에 맞춰 연결한다.
+    같은 줄의 같은 이름 overload는 단일 줄 일치로 가정하지 않고 Parser occurrence 순서로 한 번씩 결합한다.
+    범위 밖 정의는 external이며 receiver type은 구조 환경 없이 추측하지 않는다.
+  - [x] Java record를 기존 `CLASS`, compact constructor를 기존 `METHOD` 분석 단위로 보존해 callable fact와
+    exact-once 투영한다. 암시적 parameter가 callable 범위 밖 record header에 있으므로 0-arity로 꾸미지 않고
+    compatibility를 `unknown`으로 넘기며, 정확한 owner type의 유일 정의만 neutral core가 연결한다.
+  - [x] qualified Java constructor의 각 type identifier range를 Parser가 구조 사실로 생산한다. Analyzer는
+    전체 component path가 업로드 candidate owner type과 정확히 같을 때만 연결하며 import·파일명으로 우회하지 않는다.
+  - [x] Java `this.method()`의 receiver range가 정확히 `this`인 폐쇄 사례는 같은 owner type의 method 후보로
+    해석한다. 그 밖의 receiver expression은 type environment 없이 연결하지 않고 dynamic으로 보존한다.
+  - [x] Python comprehension의 가장 바깥 iterable call은 enclosing scope, element·filter·후속 iterable call은
+    comprehension scope로 보존한다. Analyzer는 target comprehension scope가 call 경로에 실제 포함될 때만
+    지역 결속으로 적용해 `[x() for x in x()]` 양쪽 호출을 구분한다.
+  - [x] Python `del` target을 Parser `delete_target`으로 회계한다. 단순 이름 삭제는 compile-time local
+    결속으로 적용하고 attribute/subscript 삭제는 기존 grammar tree 판별로 제외한다.
+  - [x] Java·Python의 현재 Parser symbol/type/import 구조 사실을 모두 소비한다. Parser fact와 봉인 환경만으로
+    target을 증명할 수 없는 receiver dispatch·Python runtime binding은 누락이나 이름 추측 없이 dynamic으로
+    exact-once 종료한다.
+  - [x] Oracle·PostgreSQL call/callable producer와 SQL adapter를 구조 사실로 닫는다.
+    - [x] Oracle call/callable은 qualified name component, DB link, argument, package scope를 Parser fact로
+      생산하고 Analyzer Oracle adapter가 identifier 규칙·구조 arity·partial external을 해석한다.
+    - [x] PostgreSQL nested PL/pgSQL 좌표를 전체 원문 좌표로 rebasing하고 같은 neutral core 경로에 합친 뒤
+      DBMS runtime의 legacy AST CallLinker를 제거한다.
+  - [x] standard-library는 봉인 version의 exact callable identity registry가 준비되기 전 이름으로
+    분류하지 않는다. 현재 workspace 밖 호출은 제품 CALLS 없이 external 장부로 보존한다.
 
-- [x] T131-31 최신 parser로 APAS 23파일 AST를 재생성하고 old/new node·좌표·구조 vocabulary delta와
-  active named GOTO→LABEL exact 해소를 전수 감사. 2026-08-18 완료 표시는 저장 AST가 LABEL을 누락한
-  사실을 놓친 오판이므로 재개. 2026-08-19 source hash mismatch 0, 기존 stable node 삭제/변경 0,
-  신규 LABEL 67 + postfix ASSIGNMENT 2, GOTO 5/5 exact 해소, parser 154/0/0과 Analyzer preflight 통과
-- [x] T131-32 중단 actual run에서 summary 741요청·5,293 slot 중 CALL.PURPOSE 4,349개와
-  deadline/repetition retry 0을 실측해 원인을 owner 생산자로 확정
-- [x] T131-33 Framework CALL occurrence를 evidence-only로 되돌리고 DBMS CALL CodeNode만
-  CALL.PURPOSE를 소유하도록 planner와 반대 fixture 수정
-- [x] T131-34 canonical slot ID를 request-local compact wire ID로 바꾸되 normalizer가 exact ID로
-  복원하고 1/7/8/9/24/65 경계 누락·추가·중복을 거부
-- [x] T131-35 정상 summary의 고정 8-slot microbatch를 제거하고 당시 target-owned 최대 3 slot invariant
-  적용. T131-39b에서 실제 흐름 완전성 결함을 근거로 최대 5개 구조 적용 역할로 대체
-- [x] T131-36 FW/DBMS producer·consumer·호출/batch 영향표와 과거 탈락안·server 공식 research 기록
-- [x] T131-36a Rule 행당 단일 `RULE.BUSINESS_MEANING`, 결정론 structure 무손실, digest-scoped private
-  wire key 격리 계약을 producer/normalizer/projection/graph/MCP/Architect 양끝에 구현
-- [x] T131-36b actual APAS 오행 역추적으로 확인한 별도 wire↔row 조인을 제거하고, 직접 의미 근거가
-  있는 행만 `output_wire_id + focus condition + direct/source`를 소유하게 한다. 구조 전용 행은 LLM
-  slot 없이 결정론 Rule로 물질화한다. target-wide 보조 목록도 direct CALL/DATA_OBJECT/exact matched
-  key 기반 row-local context로 교체하고 의미 없는 이름·sentinel 확장 번역을 막으며 Framework/DBMS
-  producer·normalizer·replay·checker를 정합. 구현·최종 replay는 완료했으나 모델이 지시를 위반해
-  조건 극성 모순과 이름 확장 창작이 남았으므로 이 후보 자체는 기각
-- [x] T131-36c Rule prose 소비자 0과 후단 semantic validation 공백을 전수 감사하고,
-  `RULE.BUSINESS_MEANING` provider/schema/normalizer/batch를 제거한다. 모든 required row를 exact
-  cond/then Rule로 결정론 물질화하고 Example 및 graph/MCP/Architect evidence refs 무손실을 반증.
-  `rule-structures/deterministic-rule-v1` 영구 감사 산출물, graph 비어 있는 `nl`, 구조 렌더링,
-  Architect 소비자까지 닫았고 collision-safe audit 파일명까지 포함해 Analyzer 1,029 tests/5 skipped,
-  prompt 23/23,
-  Architect 집중 62 및 전체 1,383 tests/2 skipped로 검증
-- [ ] T131-37 APAS 봉인 slice에서 concern/scheduling 후보를 calls/tokens/cache/latency/accuracy로 비교·채택
-- [ ] T131-37d 2026-08-20 교체된 향상 모델의 server identity/structured-output 계약을 기록하고,
-  구 모델 run은 역사 기준선으로 분리한다. 새 모델 bounded replay에서 남은 600자 summary 경계를
-  범용 계약으로 해결한 뒤 final cold의 calls/tokens/wall/의미를 새 기준으로 판정
-- [x] T131-37a module/summary GPU 호출 전 static named jump target preflight를 제품·상설 preflight에
-  같은 함수로 구현하고 missing/duplicate/blank target 반대 fixture와 resolved fixture를 검증
-- [x] T131-37b 공통 deterministic Rule 경계에서 rejected/unavailable/회계 잔차만 fatal로 유지하고
-  unverified를 scoped finding으로 격리. DBMS 이중 채점을 제거하고 FW/DBMS trusted+finding 회계 검증
-- [x] T131-37c Rule audit에 routine row→실제 graph owner를 보존하고 judge_run의 obligation/trusted/
-  finding/unavailable 잔차와 graph 기대 trusted row를 전수 대조
-- [ ] T131-38 채택 구조의 정상·실패·경계·중복·순서·취소/종료 회귀 및 전체 자동 테스트
-- [ ] T131-39 재사용 `framework` DB와 이 spec의 `_runs/framework`의 실제 APAS 전체 cold run,
-  judge_run+graph, 봉인 30~40 의미 직접 판정
-- [x] T131-39a actual graph에서 발견된 긴 Rule 조건 EXAMPLE 12건 누락을 과거 LLM-era 500자 상한의
-  잔재로 확정하고, 결정론 Rule truth 무손실 계약·반대 테스트·상설 judge 재판정으로 누락 0 검증
-- [x] T131-39b final summary finding 4건과 봉인 FUNCTION 10건의 공통 원인을 3-slot 과압축과
-  no-op/unused/output-only 충분성 계약 부재로 고정. routine summary를 최대 5개 target-owned 역할로
-  분해하고 population/projection/prompt 반대 fixture 및 전체 회귀 검증
-- [ ] T131-39c 새 APAS full cold에서 FUNCTION 10을 동일 봉인 ID로 재판정하고 Rule/Example/Table/Column
-  30건과 합쳐 40건 직접 의미 판정 완료. omission/fabrication/contradiction과 needs_context를 분리 기록
-- [ ] T131-40 **보류** — Architect 사용자 승인 전 수정·실행 없음. 이후 작은 실제 MCP 질의→
-  Architect Opus 5 GWT, Analyzer optional 두 경로 검증
-- [ ] T131-41 2026-08-18 작업보고·HANDOFF·GPU server 문서 갱신, diff 감사, selective commit/push, 임시 자원 정리
+- [x] **B02 atomic generation 공개 감사**
+  - [x] final LangGraph state의 모든 제품 producer field와 streamed call/import ledger 동일성을 검사한다.
+  - [x] 14개 닫힌 제품 stage를 dependency order로 조립하고 실행기가 각 batch를 쓴 뒤 한 번만 공개한다.
+  - [x] operation·property owner·endpoint·record hash를 DB 독립 계획에서 검증하고, publish transaction에서
+    전체 제품과 write ledger를 다시 읽은 뒤 publication-version CAS로 pointer를 전환한다.
+  - [x] 제품 node 13종 모두 `(analysis_scope_id, generation_id, stable_id)` 유일성 제약을 가진다.
+  - [x] 실패 generation 정리는 `ANALYZER_OWNED`에 의존하지 않고 같은 scope/generation의 새 제품 node도
+    제거한다. 이전 active generation은 삭제하지 않고 superseded로 보존한다.
+  - [x] pipeline step 내부 Neo4j 직접 writer, 옛 graph closure/helper, 고아 `HAS_HEALTH` 관계를 제거했다.
+  - [x] 집중 정적 회귀 `79/79`와 incomplete-stage가 CAS 전에 실패하는 반례를 통과했다.
+  - [x] 기존 `test` DB의 UUID 격리 scope와 단일 transaction에서 opt-in rollback integration을 실행했다.
+    transaction 안에서 active generation·14 stage·제품 record·call ledger를 확인하고 rollback 뒤 잔존 0건을 확인했다.
+  - [x] SearchSegment에 저장하는 전체 text와 embedding vector의 입력 bytes를 일치시켰다. 2,000자 뒤 의미를
+    자르던 embedder·설정을 제거하고 provider가 단건을 거부하면 축약 없이 분석을 실패시킨다.
+
+- [x] **B03 남은 저장소 정리**
+  - [x] 활성 소비처가 0인 `target/c081-staged-snapshot` 저장소 복제본 1,690파일·15,355,353바이트와
+    과거 HTML 렌더링 확인용 PNG를 제거해 Analyzer `target` 노이즈를 닫는다.
+  - [x] specs 001~130과 현재 archive/audit의 소비처를 분류했다. 현재 계약 131의 7개 파일만 남기고
+    과거 spec은 Git history로, 비추적 archive/audit 72파일은 로컬 산출물로 제거했다.
+  - [x] 비추적 `__pycache__`, 소비처 없는 실험 script, obsolete compatibility 파일과 로컬
+    `.codegraph`/`.pytest_cache`를 보호 목록과 대조해 제거했다.
+  - [x] 금지된 `scripts/recompute_strategy_a_notation.py`는 읽기·수정·실행·stage하지 않았다.
+
+- [x] **B04 constitution 재작성**
+  - Parser/Analyzer 경계, Strategy B, no-cap/no-skip, exact-once, atomic publish, 범위 밖 보호를 현재 spec과
+    같은 용어로 고정한다.
+  - 기존의 전체 graph 삭제 전제와 범위 밖 Architect 경계를 제거하고 헌법 2.0.0으로 정리했다.
+
+- [x] **B05 최종 고해성사 HTML 재작성**
+  - 현재 Analyzer만 원문부터 graph/API까지 단계 순서로 설명한다.
+  - 모든 실제 LLM prompt의 완전한 입력·출력 shape와 각 필드 존재 이유를 보여 준다. 모델-visible
+    W/E/FT/C/E/R/줄범위 key는 실제 요청 전용 결합 key로 기록하고 내부 canonical ID와 혼동하지 않는다.
+  - 과거 목표 함수·가짜 경로·모델이 Python을 작성한다는 설명을 제거한다.
+  - 현재 파일은 52,684 bytes, 14개 순차 단계, LLM 경계 8종이며 SHA-256은
+    `04655c391b9676f5f32758994f3454ee0b44db2e5dcbcbe0aa1849dd743c5e69`다.
+
+- [x] **B06 전체 자동 회귀**
+  - 실제 LLM·SKT·Neo4j 제품 쓰기 없이 현재 정적 구현 전체를 한 번 검증했다.
+  - `1461 passed, 4 skipped, 310 subtests passed in 83.76s`; 새 실패 좌표 0건이다.
+
+- [x] **B07 무시되던 API 경로 호환 필드 제거**
+  - `/analyze`가 실제로 쓰지 않던 `project_root`, `ddl_dir`를 요청 모델에서 제거했다.
+  - 알 수 없는 요청 필드는 조용히 버리지 않고 `extra_forbidden`으로 거부한다.
+  - HTTP 경계 집중 회귀 `3 passed`; 실제 LLM·SKT·Neo4j 쓰기 0회다.
+
+- [x] **B08 Search 질의 재작성 LLM 경계 정규화**
+  - 숨은 raw HTTP·수동 JSON 부분 복구·실패 시 원질의 우회 경로를 제거했다.
+  - 모델 출력은 용어집 근거 `source_text → canonical_term` 목록 하나뿐이며, 사용되지 않던
+    `intent`와 모델 작성 `rewritten`을 제거했다. 최종 병기는 Analyzer가 안정된 순서로 조립한다.
+  - Search production 모델 진입점은 구조화 단일 호출 1곳으로 inventory에 고정했다.
+  - 집중 회귀 `63 passed, 27 subtests passed`와 Search/inventory `29 passed, 2 subtests passed`;
+    실제 LLM·SKT·Neo4j 쓰기 0회다.
+
+- [x] **B09 AnalysisContext table 사실의 명시 필드화**
+  - `data_object_usages`와 실제 소비되는 `unqualified_identifier_references`를 `extra`에서 이름이 드러나는
+    필드로 옮겼다. exact table 배정은 `direct_reads|direct_writes`와 exact usage 발생이 모두 맞아야 한다.
+  - usage가 없을 때 direct 목록을 그대로 믿던 옛 테스트 호환 경로와 Context에 복사만 되던 evidence
+    version·unresolved column·unresolved table 세 값을 제거했다.
+  - 집중 회귀 `119 passed, 15 subtests passed`; 실제 LLM·SKT·Neo4j 쓰기 0회다.
+
+- [x] **B10 TABLE/COLUMN 최종 의미 응답의 물리 식별자 복창 제거**
+  - LLM이 반환해도 제품 결합에는 쓰이지 않던 table `db|schema|name` 값을 response schema에서 제거했다.
+    Analyzer는 봉인된 TABLE 사실의 물리 식별자를 최종 의미에 직접 결합한다.
+  - column은 `[{name, slots}]`가 아니라 입력 DDL column 이름을 exact required key로 한 번만 쓰는
+    `{name:{slots}}` map으로 바꿔 누락·추가를 schema에서 거부하고 별도 `name` 값 복창을 없앴다.
+  - 실제 packet에 없는 옛 `direct_operations|table_usages|candidates|focus_text`를 설명하던 prompt를
+    현재 `observed_operations|usage_meanings|usage_evidence|source.text` 계약과 일치시켰다.
+  - 집중 회귀 `101 passed, 125 subtests passed`; prompt hash 18개 byte-identical이다. 실제 LLM·SKT·
+    Neo4j 쓰기 0회다.
+
+- [x] **B11 미지 외부 형식 Agent 응답과 저장 skill 선택 직선화**
+  - 모델 응답을 실제 소비되는 `name`과 `rules(name,pattern,key_group)`만 가진
+    `ExternalSkillProposal`로 축소했다. 소비처가 없던 `explanation|provenance|value_group`, 미검증
+    prefilter였던 `content_signatures`, Analyzer가 이미 소유한 `extensions` 복창을 제거했다.
+  - Analyzer가 현재 학습 확장자를 proposal에 직접 결합한다. 확장자 없는 skill은 현재 run에서만 쓰며
+    reusable catalog 저장을 거부한다.
+  - 같은 확장자의 저장 skill이 여러 개면 미검증 표식으로 먼저 고르지 않고, 현재 원문 전체·negative
+    sample에 production 검증기를 실행해 정확히 하나만 통과할 때 채택한다.
+  - 확대 회귀 `215 passed, 1 skipped, 77 subtests passed`; prompt hash 18개 byte-identical이다.
+    실제 Agent·LLM·SKT·Neo4j 쓰기 0회다.
+
+- [x] **B12 residual table-pattern 모델 경계와 라운드 누적 직선화**
+  - 모델 응답은 production 검증기가 실제 소비하는 `table_access_patterns|ddl_transform_override`만
+    반환한다. 비어 있는 제안 자체로 충분한 `no_pattern_reason` prose는 제거했다.
+  - 저장 skill이 이미 일치하면 모델 호출 전에 반환하므로 도달할 수 없던 `matched_skill` prompt 입력을
+    제거했다.
+  - 두 번째 라운드부터 initial scan pattern뿐 아니라 앞선 라운드에서 검증을 통과한 pattern도 모두
+    `confirmed_patterns`로 전달해 같은 제안 반복과 조기 no-progress 종료를 막았다.
+  - step5·Agent boundary·LLM inventory 확대 회귀 `226 passed, 31 subtests passed`; prompt hash 18개
+    byte-identical이다. 실제 Agent·LLM·SKT 재분석·Neo4j 제품 쓰기 0회다.
+
+- [x] **B13 의미 프롬프트의 임의 출력 상한 제거**
+  - residual, Framework/DBMS TABLE 설명, Framework TABLE usage, DBMS Summary/TABLE usage batch에
+    따로 있던 2,000·5,000·6,000 output-token override를 제거했다.
+  - 각 호출은 봉인된 model runtime config의 실제 출력 한계를 사용한다. required population을 모두
+    정확히 한 batch에 배정하는 입력 분할과 3분할 병렬 실행은 그대로 유지한다.
+  - 모든 production YAML prompt가 별도 `max_tokens`를 만들지 못하는 회귀를 추가했다. LLM 경계 테스트가
+    필수 locale 없이 실행되던 6개 기존 실패는 테스트가 locale을 명시하도록 고쳤고 제품 fallback은 없다.
+  - LLM·prompt·Agent·관련 의미 경계 확대 회귀 `169 passed, 67 subtests passed`; prompt hash 18개
+    byte-identical이다. 실제 LLM·SKT 재분석·Neo4j 제품 쓰기 0회다.
+
+- [x] **B14 ScanProposal 실패 prose 제거와 성공/실패 상태 배타화**
+  - 모델이 작성하지만 검증 분기에 쓰이지 않던 `no_match_reason`을 ScanProposal에서 제거했다. 빈 규칙
+    proposal은 Analyzer가 `table_access_status=unavailable`과 고정 사유로 변환한다.
+  - 최종 ScanResult에서 completed table access와 실패 사유가 동시에 존재할 수 없도록 계약을 닫았다.
+    실제 pattern 검증 실패 사유는 기존 production verifier가 계속 소유한다.
+  - 실제 response schema가 `ScanProposal`인데 user message가 `ScanResult`를 요구하던 명명 불일치를
+    바로잡고 회귀로 고정했다.
+  - Scan→table linking→context 확대 회귀 `360 passed, 73 subtests passed`; prompt hash 18개
+    byte-identical이다. 실제 Agent·LLM·SKT 재분석·Neo4j 제품 쓰기 0회다.
+
+- [x] **B15 소비처 없는 Rule 표현 실험 모듈 제거**
+  - 생산 참조가 0건이고 전용 테스트에서만 살아 있던 `rule_semantic_relation.py`와 전용 테스트를
+    제거했다. 실제 Strategy B 생산 경계는 `rule_meaning_frame.py` 하나만 남는다.
+  - 제거 심볼 참조 0건, Rule/LLM 경계 집중 묶음 `27 passed, 9 subtests passed`.
+
+- [x] **B16 Summary 단일 호출 경로 직선화**
+  - 실제 한 번 호출하면서도 fragment 분할처럼 보이던 한 개짜리 batch·반복·병합·조건부 response schema를
+    제거했다. Framework와 DBMS 모두 전체 슬롯을 `_run_frame_summary` 한 번으로 처리한다.
+  - Step 7·LLM 경계 확대 회귀 `255 passed, 133 subtests passed`; 실제 LLM·SKT 재분석·Neo4j 쓰기 0회다.
+
+- [x] **B17 Summary 지시 계약 동기화와 수동 prompt hash 목록 제거**
+  - Framework/DBMS Summary prompt의 과거 bounded/fragment/조건부 출력 지시를 실제 단일 response schema와
+    일치시켰다. 모델은 전체 슬롯·summary·stereotype을 한 번에 정확히 한 번 출력한다.
+  - 소비처 0건인 `llm/prompts/prompt_hashes.json`을 제거했다. 실행 봉인은 실제 prompt tree bytes를
+    `SealedAnalysisInputs.prompt_contracts`에서 직접 계산한다.
+  - prompt/response/seal 집중 회귀 `72 passed, 46 subtests passed`.
+
+- [x] **B18 중복 Neo4j 개별 writer 계층 제거**
+  - 실제 제품 쓰기 소비자 0인 `graph/nodes`, CALLS 외 옛 `graph/edges`, `graph/writers`와 전용 테스트를
+    제거했다. 중요한 검증은 현재 publication·구조 모델 계약으로 옮겼다.
+  - 실제 `link_parser_calls_step`가 쓰는 `graph/edges/calls.py`와 원자적 product publication 경로는
+    유지했다.
+  - 확대 회귀 `130 passed, 1 skipped, 26 subtests passed`; 실제 LLM·SKT 재분석·Neo4j 쓰기 0회다.
+
+- [x] **B19 소비처 없는 logging 별칭 파일 제거**
+  - 소비자 0인 `labels.py`, `log_api.py`, `run_file_handler.py`를 제거했다. 실제 logger·run handler·NDJSON
+    구현은 `runtime_logger`, `ndjson_event_stream`, `processing_events`에 단일 경로로 남는다.
+  - 관련 회귀 `44 passed, 17 subtests passed`; 제거 심볼 참조 0건이다.
+
+- [x] **B20 DBMS Summary의 죽은 batch 응답 계약 제거**
+  - 실제 노드별 Summary 호출에서 소비되지 않던 `BatchSummaryOutput`과 `response_model` 전달을 제거하고,
+    코드 설명을 현재 3분할 계약에 맞췄다. Rule/TABLE keyed batch는 유지한다.
+  - Step 7 전체 `210 passed, 82 subtests passed`; 제거 심볼 참조 0건이다.
+
+- [x] **B21 DBMS 형제 Summary의 불필요한 직렬 대기 제거**
+  - 같은 ready batch의 독립 Summary를 기존 run 공유 LLM 슬롯 안에서 병렬 worker로 예약한다. 새 상한이나
+    별도 semaphore는 없고 입력·응답·exact-once 계약은 동일하다.
+  - capacity 2 동시 실행과 capacity 1 fail-fast를 함께 고정했다. Step 7 전체
+    `211 passed, 82 subtests passed`; GPU wall time은 미검증이다.
+
+- [x] **B22 Agent의 제품 무관 Todo 도구와 상태 경로 제거**
+  - Scan/외부 형식 결과에 소비되지 않는 `write_todos` 도구, Todo middleware, `todo_update`/`todos.jsonl`
+    진단 경로를 제거했다. 탐색·검증·submit과 비용/ToolEvent/cache middleware는 유지한다.
+  - 관련 회귀 `99 passed, 29 subtests passed`; Agent boundary `45 passed, 15 subtests passed`;
+    제거 참조 0건이다.
+
+- [x] **B23 현재 실행에서 무효인 deepagents 보정 의존 제거**
+  - 새 HumanMessage로만 시작하는 실제 Agent 실행에서 절대 작동하지 않는
+    `PatchToolCallsMiddleware`와 이를 위한 `deepagents` 전체 직접 의존을 제거했다.
+  - Agent·public import 회귀 `78 passed, 32 subtests passed`; production 참조 0건이다.
+
+- [x] **B24 의미 호출 직전 외부 원문 전달 경로 직선화**
+  - 연결 검증용 외부 메타 전체를 임시 prompt 사전으로 복제했다가 text만 꺼내던 경로를
+    `external_source_text_by_id`로 바꿨다. 소비자 0인 옛 prompt serializer도 제거했다.
+  - 최종 prompt의 배정 key/exact text는 동일하고 Step 6·Step 7 회귀
+    `243 passed, 82 subtests passed`를 통과했다.
+
+- [x] **B25 공식 분석 CLI의 실행 입력 계약 복구**
+  - 전체 회귀가 찾은 삭제 모듈 import를 현재 partial-upload/봉인 검증 입력까지 포함한 실행 profile로
+    닫고, 제거된 Todo event의 CLI 분기도 제거했다.
+  - 전체 자동 회귀 `1434 passed, 4 skipped, 319 subtests passed`; 실제 분석·DB write는 0회다.
+
+- [x] **B26 소비처 없는 로컬 실험·생성 쓰레기 제거**
+  - 소비자 0인 `_artifacts` 173파일·9,585,509 bytes와 생성 cache·빈 디렉터리를 제거하고
+    `_artifacts` 재등장을 layout 회귀로 금지했다.
+  - 마지막 봉인 검증이 실제 소비하는 `_runs`는 보존했다. 전체 자동 회귀
+    `1434 passed, 4 skipped, 319 subtests passed`다.
+
+- [x] **B27 임의 상한·절단·skip 생산 경로 감사**
+  - pagination·exact-once batch·오류/로그 표본·cache 용량과 실제 population 절단을 구분했다.
+  - Analyzer 자체의 의미 population을 조용히 자르는 경로는 0건이다. Catalog discovery의 eager
+    `max_tables`만 외부 완전성 한계이며 현재는 partial 공개 전 fail-closed한다.
+
+## C. 작은 실제 SKT 검증
+
+- [x] **C01 작은 SKT Rule 의미 직접 판정**
+  - Python syntax와 업무 의미·Rule↔Example 동일성을 분리 판정했다.
+  - 첫 실패는 10150의 86·94행 조건 의미가 오류 효과와 반대로 생성된 좌표다. 응답 순서와 모순
+    계약을 수정한 같은 packet에서는 정확한 의미를 확인했다. active generation은 수정 전 결과이므로
+    전체 제품 합격으로 승격하지 않는다.
+
+- [x] **C02 봉인 SKT 2파일 1,503줄 실제 생성 검증**
+  - `zapamcom13010.c` 1,259줄과 `zapamcom10150.c` 244줄만 분석한다.
+  - 13010의 직접 caller/callee는 파일 하나만으로 총 제한을 넘으므로 함께 넣지 않는다.
+  - 10150의 분석 범위 밖 사용자 호출로 partial-upload `external` 종료를 검증한다.
+  - 단계별 wall time, queue, token, cache와 병목 원인을 기록한다.
+  - 임의 cap·truncation·skip으로 선택 파일 내부 required population을 줄이지 않는다.
+  - generation `20260829_000846_8fc97de13e9a`, 19.3초, 논리 호출 40·캐시 적중 38,
+    함수 17·Rule 145·Example 100·SearchSegment 17로 기존 framework DB에 공개했다.
+
+- [ ] **C03 선택 범위 전수 회계와 직접 의미 판정**
+  - 선택 source baseline diff, exact-once completeness/property ledger, 새 실패 좌표를 먼저 확인한다.
+  - 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 3층을 모두 통과한다.
+
+- [x] **C04 제품 규모 성능 미검증 명시**
+  - 약 5만 LOC 전체 재분석은 수행하지 않는다.
+  - 선택 1,503줄 결과를 전체 SKT 처리 시간이나 처리량으로 일반화하지 않는다.
+
+- [ ] **C05 Catalog 전체 테이블 pagination 계약 연결**
+  - Catalog가 snapshot/cursor/deterministic page/exact-once closure를 제공하기 전에는
+    `truncated>0` datasource를 제품 합격으로 승격하지 않는다.
+  - 계약 제공 뒤 Analyzer는 모든 page를 누락·중복 0으로 병합하고 기존 DDL 합집합·sample 의미를
+    유지한다. 기존 Catalog WIP는 이 작업에서 수정하거나 stage하지 않는다.
+
+## D. 인도
+
+- [x] **D01 최종 문서 동기화와 diff 감사**
+- [x] **D02 보호 WIP 제외 staged allowlist 확인**
+- [ ] **D03 검증된 Analyzer 책임 slice commit/push**
+- [x] A02-3 Residual table-pattern LLM packet에서 소비되지 않는 case/file/line/source/coordinate 상태를 제거하고, 정확한 줄번호 원문을 읽지 못하면 모델 호출 전에 fail-closed한다. (`18 passed, 9 subtests passed`)

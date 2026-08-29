@@ -1,218 +1,209 @@
-"""호출부 기반 REFER_TO 링커 vs. gold (spec 081).
-
-``gold/linking_cases.json`` 의 모든 케이스를 채점한다. 기대한 연결이 정확히 나와야 하고
-그 밖의 연결이 하나라도 있으면 실패다 — 어떤 케이스든 오연결은 스위트 실패다.
-"""
+"""Parser call facts are the only external-reference source."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import unittest
 
 from graph.schema.graph_edges import References
-from graph.schema.graph_nodes import CodeNode, Constant, ExternalChunk
+from graph.schema.graph_nodes import Constant
 from graph.schema.node_ids import external_chunk_id, project_file_id
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 from pipeline.steps.step3_load_external.span_verifier import sha256_text
-from pipeline.steps.step5_linking.link_external.linker import link_external
-from pipeline.steps.step5_linking.link_external.resolver_catalog import promote_wrappers
+from pipeline.steps.step5_linking.link_external.linker import (
+    ExternalLinkContractError,
+    link_external,
+)
 
 
-GOLD_PATH = Path(__file__).resolve().parent / "gold" / "linking_cases.json"
+def _chunk(key: str, *, ordinal: int = 0, keys: tuple[str, ...] | None = None):
+    relpath = f"external/record-{ordinal}.yaml"
+    file_id = project_file_id("project", relpath)
+    text = f"{key}: value\n"
+    record_id = external_chunk_id(file_id, 0, len(text))
+    return ExternalSourceRecord(
+        source_record_id=record_id,
+        source_file_id=file_id,
+        external_adapter_id="analyzer.external.yaml",
+        external_adapter_version="analyzer-external-span-adapter/v1",
+        addressable_keys=keys or (key,),
+        semantic_kind="yaml_entry",
+        exact_text=text,
+        project_relative_path=relpath,
+        source_character_start=0,
+        source_character_end=len(text),
+        source_start_line=1,
+        source_end_line=1,
+        provenance="source_span",
+        source_sha256=sha256_text(text),
+        content_sha256=sha256_text(text),
+    )
 
 
-def _chunks_for(keys_spec: dict[str, int], addressable: bool = True) -> list[ExternalChunk]:
-    """키마다 ``count`` 개의 조각을 각기 다른 파일에 만든다."""
-    chunks: list[ExternalChunk] = []
-    for key, count in keys_spec.items():
-        for index in range(count):
-            relpath = f"external/{key.replace('.', '_')}_{index}.yaml"
-            file_id = project_file_id("shop", relpath)
-            text = f"{key}: value-{index}\n"
-            chunks.append(ExternalChunk(
-                id=external_chunk_id(file_id, 0, len(text)),
-                name=key,
-                keys=(key,),
-                semantic_kind="yaml_entry",
-                text=text,
-                file_path=relpath,
-                char_start=0,
-                char_end=len(text),
-                start_line=1,
-                end_line=1,
-                provenance="source_span",
-                source_hash=sha256_text(text),
-                content_hash=sha256_text(text),
-                addressable_keys=(key,) if addressable else (),
-            ))
-    return chunks
+def _call(
+    call_id: str,
+    resolver: str,
+    arguments: tuple[str, ...],
+    *,
+    owner: str = "code:Service.run",
+    presence: str = "active",
+):
+    return {
+        "call_id": call_id,
+        "caller_id": owner,
+        "call_text": resolver,
+        "argument_sources": list(arguments),
+        "file": "Service.java",
+        "line": 17,
+        "presence_status": presence,
+    }
 
 
-class LinkerGoldTest(unittest.TestCase):
-    def test_pass_through_wrapper_promotion_reaches_finite_fixpoint(self) -> None:
-        routines: list[CodeNode] = []
-        callee = "lookup"
-        for index in range(1, 5):
-            name = f"wrapper{index}"
-            routines.append(CodeNode(
-                id=f"code:shop:Wrappers:{name}",
-                signature=f"{name}(String key)",
-                file_path="Wrappers.java",
-                start_line=index,
-                end_line=index,
-                label="METHOD",
-                name=name,
-                code_text=f"void {name}(String key) {{ {callee}(key); }}",
-                owner_id="code:shop:Wrappers",
-            ))
-            callee = name
+class ExternalReferenceLinkerTest(unittest.TestCase):
+    def test_exact_literal_argument_links_once(self) -> None:
+        chunk = _chunk("ORDER.API")
+        outcome = link_external(
+            call_sites=[_call("call:1", "selectOne", ('"ORDER.API"', "request"))],
+            constants=[],
+            source_records=[chunk],
+        )
 
-        promoted = promote_wrappers(routines)
-
+        self.assertEqual(1, len(outcome.resolved_external_reference_links))
         self.assertEqual(
-            {f"wrapper{index}" for index in range(1, 5)},
-            {name for name in promoted if name.startswith("wrapper")},
+            chunk.source_record_id,
+            outcome.resolved_external_reference_links[0].external_source_record_id,
+        )
+        self.assertEqual(("call:1:external-argument:0",), (
+            *outcome.external_reference_ledger.required_external_reference_occurrence_ids,
+        ))
+        resolution = outcome.external_reference_ledger.occurrences[0].resolution
+        self.assertEqual(
+            chunk.source_record_id, resolution.linked.external_source_record_id,
         )
 
-    def test_every_gold_case_matches_exactly(self) -> None:
-        cases = json.loads(GOLD_PATH.read_text(encoding="utf-8"))["cases"]
-        self.assertGreaterEqual(len(cases), 8)
-        for case in cases:
-            with self.subTest(case=case["name"]):
-                chunks = _chunks_for(case["chunks"], case.get("addressable", True))
-                code = CodeNode(
-                    id="code:shop:Svc:a", signature="a()", file_path="Svc.java",
-                    start_line=10, end_line=20, label="METHOD", name="a",
-                    code_text=case["code"], owner_id="code:shop:Svc",
-                )
-                constants = []
-                references = []
-                if "constant" in case:
-                    constant = Constant(
-                        id="code:shop:Svc:KEY", owner_id=code.owner_id,
-                        name=case["constant"]["name"], file_path=code.file_path,
-                        start_line=3, end_line=3, label="CONSTANT_FIELD",
-                        value=f'"{case["constant"]["value"]}"',
-                    )
-                    constants.append(constant)
-                    # 이름 해석은 step2 REFERENCES 가 한다 — 테스트도 그 사실을 준다.
-                    references.append(References(code.id, constant.id, 4))
-                outcome = link_external(
-                    code_nodes=[code],
-                    constants=constants,
-                    chunks=chunks,
-                    routine_ids={code.id},
-                    references_edges=references,
-                )
-                actual = sorted(
-                    (edge.matched_key, edge.via_symbol) for edge in outcome.external_edges
-                )
-                expected = sorted(
-                    (item["matched_key"], item["via_symbol"]) for item in case["expected"]
-                )
-                self.assertEqual(expected, actual)
-                for edge in outcome.external_edges:
-                    self.assertEqual("code:shop:Svc:a", edge.source_id)
-
-    def test_derived_chunks_are_never_link_targets(self) -> None:
-        text = "converted content with ORDER.API inside"
-        derived = ExternalChunk(
-            id="file:shop/doc.pdf:chunk:derived-0", name="doc", keys=(),
-            semantic_kind="derived_document", text=text, file_path="doc.pdf",
-            char_start=0, char_end=0, start_line=0, end_line=0,
-            provenance="derived_document", source_hash="", content_hash=sha256_text(text),
-            addressable_keys=("ORDER.API",),
-        )
-        code = CodeNode(
-            id="code:shop:Svc:a", signature="a()", file_path="Svc.java",
-            start_line=1, end_line=2, label="METHOD", name="a",
-            code_text='sql.selectOne("ORDER.API", id);', owner_id="code:shop:Svc",
-        )
+    def test_non_resolver_call_never_becomes_an_external_reference(self) -> None:
         outcome = link_external(
-            code_nodes=[code], constants=[],
-            chunks=[derived], routine_ids={code.id},
+            call_sites=[_call("call:1", "put", ('"ORDER.API"',))],
+            constants=[],
+            source_records=[_chunk("ORDER.API")],
         )
-        self.assertEqual([], outcome.external_edges)
+        self.assertEqual([], outcome.resolved_external_reference_links)
+        self.assertEqual((), outcome.external_reference_ledger.occurrences)
 
-    def test_same_chunk_via_two_keys_yields_single_edge(self) -> None:
-        relpath = "mapper/OrderMapper.xml"
-        file_id = project_file_id("shop", relpath)
-        text = '<select id="getOrderDetail">SELECT 1</select>'
-        chunk = ExternalChunk(
-            id=external_chunk_id(file_id, 0, len(text)),
-            name="getOrderDetail",
-            keys=("OrderMapper.getOrderDetail", "getOrderDetail"),
-            semantic_kind="xml_element",
-            text=text, file_path=relpath,
-            char_start=0, char_end=len(text), start_line=1, end_line=1,
-            provenance="source_span",
-            source_hash=sha256_text(text), content_hash=sha256_text(text),
-            addressable_keys=("OrderMapper.getOrderDetail", "getOrderDetail"),
-        )
-        code = CodeNode(
-            id="code:shop:Svc:a", signature="a()", file_path="Svc.java",
-            start_line=1, end_line=3, label="METHOD", name="a",
-            code_text='sql.selectOne("getOrderDetail", p); '
-                      'sql.selectList("OrderMapper.getOrderDetail", p);',
-            owner_id="code:shop:Svc",
-        )
-        outcome = link_external(
-            code_nodes=[code], constants=[],
-            chunks=[chunk], routine_ids={code.id},
-        )
-        self.assertEqual(1, len(outcome.external_edges))
-        self.assertEqual(chunk.id, outcome.external_edges[0].target_id)
-
-    def test_dynamic_key_sites_are_counted_not_linked(self) -> None:
-        code = CodeNode(
-            id="code:shop:Svc:a", signature="a()", file_path="Svc.java",
-            start_line=1, end_line=3, label="METHOD", name="a",
-            code_text='sql.selectOne(buildKey(), p);', owner_id="code:shop:Svc",
-        )
-        outcome = link_external(
-            code_nodes=[code], constants=[],
-            chunks=_chunks_for({"ORDER.API": 1}), routine_ids={code.id},
-        )
-        self.assertEqual([], outcome.external_edges)
-        self.assertEqual(1, outcome.dynamic_key_sites)
-
-    def test_long_exact_literal_key_is_linked_without_character_budget(self) -> None:
-        key = "K" * 241
-        chunks = _chunks_for({key: 1})
-        code = CodeNode(
-            id="code:shop:Svc:longLiteral", signature="longLiteral()",
-            file_path="Svc.java", start_line=1, end_line=2, label="METHOD",
-            name="longLiteral", code_text=f'fopen("{key}");',
-            owner_id="code:shop:Svc",
-        )
-
-        outcome = link_external(
-            code_nodes=[code], constants=[], chunks=chunks, routine_ids={code.id},
-        )
-
-        self.assertEqual([(code.id, chunks[0].id)], [
-            (edge.source_id, edge.target_id) for edge in outcome.external_edges
-        ])
-
-    def test_long_exact_referenced_constant_key_is_linked(self) -> None:
-        key = "C" * 241
-        chunks = _chunks_for({key: 1})
-        code = CodeNode(
-            id="code:shop:Svc:longConstant", signature="longConstant()",
-            file_path="Svc.java", start_line=1, end_line=2, label="METHOD",
-            name="longConstant", code_text="fopen(KEY);", owner_id="code:shop:Svc",
-        )
+    def test_referenced_literal_constant_is_resolved_without_source_search(self) -> None:
+        chunk = _chunk("ORDER.API")
         constant = Constant(
-            id="code:shop:Svc:KEY", owner_id=code.owner_id, name="KEY",
-            file_path=code.file_path, start_line=1, end_line=1,
-            label="CONSTANT_FIELD", value=f'"{key}"',
+            id="constant:ORDER_KEY",
+            owner_id="code:Service",
+            name="ORDER_KEY",
+            file_path="Service.java",
+            start_line=3,
+            end_line=3,
+            label="CONSTANT_FIELD",
+            value='"ORDER.API"',
         )
-
         outcome = link_external(
-            code_nodes=[code], constants=[constant], chunks=chunks,
-            routine_ids={code.id}, references_edges=[References(code.id, constant.id, 1)],
+            call_sites=[_call("call:1", "selectOne", ("Keys.ORDER_KEY",))],
+            constants=[constant],
+            source_records=[chunk],
+            references_edges=[References("code:Service.run", constant.id, 17)],
+        )
+        self.assertEqual(
+            chunk.source_record_id,
+            outcome.resolved_external_reference_links[0].external_source_record_id,
         )
 
-        self.assertEqual([chunks[0].id], [edge.target_id for edge in outcome.external_edges])
+    def test_dynamic_and_missing_arguments_are_accounted_not_linked(self) -> None:
+        outcome = link_external(
+            call_sites=[
+                _call("call:1", "selectOne", ("buildKey()",)),
+                _call("call:2", "selectOne", ()),
+            ],
+            constants=[],
+            source_records=[_chunk("ORDER.API")],
+        )
+        self.assertEqual([], outcome.resolved_external_reference_links)
+        reasons = [
+            item.resolution.unresolved.reason_code
+            for item in outcome.external_reference_ledger.occurrences
+        ]
+        self.assertEqual(["dynamic_argument", "missing_argument"], reasons)
+
+    def test_duplicate_key_targets_are_ambiguous_not_all_linked(self) -> None:
+        left = _chunk("SHARED", ordinal=1)
+        right = _chunk("SHARED", ordinal=2)
+        outcome = link_external(
+            call_sites=[_call("call:1", "lookup", ('"SHARED"',))],
+            constants=[],
+            source_records=[left, right],
+        )
+        self.assertEqual([], outcome.resolved_external_reference_links)
+        unresolved = outcome.external_reference_ledger.occurrences[0].resolution.unresolved
+        self.assertEqual("ambiguous_external_key", unresolved.reason_code)
+        self.assertEqual(
+            tuple(sorted((left.source_record_id, right.source_record_id))),
+            unresolved.candidate_target_ids,
+        )
+
+    def test_inactive_call_is_rejected_without_losing_required_occurrence(self) -> None:
+        outcome = link_external(
+            call_sites=[_call(
+                "call:1", "lookup", ('"ORDER.API"',), presence="inactive",
+            )],
+            constants=[],
+            source_records=[_chunk("ORDER.API")],
+        )
+        self.assertEqual([], outcome.resolved_external_reference_links)
+        rejected = (
+            outcome.external_reference_ledger.occurrences[0]
+            .resolution.rejected_not_external_reference
+        )
+        self.assertEqual("inactive_call", rejected.reason_code)
+
+    def test_direct_file_hit_stays_unresolved_until_it_has_a_verified_record(self) -> None:
+        external_file = ExternalSourceFile(
+            source_file_id="file:project/data/orders.dat",
+            project_relative_path="data/orders.dat",
+            extension=".dat",
+            category="unknown",
+            status="unanalyzed",
+            disposition_reason="no_span_adapter",
+        )
+        outcome = link_external(
+            call_sites=[_call("call:1", "fopen", ('"orders.dat"',))],
+            constants=[],
+            source_records=[],
+            source_files=[external_file],
+        )
+        unresolved = outcome.external_reference_ledger.occurrences[0].resolution.unresolved
+        self.assertEqual("file_target_has_no_verified_record", unresolved.reason_code)
+
+    def test_long_literal_and_multiple_alias_occurrences_are_lossless(self) -> None:
+        long_key = "K" * 241
+        chunk = _chunk(
+            long_key,
+            keys=(long_key, "ORDER.ALIAS"),
+        )
+        outcome = link_external(
+            call_sites=[
+                _call("call:1", "fopen", (f'"{long_key}"',)),
+                _call("call:2", "selectOne", ('"ORDER.ALIAS"',)),
+            ],
+            constants=[],
+            source_records=[chunk],
+        )
+        self.assertEqual(2, len(outcome.resolved_external_reference_links))
+        self.assertEqual(2, len(outcome.external_reference_ledger.occurrences))
+
+    def test_invalid_parser_call_identity_or_coordinate_fails_closed(self) -> None:
+        duplicate = _call("call:1", "lookup", ('"A"',))
+        with self.assertRaises(ExternalLinkContractError):
+            link_external(
+                call_sites=[duplicate, duplicate], constants=[], source_records=[],
+            )
+        invalid_line = {**duplicate, "call_id": "call:2", "line": 0}
+        with self.assertRaises(ExternalLinkContractError):
+            link_external(
+                call_sites=[invalid_line], constants=[], source_records=[],
+            )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """Retriever._rules_for — HAS_RULE→AFFECTS_TABLE→HAS_EXAMPLE 트래버설 단위 테스트.
 
-아키텍트(cluster_retrieve)가 함수별 rules[{rule_id, anchor_line, cond, then, nl, when,
+하위 소비자가 함수별 Rule의 구조 사실과 Strategy-B 의미 상태를
 tables, examples[{kind, given, then}]}] (파이썬 leaf 계약, spec 116)를 누락·오염 0 으로
 받는지 검증. 실제 Neo4j 없이 fake session 의 .run().data() 로 검증.
 """
@@ -36,17 +36,16 @@ class _Session:
 def _row(rule, anchor, **overrides):
     base = {
         "rule_node_id": f"fn::{rule}",
-        "rule_id": rule,
         "ordinal": anchor,
         "anchor_line": anchor,
-        "cond": f'F("cd") == "{anchor}"',
-        "effects": ['ret("0")'],
-        "nl": f"규칙 {rule}",
-        "when": "fn(itf)",
+        "structural_condition": f'F("cd") == "{anchor}"',
+        "structural_effects": ['ret("0")'],
+        "business_condition": f'meaning_when("cd == {anchor}", "처리 대상")',
+        "business_effects": ['meaning_return("0", "정상 결과")'],
+        "owner_signature": "fn(itf)",
         "example_id": None,
-        "kind": None,
-        "given": None,
-        "example_effects": None,
+        "given_conditions": None,
+        "expected_effects": None,
         "tables": [],
     }
     base.update(overrides)
@@ -59,11 +58,11 @@ class RulesTraversalTest(unittest.TestCase):
 
     def test_groups_examples_under_rules_in_order(self):
         rows = [
-            _row("R-3", 3, example_id="fn::R-3::E1", kind="satisfy",
-                 given=['F("cd") == "3"'], example_effects=['ret("0")'],
+            _row("R-3", 3, example_id="fn::R-3::E1",
+                 given_conditions=['F("cd") == "3"'], expected_effects=['ret("0")'],
                  tables=[{"name": "orders", "op": "INSERT"}]),
-            _row("R-9", 9, example_id="fn::R-9::E1", kind="satisfy",
-                 given=['F("cd") == "9"'], example_effects=['ret("1")'],
+            _row("R-9", 9, example_id="fn::R-9::E1",
+                 given_conditions=['F("cd") == "9"'], expected_effects=['ret("1")'],
                  tables=[{"name": "stock", "op": "UPDATE"}]),
         ]
         out = self._retriever(rows)._rules_for("fn")
@@ -71,15 +70,17 @@ class RulesTraversalTest(unittest.TestCase):
         self.assertEqual([x["anchor_line"] for x in out], [3, 9])
         self.assertEqual(len(out[0]["examples"]), 1)
         self.assertEqual(out[0]["examples"][0], {
-            "kind": "satisfy", "given": ['F("cd") == "3"'], "then": ['ret("0")'],
+            "kind": "satisfy",
+            "given_conditions": ['F("cd") == "3"'],
+            "expected_effects": ['ret("0")'],
         })
         # 테이블 귀속은 규칙 단위다 — example 이 아니라 rule 에 붙는다.
         self.assertEqual(out[0]["tables"], [{"name": "orders", "op": "INSERT"}])
         self.assertEqual(out[1]["tables"], [{"name": "stock", "op": "UPDATE"}])
 
     def test_duplicate_join_row_does_not_duplicate_one_example(self):
-        row = _row("R-3", 3, example_id="fn::R-3::E1", kind="satisfy",
-                   given=["g"], example_effects=["t"])
+        row = _row("R-3", 3, example_id="fn::R-3::E1",
+                   given_conditions=["g"], expected_effects=["t"])
         out = self._retriever([row, dict(row)])._rules_for("fn")
         self.assertEqual(len(out), 1)
         self.assertEqual(len(out[0]["examples"]), 1)
@@ -96,9 +97,9 @@ class RulesTraversalTest(unittest.TestCase):
         out = self._retriever([_row("R-3", 3)])._rules_for("fn")
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["examples"], [])
-        self.assertEqual(out[0]["cond"], 'F("cd") == "3"')
-        self.assertEqual(out[0]["then"], ['ret("0")'])
-        self.assertEqual(out[0]["when"], "fn(itf)")
+        self.assertEqual(out[0]["structural_condition"], 'F("cd") == "3"')
+        self.assertEqual(out[0]["structural_effects"], ['ret("0")'])
+        self.assertEqual(out[0]["owner_signature"], "fn(itf)")
 
     def test_null_table_entries_dropped(self):
         rows = [_row("R-3", 3, tables=[

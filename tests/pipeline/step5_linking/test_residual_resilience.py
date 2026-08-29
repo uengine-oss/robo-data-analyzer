@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, patch
 from llm.usage.cost_budget import CostBudget
 from agents.residual import (
     ResidualPatternVerificationError,
+    _cases_with_numbered_source,
     _find_pattern,
     _residual_prompt_values,
     _remaining_original_cases,
-    _samples_with_numbered_context,
     run_residual_loop,
 )
 from agents.contracts import (
@@ -32,6 +32,7 @@ def _case() -> dict:
         "case_id": "case-1",
         "file": "sample.c",
         "line": 1,
+        "evidence_offset": 0,
         "call_text": "SQL_CALL",
         "source_id": "code:sample.c:fn",
         "attempted_patterns": [],
@@ -40,10 +41,7 @@ def _case() -> dict:
 
 def _scan() -> ScanResult:
     return ScanResult(
-        confidence=1.0,
-        evidence="test",
-        evidence_locations=["sample.c:1", "sample.c:2", "sample.c:3"],
-        codebase_notes="LLM-derived prose must not reach the residual LLM",
+        table_access_status="unavailable",
         no_match_reason="residual test has no initial pattern",
     )
 
@@ -91,7 +89,6 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         ]
         scan = _scan().model_copy(update={
             "matched_skill": "documented-skill",
-            "no_match_reason": None,
         })
         link = AsyncMock(side_effect=AssertionError("known SKILL must not be rescanned"))
         find = AsyncMock(side_effect=AssertionError("known SKILL must not call residual LLM"))
@@ -122,14 +119,13 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         expected = ResidualPatternResult(
             table_access_patterns=[],
             ddl_transform_override=None,
-            no_pattern_reason="no common syntax",
         )
         invoke = AsyncMock(return_value=expected)
 
         with (
             patch("agents.residual.run_yaml_rule", new=invoke),
             patch(
-                "agents.residual._samples_with_numbered_context",
+                "agents.residual._cases_with_numbered_source",
                 return_value=[_case()],
             ),
         ):
@@ -137,6 +133,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 sample=[_case()],
                 scan=_scan(),
                 ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
+                active_patterns=[],
                 project_root=Path("."),
                 tables=[],
                 cost_budget=CostBudget(limit_usd=1.0),
@@ -149,26 +146,24 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         self.assertEqual("residual", kwargs["rule_name"])
         self.assertIs(ResidualPatternResult, kwargs["response_model"])
 
-    def test_residual_result_requires_exactly_proposal_or_reason(self) -> None:
+    def test_residual_result_is_only_pattern_and_transform_proposal(self) -> None:
         from pydantic import ValidationError
 
+        empty = ResidualPatternResult(
+            table_access_patterns=[],
+            ddl_transform_override=None,
+        )
+        self.assertEqual([], empty.table_access_patterns)
         with self.assertRaises(ValidationError):
-            ResidualPatternResult(
-                table_access_patterns=[],
-                ddl_transform_override=None,
-                no_pattern_reason="",
-            )
-        with self.assertRaises(ValidationError):
-            ResidualPatternResult(
-                table_access_patterns=[],
-                ddl_transform_override=DdlTransform(ddl_naming_rule="as_is"),
-                no_pattern_reason="contradictory",
-            )
+            ResidualPatternResult.model_validate({
+                "table_access_patterns": [],
+                "ddl_transform_override": None,
+                "no_pattern_reason": "contradictory",
+            })
 
         transform_only = ResidualPatternResult(
             table_access_patterns=[],
             ddl_transform_override=DdlTransform(ddl_naming_rule="camel_to_snake_upper"),
-            no_pattern_reason=None,
         )
         self.assertEqual(
             "camel_to_snake_upper",
@@ -183,6 +178,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         )
         scan = _scan().model_copy(update={
             "matched_skill": "documented-skill",
+            "table_access_status": "completed",
             "no_match_reason": None,
             "table_access_patterns": [pattern],
             "table_access_exclusion_rules": [WrapperKeyExclusionRule(
@@ -200,13 +196,12 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         sample = [{
             **_case(),
             "attempted_patterns": [repeated],
-            "source_context_status": "ok",
-            "source_coordinate_system": "absolute-file-line",
-            "numbered_source_context": "1 | SQL_CALL",
+            "numbered_source": "1 | SQL_CALL",
         }]
 
         values = _residual_prompt_values(
-            sample, scan, DdlTransform(ddl_naming_rule="as_is"), [], round_no=1,
+            sample, scan, DdlTransform(ddl_naming_rule="as_is"), [],
+            active_patterns=[pattern], round_no=1,
         )
 
         self.assertEqual(
@@ -216,7 +211,13 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         self.assertNotIn('"regex"', values["residual_cases"])
         self.assertIn('"entity": "ORDERS"', values["residual_cases"])
         self.assertIn("1 | SQL_CALL", values["residual_cases"])
+        rendered_case = json.loads(values["residual_cases"])[0]
+        self.assertEqual(
+            {"call_text", "attempted_patterns", "numbered_source"},
+            set(rendered_case),
+        )
         self.assertNotIn("codebase_notes", values)
+        self.assertNotIn("matched_skill", values)
         residual_prompt = (
             Path(__file__).resolve().parents[3]
             / "agents" / "prompts" / "residual.yaml"
@@ -248,6 +249,117 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
 
+    async def test_every_current_residual_case_is_presented_without_fixed_sample_cap(self) -> None:
+        cases = [
+            {
+                **_case(),
+                "case_id": f"case-{index}",
+                "line": index,
+                "source_id": f"code:sample.c:fn:{index}",
+            }
+            for index in range(1, 32)
+        ]
+        no_pattern = ResidualPatternResult(
+            table_access_patterns=[],
+            ddl_transform_override=None,
+        )
+        find = AsyncMock(return_value=no_pattern)
+        baseline = SimpleNamespace(edges=[], resolved_sites=set())
+
+        with (
+            patch(
+                "agents.residual.RegexTableLinker.link",
+                new=AsyncMock(return_value=baseline),
+            ),
+            patch("agents.residual._find_pattern", new=find),
+        ):
+            outcome = await run_residual_loop(
+                unresolved_cases=cases,
+                scan_result=_scan(),
+                project_root=Path("."),
+                code_nodes=[],
+                tables=[],
+                cost_budget=CostBudget(limit_usd=1.0),
+            )
+
+        find.assert_awaited_once()
+        self.assertEqual(cases, find.await_args.kwargs["sample"])
+        self.assertEqual(cases, outcome.residual)
+
+    async def test_verified_progress_continues_beyond_the_retired_round_cap(self) -> None:
+        cases = [
+            {
+                **_case(),
+                "case_id": f"case-{index}",
+                "line": index,
+                "source_id": f"code:sample.c:fn:{index}",
+                "evidence_offset": index,
+            }
+            for index in range(1, 5)
+        ]
+        proposals = [
+            ResidualPatternResult(
+                table_access_patterns=[TableAccessPattern(
+                    id=f"pattern_{index}",
+                    call_regex=rf"(?P<op_token>SELECT) (?P<entity>T{index})",
+                    op_mappings=[OpMapping(token="SELECT", op="SELECT")],
+                )],
+                ddl_transform_override=None,
+            )
+            for index in range(1, 5)
+        ]
+        resolved_sites: set[tuple[str, int, str]] = set()
+        applied = []
+        for case in cases:
+            resolved_sites = {
+                *resolved_sites,
+                (case["file"], case["evidence_offset"], case["source_id"]),
+            }
+            applied.append(SimpleNamespace(
+                edges=[],
+                resolved_sites=set(resolved_sites),
+            ))
+        link = AsyncMock(side_effect=[
+            SimpleNamespace(edges=[], resolved_sites=set()),
+            *applied,
+        ])
+        find = AsyncMock(side_effect=proposals)
+
+        with (
+            patch("agents.residual.RegexTableLinker.link", new=link),
+            patch("agents.residual._find_pattern", new=find),
+            patch(
+                "agents.residual.verify_table_patterns",
+                new=AsyncMock(return_value=SimpleNamespace(ok=True, summary="verified")),
+            ),
+        ):
+            outcome = await run_residual_loop(
+                unresolved_cases=cases,
+                scan_result=_scan(),
+                project_root=Path("."),
+                code_nodes=[],
+                tables=[],
+                cost_budget=CostBudget(limit_usd=1.0),
+            )
+
+        self.assertEqual(4, find.await_count)
+        self.assertEqual([4, 3, 2, 1], [
+            len(call.kwargs["sample"])
+            for call in find.await_args_list
+        ])
+        self.assertEqual(
+            [[], ["pattern_1"], ["pattern_1", "pattern_2"], [
+                "pattern_1", "pattern_2", "pattern_3",
+            ]],
+            [
+                [pattern.id for pattern in call.kwargs["active_patterns"]]
+                for call in find.await_args_list
+            ],
+        )
+        self.assertEqual(4, outcome.rounds_used)
+        self.assertEqual(4, outcome.patterns_found)
+        self.assertEqual([], outcome.residual)
+
     async def test_rejected_proposal_is_fatal_not_unresolved_success(self) -> None:
         baseline = SimpleNamespace(edges=[], unresolved=[])
         proposed = ResidualPatternResult(
@@ -257,7 +369,6 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 "op_mappings": [{"token": "SELECT", "op": "SELECT"}],
             }],
             ddl_transform_override=None,
-            no_pattern_reason=None,
         )
         verdict = SimpleNamespace(ok=False, summary="dead rule")
         with (
@@ -294,11 +405,14 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             call_regex=r"(?P<op_token>SELECT) (?P<entity>orders)",
             op_mappings=[OpMapping(token="SELECT", op="SELECT")],
         )
-        scan = _scan().model_copy(update={"table_access_patterns": [pattern]})
+        scan = _scan().model_copy(update={
+            "table_access_status": "completed",
+            "no_match_reason": None,
+            "table_access_patterns": [pattern],
+        })
         proposal = ResidualPatternResult(
             table_access_patterns=[],
             ddl_transform_override=DdlTransform(ddl_naming_rule="camel_to_snake_upper"),
-            no_pattern_reason=None,
         )
         edge = ReadsWrites(
             source_id=case["source_id"],
@@ -308,7 +422,9 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             evidence_line=case["line"],
         )
         baseline = SimpleNamespace(edges=[], resolved_sites=set())
-        applied = SimpleNamespace(edges=[edge], resolved_sites=set())
+        applied = SimpleNamespace(edges=[edge], resolved_sites={(
+            case["file"], case["evidence_offset"], case["source_id"],
+        )})
         link = AsyncMock(side_effect=[baseline, applied])
         verify = AsyncMock(return_value=SimpleNamespace(ok=True, summary="verified"))
 
@@ -336,7 +452,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             verify.await_args.kwargs["ddl_transform"].ddl_naming_rule,
         )
 
-    def test_residual_context_is_line_numbered_and_scoped(self) -> None:
+    def test_residual_source_is_line_numbered_without_coordinate_metadata(self) -> None:
         from tempfile import TemporaryDirectory
 
         with TemporaryDirectory() as tmp:
@@ -347,12 +463,28 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             case = {**_case(), "line": 6}
-            got = _samples_with_numbered_context([case], root, radius=2)[0]
+            got = _cases_with_numbered_source([case], root, radius=2)[0]
 
-        self.assertEqual("absolute-file-line", got["source_coordinate_system"])
-        self.assertIn("4 | line 4", got["numbered_source_context"])
-        self.assertIn("6 | line 6", got["numbered_source_context"])
-        self.assertIn("8 | line 8", got["numbered_source_context"])
+        self.assertEqual(
+            {
+                "case_id", "file", "line", "evidence_offset", "call_text",
+                "source_id", "attempted_patterns", "numbered_source",
+            },
+            set(got),
+        )
+        self.assertIn("4 | line 4", got["numbered_source"])
+        self.assertIn("6 | line 6", got["numbered_source"])
+        self.assertIn("8 | line 8", got["numbered_source"])
+
+    def test_residual_source_failure_is_not_sent_to_the_model(self) -> None:
+        with self.assertRaisesRegex(
+            ResidualPatternVerificationError,
+            "outside the analysis root",
+        ):
+            _cases_with_numbered_source(
+                [{**_case(), "file": "../outside.c"}],
+                Path("."),
+            )
 
     def test_reapplied_patterns_cannot_inflate_original_residual_population(self) -> None:
         case = {**_case(), "evidence_offset": 12}
@@ -361,26 +493,31 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             [case],
             baseline_resolved_sites=set(),
             applied_resolved_sites=set(),
-            new_edges=[],
         )
 
         self.assertEqual([case], remaining)
 
-    def test_only_same_physical_site_with_new_edge_resolves_original_case(self) -> None:
+    def test_only_same_physical_offset_resolves_original_case(self) -> None:
         case = {**_case(), "evidence_offset": 12}
-        edge = ReadsWrites(
-            source_id=case["source_id"],
-            target_id="table:T",
-            relation="READS",
-            evidence_file=case["file"],
-            evidence_line=case["line"],
-        )
 
         remaining = _remaining_original_cases(
             [case],
             baseline_resolved_sites=set(),
             applied_resolved_sites={(case["file"], 12, case["source_id"])},
-            new_edges=[edge],
         )
 
         self.assertEqual([], remaining)
+
+    def test_missing_physical_offset_is_rejected_without_line_fallback(self) -> None:
+        case = _case()
+        case.pop("evidence_offset")
+
+        with self.assertRaisesRegex(
+            ResidualPatternVerificationError,
+            "missing a nonnegative evidence_offset",
+        ):
+            _remaining_original_cases(
+                [case],
+                baseline_resolved_sites=set(),
+                applied_resolved_sites=set(),
+            )

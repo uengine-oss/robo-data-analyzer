@@ -98,28 +98,19 @@ def normalize_relation(value: str) -> Optional[Literal["READS", "WRITES"]]:
 class Calls:
     """CodeNode → CodeNode (호출 관계).
 
-    Framework: 결정론 분류 (link_calls_by_name) — caller/callee = 함수.
-    DBMS: AST CALL 노드 → 대상 (link_calls_by_ast) — caller = CALL 노드, 빌트인 드롭·재귀 보존.
-    프로시저 단위 호출은 저장하지 않고 ``call_linker.routine_call_pairs`` 로 파생.
+    Parser가 남긴 호출 발생과 선언 사실을 Analyzer의 언어별 의미 어댑터와 공통
+    resolution core가 판정한다. Framework와 DBMS 모두 caller/callee는 사용자 작성
+    루틴이며, CALL 구문 노드나 외부 대체 노드를 제품 관계 끝점으로 쓰지 않는다.
 
-    scope:
-    - ``internal``: 같은 코드베이스 안 코드노드 — 콜리 정의 노드가 이미 존재.
-    - ``external``: 분석 범위 밖 실 루틴/프로시저 (예: 자기 스키마의 미분석 프로시저,
-      다른 스키마/라이브러리). 콜리 정의 노드가 없어 ``upsert_calls`` 가
-      ``:FUNCTION:EXTERNAL`` stub 노드를 모듈·스키마와 함께 internal 과 대칭으로 생성.
+    제품 ``CALLS``는 같은 분석 범위 안에서 정의가 증명된 사용자 코드노드만 허용한다.
+    범위 밖·표준·프레임워크·동적·미해결 호출은 occurrence ledger에만 남는다.
 
-    external 분해 메타 (``callee_*``) — strategy 별 linker 가 **언어 의미**로 채운다
-    (DBMS: module=프로시저·package=스키마, Framework: module=클래스·package=패키지).
-    internal 은 콜리 노드가 이미 있어 빈 값.
-
-    정체성 = (caller_id, callee_id). scope·callee_* 는 부속 — 같은 호출이 두 번 분류돼도 그래프엔 1 엣지.
+    정체성 = (caller_id, callee_id). 같은 호출이 여러 번 발생해도 제품 그래프에는 관계 하나이며
+    각 발생 위치는 run ledger가 소유한다.
     """
     caller_id: str
     callee_id: str
-    scope: Literal["internal", "external"] = "internal"
-    callee_module: str = ""                  # external 콜리의 모듈 id (DBMS=프로시저명 / FW=클래스)
-    callee_package: str = ""                 # external 콜리의 패키지 id — 스키마(DBMS) / 패키지(FW)
-    callee_name: str = ""                    # external 콜리 표시명
+    scope: Literal["internal"] = "internal"
     recursive: bool = False                  # 원문 호출이 자기 루틴을 직접 지목했을 때만 True
 
 
@@ -199,16 +190,10 @@ class InitBy:
 
 @dataclass(frozen=True)
 class HasRule:
-    """CodeNode → shared Rule occurrence.
-
-    ``occurrence_id`` is function-scoped because the same statement can appear
-    more than once in one routine. The Rule node remains meaning-deduplicated.
-    """
+    """CodeNode → occurrence-specific Rule; ordinal preserves source order."""
     source_id: str
     target_id: str
-    occurrence_id: str = ""
     ordinal: int = 0
-    anchor_line: int = 0
 
 
 @dataclass(frozen=True)
@@ -216,69 +201,14 @@ class HasExample:
     """Rule → Example. source=rule, target=example."""
     source_id: str
     target_id: str
-    occurrence_id: str = ""
     ordinal: int = 0
 
 
 @dataclass(frozen=True)
-class HasQuestion:
-    """CodeNode → Question. source=function, target=question."""
-    source_id: str
-    target_id: str
-
-
-@dataclass(frozen=True)
 class AffectsTable:
-    """Example → Table. 최종 access/op/provenance를 끝점까지 보존한다."""
+    """Confirmed Rule → Table effect with its deterministic operation source."""
     source_id: str
     target_id: str
     access: Literal["READ", "WRITE", "READ_WRITE"]
-    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "UNKNOWN"]
-    op_source: Literal["SCANNER", "LLM_INFERRED", "UNRESOLVED"]
-
-
-# ── External-file relationships (spec 078) ──────────────────────────
-
-def _validate_external_edge(source_id: str, target_id: str, evidence_line: int | None = None) -> None:
-    if not source_id.strip() or not target_id.strip():
-        raise ValueError("external relationship endpoints must be non-empty")
-    if evidence_line is not None and (
-        isinstance(evidence_line, bool) or not isinstance(evidence_line, int) or evidence_line < 0
-    ):
-        raise ValueError("evidence_line must be a non-negative integer")
-
-
-@dataclass(frozen=True)
-class ReferTo:
-    """METHOD/FUNCTION → EXTERNAL_CHUNK | PROJECT_FILE: verified exact occurrence.
-
-    ``matched_key`` is the chunk key, file name or path suffix that the code's
-    determined string equalled; the target is a chunk when a key pinned one
-    chunk, and a file when the string named the file itself (spec 081).
-    ``via_symbol`` names the constant the value was folded from; empty for a
-    direct literal.
-    The relation asserts occurrence only — never call/consumption semantics.
-    """
-    source_id: str
-    target_id: str
-    matched_key: str
-    evidence_file: str = ""
-    evidence_line: int = 0
-    via_symbol: str = ""
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id, self.evidence_line)
-        if not self.matched_key.strip():
-            raise ValueError("REFER_TO requires the matched key")
-
-
-@dataclass(frozen=True)
-class HasChunk:
-    source_id: str
-    target_id: str
-
-    def __post_init__(self) -> None:
-        _validate_external_edge(self.source_id, self.target_id)
-
-
-ExternalEdge = Union[ReferTo, HasChunk]
+    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE"]
+    op_source: Literal["SCANNER", "ANALYZER_DERIVED"]

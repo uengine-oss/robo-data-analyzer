@@ -17,11 +17,6 @@ LangChain ``before_model`` / ``after_model`` 분업 X — wrap 하나로 5 책�
 4. 예외: 명시 로그 (silent 차단) + raise
 5. ``CostBudget`` 회로 차단기
 
-``model_retry`` / ``model_fallback`` 같은 framework 권장 패턴.
-
-**deepagents subagent 미들웨어 미상속 버그 (#2744) 회피**:
-subagent 정의 시 이 미들웨어를 명시 주입 (``standard_stack`` 헬퍼).
-
 **단순 LLM 호출** (Agent 외부, ``yaml_llm_runner.run_yaml_rule``) 도 같은
 ``append_usage_record`` 헬퍼 호출 → usage.jsonl 형식 통일.
 """
@@ -29,7 +24,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
@@ -38,11 +33,7 @@ from langchain_core.messages import AIMessage
 from llm.usage.cost_budget import CostBudget
 from llm.messages import content_to_text
 from llm.usage.pricing import compute_cost
-from llm.usage.token_usage import (
-    LatencyBasedCacheEstimator,
-    UnmeteredLlmCallError,
-    track_usage,
-)
+from llm.usage.token_usage import UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
 from llm.tracing import append_conversation_turn
@@ -56,13 +47,11 @@ class CostTrackingMiddleware(AgentMiddleware):
         usage_log_path: Path,
         cost_budget: CostBudget,
         agent_name: str = "default",
-        cache_estimator: Optional[LatencyBasedCacheEstimator] = None,
     ):
         super().__init__()
         self.usage_log_path = Path(usage_log_path)
         self.cost_budget = cost_budget
         self.agent_name = agent_name
-        self.cache_estimator = cache_estimator
         # turn 별 본문 적재 — 직전 turn 까지의 messages 길이. 새 turn 의 user 메시지만 슬라이스.
         # 같은 middleware 인스턴스가 한 invoke 동안 재사용 → 0 으로 초기화.
         self._last_msg_count: int = 0
@@ -129,7 +118,6 @@ class CostTrackingMiddleware(AgentMiddleware):
             ai_msg,
             model=model,
             latency_ms=elapsed_ms,
-            cache_estimator=self.cache_estimator,
         )
         cost = compute_cost(record)
 

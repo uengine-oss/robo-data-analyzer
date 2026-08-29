@@ -11,7 +11,7 @@ from pipeline.steps.step3_load_external.parsers import key_roles
 from pipeline.steps.step4_scan_project.scanner_input_collector import (
     collect_scanner_input,
 )
-from pipeline.steps.step5_linking.link_external import resolver_catalog
+from pipeline.steps.step5_linking.link_external import linker
 
 
 _CACHED_POLICIES = (
@@ -79,9 +79,9 @@ class OntologyIntegrationContractsTest(unittest.TestCase):
 
     def test_consumers_use_data_owned_resolver_and_address_roles(self) -> None:
         with patch.object(
-            resolver_catalog, "external_resolvers", return_value={"customRead": (2,)}
+            linker, "external_resolvers", return_value={"customRead": (2,)}
         ):
-            self.assertEqual({"customRead": (2,)}, resolver_catalog.promote_wrappers([]))
+            self.assertEqual({"customRead": (2,)}, linker.external_resolvers())
 
         with (
             patch.object(
@@ -101,28 +101,61 @@ class OntologyIntegrationContractsTest(unittest.TestCase):
             self.assertTrue(key_roles.is_addressable_child_text("parent", "ns:child"))
             self.assertTrue(key_roles.is_addressable_kind("custom_entry"))
 
-    def test_scanner_hints_are_data_driven_and_manifest_decode_is_strict(self) -> None:
+    def test_scanner_hints_are_complete_compact_inventory_not_inline_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            (root / "custom.manifest").write_text("name=value", encoding="utf-8")
-            (root / "sample.zz").write_text("content", encoding="utf-8")
+            manifest = root / "custom.manifest"
+            manifest.write_text(
+                "\n".join(f"key{line}=value{line}" for line in range(80)),
+                encoding="utf-8",
+            )
+            for index in range(55):
+                (root / f"sample-{index}.zz").write_text("content", encoding="utf-8")
             with patch(
                 "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
                 return_value=(("custom.manifest",), {"Custom": frozenset({".zz"})}),
             ):
                 result = collect_scanner_input(root)
-            self.assertEqual("name=value", result["manifest_content"])
-            self.assertEqual(["sample.zz"], result["scanner_categories"]["Custom"])
+            self.assertEqual(["custom.manifest"], result["manifest_paths"])
+            self.assertNotIn("manifest_content", result)
+            self.assertEqual(55, result["scanner_category_file_counts"]["Custom"])
+            self.assertEqual({"manifest": 1, "zz": 55}, result["extension_counts"])
 
-            (root / "custom.manifest").write_bytes(b"\xff\xfe")
-            with (
-                patch(
-                    "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
-                    return_value=(("custom.manifest",), {"Custom": frozenset({".zz"})}),
-                ),
-                self.assertRaises(UnicodeDecodeError),
+    def test_scanner_inventory_keeps_every_extension_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for index in range(25):
+                (root / f"source.x{index:02d}").write_text("content", encoding="utf-8")
+            with patch(
+                "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
+                return_value=((), {}),
             ):
-                collect_scanner_input(root)
+                result = collect_scanner_input(root)
+
+        self.assertEqual(25, len(result["extension_counts"]))
+
+    def test_scanner_inventory_counts_only_explicit_partial_upload_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selected = root / "selected.zz"
+            outside = root / "outside.yy"
+            selected.write_text("selected", encoding="utf-8")
+            outside.write_text("outside", encoding="utf-8")
+            with patch(
+                "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
+                return_value=((), {
+                    "Selected": frozenset({".zz"}),
+                    "Outside": frozenset({".yy"}),
+                }),
+            ):
+                result = collect_scanner_input(
+                    root,
+                    selected_source_paths=(selected,),
+                )
+
+        self.assertEqual({"zz": 1}, result["extension_counts"])
+        self.assertEqual(1, result["scanner_category_file_counts"]["Selected"])
+        self.assertEqual(0, result["scanner_category_file_counts"]["Outside"])
 
 
 if __name__ == "__main__":

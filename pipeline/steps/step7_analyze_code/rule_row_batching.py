@@ -1,7 +1,7 @@
 """Deterministic Rule obligation accounting and materialization."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import Counter
 from typing import Sequence
 
@@ -9,6 +9,7 @@ from pipeline.models.code_analysis_output import RuleItem, RulesExamplesOutput
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.rule_condition_ir import attach_rule_condition_projection
 from pipeline.models.rule_materialization import materialize_rule_items
+from pipeline.models.rule_meaning_frame import RuleMeaningProjection
 from pipeline.quality_gates.branch_inventory import BranchInventory
 from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.quality_gates.rule_grading import grade_rules, partition_rule_candidates
@@ -25,6 +26,7 @@ class RowCollection:
     rules: list[RuleItem]
     findings: list[AnalysisFinding]
     calls: int = 0
+    evidence: dict[str, object] = field(default_factory=dict)
 
 
 def materialize_and_validate_rules(
@@ -104,4 +106,106 @@ def materialize_and_validate_rules(
             + "; ".join(reasons or ("assigned-row coverage mismatch",))
         )
     accepted.sort(key=lambda rule: rule.anchor_line)
-    return RowCollection(rules=accepted, findings=findings, calls=0)
+    return RowCollection(
+        rules=accepted,
+        findings=findings,
+        calls=0,
+        evidence=dict(evidence),
+    )
+
+
+def apply_rule_meaning_projections(
+    collection: RowCollection,
+    projections: Sequence[RuleMeaningProjection],
+    *,
+    target_scope: str,
+) -> RowCollection:
+    """Publish only sufficiently grounded business rows; account for every other row."""
+    by_line = {projection.anchor_line: projection for projection in projections}
+    expected = {rule.anchor_line for rule in collection.rules}
+    if len(by_line) != len(projections) or set(by_line) != expected:
+        raise ValueError(
+            f"{target_scope}: Rule meaning row coverage mismatch: "
+            f"expected={sorted(expected)}, actual={sorted(by_line)}"
+        )
+    rules: list[RuleItem] = []
+    findings = list(collection.findings)
+    for rule in collection.rules:
+        projection = by_line[rule.anchor_line]
+        if (
+            projection.disposition == "business_rule"
+            and projection.status == "sufficient"
+        ):
+            rules.append(rule.model_copy(update={
+                "business_condition": projection.condition,
+                "business_effects": list(projection.effects),
+            }))
+            continue
+        excluded = projection.disposition == "implementation_detail"
+        findings.append(AnalysisFinding(
+            concern="rules",
+            status="excluded" if excluded else "unverified",
+            target_id=f"{target_scope}::R-{rule.anchor_line}",
+            coordinates=(rule.anchor_line,),
+            reasons=((
+                "Structural row is implementation detail, not a product business Rule"
+                if excluded else
+                "Business Rule meaning is not sufficiently grounded for publication: "
+                f"{projection.status}"
+            ),),
+            candidate={
+                "row_disposition": projection.disposition,
+                "business_condition": projection.condition,
+                "business_effects": list(projection.effects),
+                "atom_coverage_status": projection.status,
+            },
+            evidence_rule="code_rule_meanings",
+        ))
+    published_rows = {rule.anchor_line for rule in rules}
+    accounted_rows = Counter(
+        row
+        for finding in findings[len(collection.findings):]
+        for row in finding.coordinates
+    )
+    if (
+        published_rows & set(accounted_rows)
+        or published_rows | set(accounted_rows) != expected
+        or any(count != 1 for count in accounted_rows.values())
+    ):
+        raise ValueError(f"{target_scope}: Rule meaning exact-once accounting failed")
+    return RowCollection(
+        rules=rules,
+        findings=findings,
+        calls=collection.calls + 1,
+        evidence=collection.evidence,
+    )
+
+
+def mark_rule_meanings_unavailable(
+    collection: RowCollection,
+    *,
+    target_scope: str,
+    reason: str,
+    count_call: bool = True,
+) -> RowCollection:
+    """Keep failed meaning rows out of product Rules and account for each once."""
+    findings = [
+        *collection.findings,
+        *(
+            AnalysisFinding(
+                concern="rules",
+                status="unavailable",
+                target_id=f"{target_scope}::R-{rule.anchor_line}",
+                coordinates=(rule.anchor_line,),
+                reasons=(reason,),
+                evidence_rule="code_rule_meanings",
+            )
+            for rule in collection.rules
+        ),
+    ]
+    return RowCollection(
+        rules=[],
+        findings=findings,
+        calls=collection.calls + int(count_call),
+        evidence=collection.evidence,
+    )

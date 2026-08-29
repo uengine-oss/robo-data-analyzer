@@ -17,17 +17,6 @@ class _Pause:
         return None
 
 
-class _RecordingClient:
-    def __init__(self) -> None:
-        self.writes: list[tuple[str, list[dict]]] = []
-
-    async def run_batch_unwind(self, query: str, items: list[dict]) -> None:
-        self.writes.append((query, items))
-
-    async def run_read_query(self, query: str, params: dict | None = None) -> list[dict]:
-        return [{"id": value} for value in (params or {}).get("ids", [])]
-
-
 class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
     @patch(
         "pipeline.steps.step3_load_external.load_external_step.extract_document",
@@ -44,11 +33,11 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
                 "pause": _Pause(),
                 "neo_client": None,
             }})
-            item = result["project_files"][0]
+            item = result["external_source_files"][0]
             self.assertEqual(("document", "unanalyzed", "optional_dependency_missing"), (
-                item.category, item.status, item.reason,
+                item.category, item.status, item.disposition_reason,
             ))
-            self.assertEqual([], result["external_chunks"])
+            self.assertEqual([], result["external_source_records"])
 
     async def test_real_inventory_produces_honest_status_and_disjoint_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -62,41 +51,48 @@ class LoadExternalStepTest(unittest.IsolatedAsyncioTestCase):
             )
             (root / "README.md").write_text("# 주문\n설명", encoding="utf-8")
             (root / "blob.bin").write_bytes(b"a\x00b")
-            neo = _RecordingClient()
             result = await load_external_step({}, {"configurable": {
                 "codebase": SimpleNamespace(root=root),
                 "source_cache": SourceFileCache(),
                 "pause": _Pause(),
-                "neo_client": neo,
+                "neo_client": object(),
             }})
             self.assertEqual(
-                {"project_files", "external_chunks", "external_edges"},
+                {"external_source_files", "external_source_records"},
                 set(result),
             )
-            by_path = {item.relpath: item for item in result["project_files"]}
+            by_path = {
+                item.project_relative_path: item
+                for item in result["external_source_files"]
+            }
             self.assertEqual("registered", by_path["A.java"].status)
             self.assertEqual("analyzed", by_path["app.properties"].status)
             self.assertEqual("artifact_xml", by_path["mapper.xml"].category)
-            self.assertEqual("binary_unanalyzed", by_path["blob.bin"].reason)
-            all_keys = {key for chunk in result["external_chunks"] for key in chunk.keys}
+            self.assertEqual(
+                "binary_unanalyzed", by_path["blob.bin"].disposition_reason,
+            )
+            all_keys = {
+                key
+                for record in result["external_source_records"]
+                for key in record.addressable_keys
+            }
             self.assertIn("shop.title", all_keys)
             self.assertIn("shop.M.find", all_keys)
             # CP949 원문도 디코딩된 소스의 정확한 슬라이스여야 한다.
-            for chunk in result["external_chunks"]:
-                self.assertEqual("source_span", chunk.provenance)
-                self.assertEqual(chunk.char_end - chunk.char_start, len(chunk.text))
-            md_chunks = [c for c in result["external_chunks"] if c.file_path == "README.md"]
-            self.assertEqual(["md_section"], [c.semantic_kind for c in md_chunks])
-            project_payloads = [
-                item
-                for query, items in neo.writes
-                if "SET n:PROJECT_FILE" in query
-                for item in items
+            for record in result["external_source_records"]:
+                self.assertEqual("source_span", record.provenance)
+                self.assertEqual(
+                    record.source_character_end - record.source_character_start,
+                    len(record.exact_text),
+                )
+            markdown_records = [
+                record
+                for record in result["external_source_records"]
+                if record.project_relative_path == "README.md"
             ]
-            self.assertEqual(5, len(project_payloads))
             self.assertEqual(
-                {item.relpath for item in result["project_files"]},
-                {item["relpath"] for item in project_payloads},
+                ["md_section"],
+                [record.semantic_kind for record in markdown_records],
             )
 
     def test_both_strategies_parallelize_only_disjoint_step2_and_step3(self) -> None:

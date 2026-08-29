@@ -13,12 +13,34 @@ from pipeline.execution.run_executor import (
     _reset_run_output_root,
     _write_initial_manifest,
 )
-from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
+from pipeline.execution.sealed_analysis_inputs import SealedAnalysisInputs
+from pipeline.execution.run_output_context import (
+    get_response_locale,
+    get_run_dir,
+    reset_response_locale,
+    reset_run_dir,
+    set_response_locale,
+    set_run_dir,
+)
 from pipeline.models.analysis_meta import AnalysisRun, Codebase
-from pipeline.models.human_glossary import load_human_glossary
 
 
 class ImmutableRunEvidenceTest(unittest.TestCase):
+    def test_run_owned_output_and_locale_have_no_process_fallback(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "run output context"):
+            get_run_dir()
+        with self.assertRaisesRegex(RuntimeError, "response locale context"):
+            get_response_locale()
+
+        run_token = set_run_dir(Path("run-owned"))
+        locale_token = set_response_locale("fr")
+        try:
+            self.assertEqual(Path("run-owned"), get_run_dir())
+            self.assertEqual("fr", get_response_locale())
+        finally:
+            reset_response_locale(locale_token)
+            reset_run_dir(run_token)
+
     def test_prompt_record_retries_transient_windows_replace_denial(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             target = Path(temporary_directory) / "record.json"
@@ -146,8 +168,10 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
             try:
                 _write_initial_manifest(
                     run,
-                    SimpleNamespace(prompts_dir="llm/prompts/framework"),
-                    load_human_glossary(corpus),
+                    SealedAnalysisInputs(
+                        payload={"schema_version": "sealed-analysis-inputs/v1"},
+                        sha256="a" * 64,
+                    ),
                 )
                 tracing.write_rule_record(
                     rule_name="generic_contract",
@@ -161,16 +185,16 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
 
             manifest = json.loads((run.run_dir / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(run.run_id, manifest["run_id"])
+            self.assertEqual(run.analysis_scope_id, manifest["analysis_scope_id"])
             self.assertEqual(str(corpus.resolve()), manifest["corpus_root"])
             self.assertEqual("en-US", manifest["locale"])
-            self.assertRegex(manifest["prompt_tree_sha256"], r"^[0-9a-f]{64}$")
-            self.assertEqual({
-                "supplied": False,
-                "source": "analysis/glossary.yaml",
-                "schema_version": None,
-                "sha256": None,
-                "term_count": 0,
-            }, manifest["human_glossary"])
+            self.assertEqual("a" * 64, manifest["sealed_analysis_inputs"]["sha256"])
+            self.assertEqual(
+                str((run.run_dir / "sealed-analysis-inputs.json").resolve()),
+                manifest["sealed_analysis_inputs"]["ref"],
+            )
+            self.assertNotIn("prompt_tree_sha256", manifest)
+            self.assertNotIn("human_glossary", manifest)
             # run 산출물은 루트가 아니라 root/<run_id>/ 에 격리된다 (2026-08-07 개편).
             self.assertEqual(root / run.run_id, run.run_dir)
             prompt_log = run.run_dir / "llm-prompts" / "generic_contract.jsonl"

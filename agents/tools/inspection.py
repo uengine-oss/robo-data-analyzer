@@ -22,33 +22,48 @@ from pathlib import Path
 from langchain.tools import tool
 
 from shared.files.paths import PathOutsideRoot, resolve_within
+from shared.files.run_cache_context import read_run_text
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import statement_labels
 from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, SkillCatalogError, build_skill_catalog
 
 # agents/skills/ 경로
 
-# 결과 최대 개수 (Plan §4 M2)
-_MAX_FUNCTIONS = 50
+_FUNCTION_PAGE_SIZE = 50
 
 
-def make_list_code_nodes(code_nodes: list[CodeNode]):
+def make_list_code_nodes(
+    code_nodes: list[CodeNode], *, project_root: Path | None = None,
+):
     """step2 가 파싱한 CodeNode 목록 → ``list_code_nodes`` 도구 생성.
 
     코드노드 목록은 antlr JSON 을 step2(load_ast)가 이미 구조화한 데이터. 도구는
     파일/JSON 을 안 읽고 그 데이터를 file 별로 걸러줄 뿐.
     """
+    root = project_root.resolve() if project_root is not None else None
     by_file: dict[str, list[CodeNode]] = {}
     stmt_labels = statement_labels()
     for fn in code_nodes:
         # statement 노드(RETURN/ASSIGNMENT/GOTO 등)는 목록 대상이 아니다 — 대형
-        # 파일에서 _MAX_FUNCTIONS 상한을 statement 가 밀어내 루틴이 가려진다.
+        # statement가 routine 페이지를 밀어내지 않도록 routine만 보존한다.
         if fn.label in stmt_labels:
             continue
-        by_file.setdefault(str(Path(fn.file_path).resolve()), []).append(fn)
+        raw_path = Path(fn.file_path)
+        resolved = (
+            (root / raw_path).resolve()
+            if root is not None and not raw_path.is_absolute()
+            else raw_path.resolve()
+        )
+        by_file.setdefault(str(resolved), []).append(fn)
+        if root is not None:
+            try:
+                relative = resolved.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            by_file.setdefault(relative, []).append(fn)
 
     @tool
-    def list_code_nodes(file: str) -> str:
+    def list_code_nodes(file: str, offset: int = 0) -> str:
         """파일 안 코드노드 / 메서드 목록 — step2 가 파싱한 결과.
 
         **언제 사용**:
@@ -56,16 +71,23 @@ def make_list_code_nodes(code_nodes: list[CodeNode]):
         - 이름 패턴 관찰 (`mpfm_*` / `findBy*` / `xx_validation`).
         - `read_file_range(file, start, end)` 의 라인 범위 산출.
 
-        **인자**: `file` — 소스 파일 경로.
+        **인자**: `file` — `glob_search`가 반환한 프로젝트 상대 소스 경로.
 
-        **결과** (JSON 문자열, 최대 50개):
-        `[{"name", "signature", "start_line", "end_line"}, ...]`
+        **결과**: page 회계와 `items`를 가진 JSON. `next_offset`이 null이 될 때까지
+        이어 읽으면 파일의 모든 routine을 정확히 한 번 볼 수 있다.
 
         **실패 응답**: `NO_FUNCTIONS` — 그 파일에 코드노드 0개. 대체 도구: `read_file` / `grep`.
         """
-        fns = by_file.get(str(Path(file).resolve()))
+        lookup_key = Path(file).as_posix()
+        fns = by_file.get(lookup_key)
+        if fns is None:
+            fns = by_file.get(str(Path(file).resolve()))
         if not fns:
             return "NO_FUNCTIONS"
+        if offset < 0:
+            return "INVALID_OFFSET: offset must be non-negative"
+        ordered = sorted(fns, key=lambda f: f.start_line)
+        page = ordered[offset:offset + _FUNCTION_PAGE_SIZE]
         items = [
             {
                 "name": fn.name,
@@ -73,9 +95,16 @@ def make_list_code_nodes(code_nodes: list[CodeNode]):
                 "start_line": fn.start_line,
                 "end_line": fn.end_line,
             }
-            for fn in sorted(fns, key=lambda f: f.start_line)[:_MAX_FUNCTIONS]
+            for fn in page
         ]
-        return json.dumps(items, ensure_ascii=False, indent=2)
+        next_offset = offset + len(items) if offset + len(items) < len(ordered) else None
+        return json.dumps({
+            "offset": offset,
+            "returned": len(items),
+            "total": len(ordered),
+            "next_offset": next_offset,
+            "items": items,
+        }, ensure_ascii=False, indent=2)
 
     return list_code_nodes
 
@@ -133,4 +162,4 @@ def read_skill(name: str) -> str:
     md = skill_dir / "SKILL.md"
     if not md.is_file():
         return f"SKILL_NOT_FOUND: {name}"
-    return md.read_text(encoding="utf-8")
+    return read_run_text(md, encoding="utf-8")

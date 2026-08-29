@@ -433,6 +433,7 @@ def parse_ddl_file(
     db: str,
     default_schema: str = "",
     dialect: str | None = None,
+    sealed_source_bytes: bytes | None = None,
 ) -> DDLParseResult:
     """DDL 파일 1개 파싱 → 도메인 노드 / 엣지.
 
@@ -447,7 +448,11 @@ def parse_ddl_file(
     Returns:
         ``DDLParseResult`` — 호출자가 모아서 Neo4j 업서트.
     """
-    sql = path.read_text(encoding="utf-8")
+    sql = (
+        path.read_text(encoding="utf-8")
+        if sealed_source_bytes is None
+        else sealed_source_bytes.decode("utf-8", errors="strict")
+    )
     norm_sql, effective_dialect = _normalize_ddl(sql, dialect)
     table_comments, column_comments = _extract_comment_on(
         sql, dialect=effective_dialect, default_schema=default_schema,

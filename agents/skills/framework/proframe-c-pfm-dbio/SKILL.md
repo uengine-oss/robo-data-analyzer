@@ -101,15 +101,6 @@ framework_runtime_functions:
   - mpfm_get_date_time
   - mpfm_get_date_utime
   - PRINT_*
-
-codebase_notes: >-
-  ProFrame C 프로젝트. mpfmdbio wrapper의 첫 인자는 SQL_KEY다. TABLE R/W key는
-  <table>_<op><nnnn>이고 시퀀스 객체 key는 <sequence-key>_s_<op><nnnn>다.
-  SQL_KEY <op>의 s/i/u/d가 SELECT/INSERT/UPDATE/DELETE를 결정하고 코드 주석과
-  어긋나면 SQL_KEY가 진실이다. 시퀀스 객체 key는 TABLE R/W 관계로 만들지 않는다.
-  mpfm_dlcall의 첫 문자열 인자는 호출 대상 모듈이다. PFM_TRY(expr)는 expr 결과가
-  RC_NRM이 아니면 현재 함수의 PFM_CATCH로 제어를 넘기며, 정확한 최종 반환·복구
-  효과는 활성 PFM_CATCH 본문으로 확정한다.
 ```
 
 ## 호출 wrapper (인자가 실제 호출 대상)
@@ -144,19 +135,6 @@ ProFrame 의 런타임·매크로 함수. 업무 로직이 아니므로 호출 �
 
 > `mpfmdbio` 는 위 정규식(table_access_patterns)의 앵커이기도 하다 — 테이블 R/W 는
 > 정규식이 잡고, 호출 그래프에서는 프레임워크 함수로 드롭된다 (서로 다른 단계).
-
-## codebase_notes 예시
-
-> ProFrame C 프로젝트. ``mpfmdbio`` wrapper 로 모든 DB 접근.
-> SQL_KEY 두 형식 — 본 R/W ``<table>_<op><nnnn>``, 시퀀스 객체
-> ``<sequence-key>_s_<op><nnnn>``.
-> 첫 인자가 곧 SQL_KEY. 회사 표준이라 추가 변환 없이 entity = TABLE.
-> **SQL_KEY 의 ``<op>``: s=SELECT, i=INSERT, u=UPDATE, d=DELETE — 함수의 DB 작업 종류 결정**
-> (예: ``..._s0024`` = SELECT, ``..._i0002`` = INSERT). 코드 주석이 op 와 어긋나면 SQL_KEY 가 진실.
-> 시퀀스 객체 key는 TABLE R/W 관계로 만들지 않는다(현재 별도 SEQUENCE 노드는 없음).
-> ``PFM_TRY(expr)``는 `expr` 결과가 ``RC_NRM``이 아니면 현재 함수의 ``PFM_CATCH``로
-> 제어를 넘긴다. 정확한 최종 반환·복구 효과는 해당 함수의 활성 ``PFM_CATCH`` 본문으로
-> 확정하며, 호출 실패 뒤 정상 흐름이 계속된다고 해석하지 않는다.
 
 ## 한계
 

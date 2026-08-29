@@ -1,10 +1,11 @@
 """enrich_table_description_step — 테이블 description 통합 LLM 호출.
 
 흐름:
-1. ``step7_analyze_code`` 의 ``tableInsights`` (``CodeNode.extra["table_insights"]``) 누적.
-2. ``table_fqn`` 별로 candidates (모든 코드노드 관점의 role + columns) 모음.
+1. ``step7_analyze_code``의 access별 ``function_table_usages``와 결정론
+   ``direct_column_usage_evidence_by_table``을 읽는다.
+2. ``table_fqn``별로 접근 의미와 컬럼 원문 근거를 모은다.
 3. ``llm/prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
-4. Table/Column.analyzed_description Neo4j SET — DDL/카탈로그 1차 description 과 격리.
+4. Table/Column 최종 상태 반환 — 제품 저장은 최종 공개 경로만 수행.
 
 LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
 """
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -25,7 +26,7 @@ from pipeline.execution.analysis_handoff import (
     AnalysisHandoffAborted,
     handoff_of,
 )
-from pipeline.execution.step_config import step_config
+from pipeline.execution.step_config import require_step_config_value, step_config
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
 
@@ -34,19 +35,22 @@ from pipeline.models.code_analysis_output import TableDescription
 from pipeline.models.table_description_frame import (
     build_table_description_plans,
     normalize_table_description_frame_response,
+    table_description_prompt_values,
     table_description_frame_response_model,
 )
-from pipeline.models.semantic_frame import profile_prompt_json, slot_specs_json
 from pipeline.models.sql_identifier import SqlIdentifierKey, sql_identifier_key
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.execution.quality_finding_log import record_analysis_findings
+from pipeline.execution.semantic_artifacts import (
+    persist_product_missing_context,
+    persist_semantic_frame,
+)
+from pipeline.models.function_meaning import MissingContextItem
+from pipeline.models.semantic_frame import SemanticFrame
 from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import step_processing_scope, track_processing
-from graph.neo4j_client import Neo4jClient
-from graph.nodes.column import update_analyzed_descriptions as update_column_analyzed
-from graph.nodes.table import update_analyzed_descriptions as update_table_analyzed
 from graph.schema.node_ids import fqn
 from pipeline.steps.step8_post_processing.table_logical_names import (
     build_consolidated_column_updates,
@@ -57,17 +61,12 @@ _STEP = "step8.enrich_table_description"
 
 async def enrich_table_description_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     cfg = step_config(config)
-    strategy = cfg.get("strategy")
+    strategy = require_step_config_value(cfg, "strategy", step=_STEP)
     cost_budget = cfg.get("cost_budget")
-    neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or PauseController()
-    if strategy is None:
-        log_warning(_STEP, "config_missing", "strategy 누락 — step skip")
-        return {}
-
-    # ``table_insights`` 는 direct R/W required-key schema와 rules가 모두 끝난 노드에서만
-    # 확정된다 — 그래서 #1 이 아니라 전 노드 완료를 기다린다(spec 096/116 §39).
+    # 함수-테이블 접근 의미는 direct R/W 슬롯 응답이 끝난 노드에서만
+    # 확정된다. 결정론 컬럼 근거는 그 응답 성공 여부와 관계없이 별도로 넘어온다.
     # 호출 대상은 아래에서 결정론 R/W 테이블로 제한한다.
     handoff = handoff_of(cfg)
     try:
@@ -96,9 +95,6 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
             "table insight has no deterministic READS/WRITES owner: "
             f"{sorted(candidate_only)!r}"
         )
-    if not table_fqns:
-        log_info(_STEP, "skip", reason="no deterministically accessed DDL tables")
-        return {}
     allowed_column_names: dict[str, set[str]] = {}
     prompt_evidence: dict[str, dict] = {}
     for table in table_fqns:
@@ -137,7 +133,9 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     log_info(
         _STEP, "start",
         tables=len(table_fqns),
-        code_insights=sum(len(v) for v in table_candidates.values()),
+        function_table_usage_meanings=sum(
+            len(v) for v in table_candidates.values()
+        ),
         column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)
@@ -159,30 +157,11 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
                     return await run_yaml_rule(
                         prompts_dir=prompts_dir,
                         rule_name="table_description",
-                        user_values={
-                            "table_fqn": table_fqn,
-                            "candidates_json": json.dumps(evidence, ensure_ascii=False, indent=2),
-                            "table_structural_profile": profile_prompt_json(
-                                table_plan[0], table_plan[1],
-                            ),
-                            "table_applicable_slots": slot_specs_json(table_plan[1]),
-                            "column_frame_assignments": json.dumps(
-                                {
-                                    name: {
-                                        "structural_profile": profile.model_dump(
-                                            mode="json", by_alias=True,
-                                        ),
-                                        "applicable_slots": [
-                                            spec.model_dump(mode="json") for spec in specs
-                                        ],
-                                    }
-                                    for name, (profile, specs) in column_plans.items()
-                                },
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ),
-                        },
+                        user_values=table_description_prompt_values(
+                            table_fqn,
+                            table_plan,
+                            column_plans,
+                        ),
                         response_model=response_model,
                         budget=cost_budget,
                     )
@@ -203,7 +182,10 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         )
 
     with step_processing_scope(_STEP, stream):
-        results = await pause.run_restartable_during_pause(_run_fanout)
+        results = (
+            await pause.run_restartable_during_pause(_run_fanout)
+            if table_fqns else []
+        )
 
     successful: list[tuple[str, TableDescription]] = []
     findings: list[AnalysisFinding] = []
@@ -225,28 +207,37 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
             "일부 테이블 설명 후보를 검증할 수 없어 해당 테이블만 원본 상태로 보존함",
             count=len(findings), targets=[finding.target_id for finding in findings],
         )
+        raise RuntimeError(
+            "table meaning invocation failed; generation publication is not allowed: "
+            + ", ".join(finding.target_id for finding in findings)
+        )
 
-    # 분석 합성 설명/논리명 → 노드에 SET. ★id = 원본 table_fqn(= 노드 id, 결정론) 직접 사용.
+    # 분석 합성 설명/논리명은 원본 table id에 결합한다.
     # LLM 이 반환한 db/schema/name 으로 id 를 재조립하면 오파싱(name='TB' 등)으로 불일치·유실
     # (컬럼 경로와 동일하게 원본 fqn 사용 — spec 024). r 은 설명·논리명 내용만 쓴다.
+    successful_by_id = dict(successful)
     table_updates = [
-        {
-            "id": table_fqn,
-            "logical_name": r.logical_name,
-            "analyzed_description": r.description,
-            "semantic_evidence_status": r.evidence_status,
-            "semantic_missing_context": tuple(r.missing_context),
-            "semantic_frame_schema": r.semantic_frame.schema_version,
-            "semantic_frame_json": r.semantic_frame.canonical_json(),
-        }
-        for table_fqn, r in successful
+        _data_object_meaning_update(
+            entity_kind="table",
+            entity_id=table.id,
+            logical_name=successful_by_id[table.id].logical_name,
+            analyzed_description=successful_by_id[table.id].description,
+            meaning_status=successful_by_id[table.id].evidence_status,
+            semantic_frame=successful_by_id[table.id].semantic_frame,
+        )
+        if table.id in successful_by_id else
+        _missing_usage_context_update("table", table.id)
+        for table in source_tables
     ]
-    if neo is not None and table_updates:
-        await update_table_analyzed(neo, table_updates)
+    _require_exact_update_population(
+        "table",
+        [table.id for table in source_tables],
+        table_updates,
+    )
 
     # 여러 함수 후보 중 첫 값이 아니라, 원래 schema 설명까지 함께 본 테이블별 통합 결과만
     # 컬럼에 반영한다. 허용 목록 밖/중복은 결정론적으로 거부하고 누락을 복사로 채우지 않는다.
-    column_updates = build_consolidated_column_updates(
+    modeled_column_updates = build_consolidated_column_updates(
         [table_fqn for table_fqn, _ in successful],
         [result for _, result in successful],
         allowed_column_names,
@@ -256,24 +247,36 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         for table_fqn, result in successful
         for name, frame in result.column_semantic_frames.items()
     }
-    for update in column_updates:
+    for update in modeled_column_updates:
         frame = column_frames[update["id"]]
-        update["semantic_frame_schema"] = frame.schema_version
-        update["semantic_frame_json"] = frame.canonical_json()
-    if neo is not None and column_updates:
-        await update_column_analyzed(neo, column_updates)
+        update.update(_meaning_metadata(
+            entity_kind="column",
+            entity_id=update["id"],
+            meaning_status=update.pop("meaning_status"),
+            semantic_frame=frame,
+        ))
+    modeled_column_by_id = {
+        update["id"]: update for update in modeled_column_updates
+    }
+    column_updates = [
+        modeled_column_by_id.get(column.id)
+        or _missing_usage_context_update("column", column.id)
+        for column in state.get("columns", [])
+    ]
+    _require_exact_update_population(
+        "column",
+        [column.id for column in state.get("columns", [])],
+        column_updates,
+    )
 
-    # ★ logical_name 도 함께 반영 (FR-013) — Neo4j 에만 넣고 state 를 안 고치면
-    #   artifact(ast.json)엔 빈값이 남아 그래프와 다른 사실을 말한다.
+    # logical_name도 같은 state 객체에 반영해 최종 제품 계획의 단일 입력으로 만든다.
     updated_tables = _replace_by_id(
         state.get("tables", []), table_updates, "analyzed_description", "logical_name",
-        "semantic_evidence_status", "semantic_missing_context",
-        "semantic_frame_schema", "semantic_frame_json",
+        "meaning_status", "missing_context_count", "missing_context_artifact_hash",
     )
     updated_columns = _replace_by_id(
         state.get("columns", []), column_updates, "analyzed_description", "logical_name",
-        "semantic_evidence_status", "semantic_missing_context",
-        "semantic_frame_schema", "semantic_frame_json",
+        "meaning_status", "missing_context_count", "missing_context_artifact_hash",
     )
 
     log_info(
@@ -283,6 +286,135 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {"tables": updated_tables, "columns": updated_columns}
+
+
+def _semantic_missing_context_items(
+    frame: SemanticFrame,
+) -> tuple[MissingContextItem, ...]:
+    items: list[MissingContextItem] = []
+    for slot in sorted(frame.slots.values(), key=lambda item: item.slot_id):
+        if slot.status == "sufficient":
+            continue
+        description = "; ".join(dict.fromkeys(
+            " ".join(str(reason).split())
+            for reason in slot.missing_context
+            if str(reason).strip()
+        ))
+        if not description:
+            raise ValueError(
+                f"non-sufficient data-object slot lacks missing context: {slot.slot_id}"
+            )
+        items.append(MissingContextItem(
+            missing_context_ref=slot.slot_id,
+            reason_code=f"{slot.family.lower()}_slot_{slot.status}",
+            description=description,
+        ))
+    return tuple(items)
+
+
+def _require_exact_update_population(
+    entity_kind: str,
+    required_ids: list[str],
+    updates: list[dict],
+) -> None:
+    produced_ids = [str(item.get("id") or "") for item in updates]
+    required_set = set(required_ids)
+    produced_set = set(produced_ids)
+    duplicate_required = sorted(
+        entity_id for entity_id, count in Counter(required_ids).items() if count > 1
+    )
+    duplicate_produced = sorted(
+        entity_id for entity_id, count in Counter(produced_ids).items() if count > 1
+    )
+    missing = sorted(required_set - produced_set)
+    unexpected = sorted(produced_set - required_set)
+    if duplicate_required or duplicate_produced or missing or unexpected:
+        raise ValueError(
+            f"{entity_kind} meaning population is not exact-once: "
+            f"duplicate_required={duplicate_required}, "
+            f"duplicate_produced={duplicate_produced}, missing={missing}, "
+            f"unexpected={unexpected}"
+        )
+
+
+def _meaning_metadata(
+    *,
+    entity_kind: str,
+    entity_id: str,
+    meaning_status: str,
+    semantic_frame: SemanticFrame,
+) -> dict:
+    if semantic_frame.target.id != entity_id:
+        raise ValueError(
+            f"{entity_kind} semantic frame target mismatch: "
+            f"expected={entity_id!r} actual={semantic_frame.target.id!r}"
+        )
+    persist_semantic_frame(semantic_frame, entity_kind=entity_kind)
+    items = _semantic_missing_context_items(semantic_frame)
+    if meaning_status == "sufficient":
+        if items:
+            raise ValueError(f"{entity_id}: sufficient meaning has incomplete slots")
+        return {"meaning_status": "sufficient", "missing_context_count": 0}
+    if meaning_status != "insufficient" or not items:
+        raise ValueError(f"{entity_id}: invalid data-object meaning state")
+    artifact_hash = persist_product_missing_context(
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        meaning_status="insufficient",
+        items=items,
+    )
+    return {
+        "meaning_status": "insufficient",
+        "missing_context_count": len(items),
+        "missing_context_artifact_hash": artifact_hash,
+    }
+
+
+def _data_object_meaning_update(
+    *,
+    entity_kind: str,
+    entity_id: str,
+    logical_name: str,
+    analyzed_description: str,
+    meaning_status: str,
+    semantic_frame: SemanticFrame,
+) -> dict:
+    metadata = _meaning_metadata(
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        meaning_status=meaning_status,
+        semantic_frame=semantic_frame,
+    )
+    return {
+        "id": entity_id,
+        "logical_name": logical_name if meaning_status == "sufficient" else "",
+        "analyzed_description": (
+            analyzed_description if meaning_status == "sufficient" else ""
+        ),
+        **metadata,
+    }
+
+
+def _missing_usage_context_update(entity_kind: str, entity_id: str) -> dict:
+    item = MissingContextItem(
+        missing_context_ref=entity_id,
+        reason_code="missing_usage_context",
+        description="verified direct READS/WRITES usage context is unavailable",
+    )
+    artifact_hash = persist_product_missing_context(
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        meaning_status="insufficient",
+        items=(item,),
+    )
+    return {
+        "id": entity_id,
+        "logical_name": "",
+        "analyzed_description": "",
+        "meaning_status": "insufficient",
+        "missing_context_count": 1,
+        "missing_context_artifact_hash": artifact_hash,
+    }
 
 
 def _source_table_evidence(table: object) -> dict[str, str]:
@@ -307,24 +439,28 @@ def _collect_usage_candidates(
         lambda: defaultdict(list)
     )
     for fn in code_nodes:
-        for insight in getattr(fn, "extra", {}).get("table_insights", []) or []:
-            table = insight.get("table") or ""
+        extra = getattr(fn, "extra", {}) or {}
+        for usage in extra.get("function_table_usages", []) or []:
+            table = usage.get("physical_table_id") or ""
             if not table:
                 continue
-            table_candidates[table].append({
-                "relation": "CODE_NODE_USES_TABLE",
-                "source_id": getattr(fn, "id", ""),
-                "usage_summary": (insight.get("usage_summary") or "").strip(),
-                "role": insight.get("role", ""),
-            })
-            for column in insight.get("columns", []) or []:
-                name = column.get("name")
+            summary = (
+                usage.get("function_table_usage_summary") or ""
+            ).strip()
+            if summary:
+                table_candidates[table].append({
+                    "source_function_id": getattr(fn, "id", ""),
+                    "access_mode": usage.get("access_mode", ""),
+                    "usage_summary": summary,
+                })
+        for table, columns in (
+            extra.get("direct_column_usage_evidence_by_table", {}) or {}
+        ).items():
+            for name, column in (columns or {}).items():
                 if not name:
                     continue
                 candidate = {
-                    "relation": "CODE_NODE_USES_COLUMN",
-                    "source_id": getattr(fn, "id", ""),
-                    "table_role": insight.get("role", ""),
+                    "source_function_id": getattr(fn, "id", ""),
                     "ownership": column.get("ownership", ""),
                     "evidence_lines": list(column.get("evidence_lines") or ()),
                     "source_lines": list(column.get("source_lines") or ()),
@@ -525,10 +661,8 @@ def _replace_by_id(nodes: list, updates: list[dict], *attrs: str) -> list:
     must remain byte-for-byte at their source state; one unavailable table cannot close the
     whole analysis.  Unknown or duplicate update IDs are still structural producer defects.
 
-    **여러 필드**를 받는다 (spec 045 FR-013): 옛 단일 필드 버전은 ``analyzed_description``
-    만 되돌려 써서 ``logical_name`` 이 Neo4j 에만 들어가고 state/artifact 에는 빈값으로 남았다
-    → 그래프와 artifact 가 다른 사실을 말하는 검증 사각지대. 빈값은 덮어쓰지 않는다
-    (LLM 이 논리명을 못 낸 테이블의 기존 값을 지우지 않도록).
+    ``analyzed_description``과 ``logical_name``을 같은 상태 전환에서 적용해 최종 제품
+    입력이 서로 다른 시점의 값을 섞지 않게 한다. 빈값은 기존 값을 지우지 않는다.
     """
     node_ids = [str(getattr(node, "id", "") or "") for node in nodes]
     update_ids = [str(update.get("id") or "") for update in updates]

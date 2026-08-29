@@ -31,7 +31,6 @@ from pipeline.steps.step4_scan_project.external_skills import (
 
 _MIN_CLUSTER_LINES = 3
 _MIN_KEY_UNIQUENESS = 0.8
-_MAX_CANDIDATES = 6
 
 _W = "W"                                     # 문자/한글/밑줄 뭉치
 _N = "N"                                     # 숫자 뭉치
@@ -192,7 +191,7 @@ def line_shape_profile(text: str, min_count: int | None = None) -> frozenset[tup
 
 
 def mine_rule_candidates(samples: list[str]) -> list[RuleCandidate]:
-    """samples 전체에서 결정론 후보 규칙을 합성한다 (검증 통과분만, 최대 6개)."""
+    """Return every deterministically verified rule candidate from all samples."""
     # 군집: 시퀀스 → [(sample_index, line_index, tokens)]
     clusters: dict[tuple[str, ...], list[tuple[int, int, list[tuple[str, str]]]]] = defaultdict(list)
     line_table: list[list[str]] = []
@@ -235,7 +234,7 @@ def mine_rule_candidates(samples: list[str]) -> list[RuleCandidate]:
     verified = [c for c in candidates if _verified(c, samples)]
     # 블록/섹션(큰 단위) 우선, 다음 근거 수 순 — Agent 에게 판단 재료로 제공
     verified.sort(key=lambda c: (c.kind == "line_record", -c.evidence_lines))
-    return verified[:_MAX_CANDIDATES]
+    return verified
 
 
 def _opener_pattern(rows: list[list[tuple[str, str]]]) -> tuple[str, tuple[str, ...]] | None:

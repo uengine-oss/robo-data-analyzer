@@ -46,20 +46,10 @@ ddl_transform:
 
 - <예: `PFM_TRY` `PFM_MSGE` ... / ORM 의 `flush` `persist` 등>
 
-## codebase_notes 예시
+## 구조화 계약 작성 원칙
 
-과거 `ScanResult.codebase_notes` 호환·진단 표시에 쓰던 한 단락 예. spec 131 C-016 이후
-다른 LLM의 의미 prompt에는 전달하지 않는다. 의미 계약은 아래 prose가 아니라 구조화된
-`table_access_patterns.op_mappings`와 runtime/API 계약이 소유한다:
-
-> 이 프로젝트는 ``<wrapper>`` 패턴으로 DB 접근. 엔티티 이름은 camelCase 로 코드에
-> 등장하지만 DDL 은 snake_case_upper. 회사 표준 prefix ``T_`` 가 모든 테이블에 붙음.
-> ``<wrapper>.<method>(entityName, ...)`` 형식 호출 87건 확인.
-> **메서드명·SQL_KEY ``<op>`` 토큰이 함수의 DB 작업 종류(SELECT/INSERT/UPDATE/DELETE) 결정**
-> — 정확한 매핑은 ``table_access_patterns.op_mappings`` 와 일치.
-
-이 단락은 진단 표시만 담당한다. 다음 단계가 자연어 op 설명에 의존하도록 만들지 말고,
-기계 검증 가능한 `op_mappings`를 완전하게 작성한다.
+DB 작업 의미는 자유문으로 복사하지 않는다. `table_access_rules`의 `op_mappings`,
+`ddl_transform`, runtime/API 계약에 기계 검증 가능한 값으로 한 번만 기록한다.
 
 ## 한계
 

@@ -40,7 +40,8 @@ _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 from pipeline.steps.step2_load_ast.node_builders import (
     ParseResult, _clean_signature, _derive_structure_edges, _file_module_id,
     _folder_package, _make_code_node, _make_constant, _make_data_type,
-    _make_module, _make_variable, _node_id, _src_path, _unique_id,
+    _make_module, _make_variable, _node_id, _absolute_source_path,
+    _required_source_id, _unique_id,
 )
 
 @dataclass
@@ -63,9 +64,10 @@ def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
     Variable/Constant 로 수집. DBMS 는 sub-label 없음 (단일 라벨).
     """
     result = ParseResult()
-    src_path = _src_path(raw, source_root, json_path)
-    file_stem = Path(raw.get("fileName") or json_path.name).stem
-    rel = raw.get("filePath") or raw.get("fileName") or json_path.name
+    source_id = _required_source_id(raw, json_path)
+    src_path = _absolute_source_path(source_id, source_root, json_path)
+    file_stem = Path(source_id).stem
+    rel = source_id
     package_id, package = _folder_package(rel)
     if package is not None:
         result.packages.append(package)

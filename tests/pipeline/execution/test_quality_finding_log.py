@@ -9,8 +9,8 @@ from pipeline.execution.quality_finding_log import record_analysis_findings
 from pipeline.execution.run_executor import _summarize_analysis_findings
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
 from pipeline.models.analysis_finding import AnalysisFinding
-from graph.nodes.code_node import to_summary_item
 from graph.schema.graph_nodes import CodeNode
+from pipeline.models.function_meaning import function_meaning_product_properties
 
 
 class QualityFindingLedgerTest(unittest.TestCase):
@@ -19,15 +19,7 @@ class QualityFindingLedgerTest(unittest.TestCase):
         return {
             "call_id": call_id,
             "ordinal": int(call_id.rsplit("-", 1)[-1]) - 1,
-            "source_id": "source:a.c", "caller_id": "code:f",
-            "owner_status": "resolved", "file": "a.c", "line": 3,
-            "range": {"char_offset": 12, "char_length": 8},
-            "callee_range": {"char_offset": 12, "char_length": 4},
-            "argument_ranges": [], "callee_kind": "named", "terminal_name": "work",
-            "grammar_rule": "postfixExpression", "presence_status": "active",
-            "presence": {"status": "active", "condition": None,
-                         "configurationId": None, "provenance": "unconditional"},
-            "configured_preprocessing_required": False,
+            "caller_id": "code:f",
             "resolution_status": (
                 "external" if outcome == "preserved" else "unsupported"
             ),
@@ -105,10 +97,11 @@ class QualityFindingLedgerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid analysis finding evidence"):
                 _summarize_analysis_findings(run_dir)
 
-    def test_code_node_persists_status_and_findings_without_rule_nodes(self) -> None:
+    def test_code_node_does_not_duplicate_run_findings(self) -> None:
         node = CodeNode(
             id="fn", name="f", signature="f()", file_path="sample.c",
             start_line=1, end_line=1, label="FUNCTION", summary="summary",
+            stereotype="Helper", meaning_status="sufficient",
         )
         node.extra = {
             "analysis_status": "completed_with_findings",
@@ -122,9 +115,10 @@ class QualityFindingLedgerTest(unittest.TestCase):
                 "evidence_rule": "code_rules_examples",
             }],
         }
-        item = to_summary_item(node)
-        self.assertEqual("completed_with_findings", item["analysis_status"])
-        self.assertEqual("rejected", json.loads(item["analysis_findings_json"])[0]["status"])
+        item = function_meaning_product_properties(node)
+        self.assertEqual("sufficient", item["meaning_status"])
+        self.assertNotIn("analysis_status", item)
+        self.assertNotIn("analysis_findings_json", item)
 
 
 if __name__ == "__main__":

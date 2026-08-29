@@ -8,22 +8,22 @@ from pathlib import Path
 from llm.usage.cost_budget import CostBudget
 from pipeline.execution.pause_controller import PauseController
 from agents.external import ExternalAgentRejected, run_external_agent
-from pipeline.steps.step4_scan_project.external_skills import ExternalExtractionRule, ExternalSkill
+from pipeline.steps.step4_scan_project.external_skills import (
+    ExternalExtractionRule,
+    ExternalSkillProposal,
+)
 
 
-def _skill(prefix: str = "CFG", name: str = "generic-config") -> ExternalSkill:
-    return ExternalSkill(
+def _proposal(
+    prefix: str = "CFG", name: str = "generic-config",
+) -> ExternalSkillProposal:
+    return ExternalSkillProposal(
         name=name,
-        extensions=(".cfgx",),
-        content_signatures=(f"{prefix}[",),
         rules=(ExternalExtractionRule(
             name="entry",
             pattern=rf"(?m)^{prefix}\[(?P<key>[A-Za-z][\w.]*)\]\s*=\s*(?P<value>.+)$",
             key_group="key",
-            value_group="value",
         ),),
-        explanation="generic bracketed key/value records",
-        provenance="test sample structure",
     )
 
 
@@ -45,26 +45,29 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_single_valid_proposal_is_accepted(self) -> None:
-        async def invoke() -> ExternalSkill:
-            return _skill("CFG", "candidate")
+        async def invoke() -> ExternalSkillProposal:
+            return _proposal("CFG", "candidate")
 
         selected = await self._run(invoke)
         self.assertTrue(selected.is_validated)
         self.assertEqual("candidate", selected.skill.name)
+        self.assertEqual((".cfgx",), selected.skill.extensions)
         self.assertIn("CFG", selected.skill.rules[0].pattern)
 
-    async def test_skill_must_declare_the_learned_extension(self) -> None:
-        # 배운 확장자를 선언하지 않은 skill 은 저장 후 다른 형식을 납치할 수 있다.
-        async def invoke() -> ExternalSkill:
-            skill = _skill("CFG", "candidate")
-            return skill.model_copy(update={"extensions": (".other",)})
+    async def test_extension_is_analyzer_owned_not_model_output(self) -> None:
+        async def invoke() -> ExternalSkillProposal:
+            return _proposal("CFG", "candidate")
 
-        with self.assertRaises(ExternalAgentRejected):
-            await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
+        selected = await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
+
+        self.assertNotIn(
+            "extensions", ExternalSkillProposal.model_json_schema()["properties"],
+        )
+        self.assertEqual((".cfgx",), selected.skill.extensions)
 
     async def test_all_candidates_invalid_is_still_rejected(self) -> None:
-        async def invoke() -> ExternalSkill:
-            return _skill("MISS", "candidate")      # 어떤 sample 도 못 맞춤
+        async def invoke() -> ExternalSkillProposal:
+            return _proposal("MISS", "candidate")      # 어떤 sample 도 못 맞춤
 
         with self.assertRaises(ExternalAgentRejected):
             await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
@@ -72,10 +75,10 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
     async def test_validation_failure_is_not_repaired(self) -> None:
         calls = 0
 
-        async def invoke() -> ExternalSkill:
+        async def invoke() -> ExternalSkillProposal:
             nonlocal calls
             calls += 1
-            return _skill("MISS", "candidate")
+            return _proposal("MISS", "candidate")
 
         with self.assertRaises(ExternalAgentRejected):
             await self._run(invoke, ["CFG[shop.title] = 쇼핑몰"])
@@ -85,7 +88,7 @@ class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
         live = 0
 
-        async def invoke() -> ExternalSkill:
+        async def invoke() -> ExternalSkillProposal:
             nonlocal live
             live += 1
             started.set()

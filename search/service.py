@@ -16,7 +16,11 @@ from search.ranking.retriever import Retriever
 
 
 def run_search(
-    query: str, on_progress=None, *, top_n: int | None = None,
+    query: str,
+    on_progress=None,
+    *,
+    top_n: int | None = None,
+    analysis_scope_id: str | None = None,
 ) -> tuple[list[dict], dict]:
     """요구사항 1건 검색 → (clusters, meta). SearchUnavailable 은 호출측이 표면화."""
     if top_n is not None and not 1 <= top_n <= 100:
@@ -25,8 +29,13 @@ def run_search(
     meta: dict = {}
     drv, db = read_driver()
     try:
-        with completed_generation_session(drv, db) as session:
-            corpus = load_corpus(generation_id=session.generation_id)
+        with completed_generation_session(
+            drv, db, analysis_scope_id=analysis_scope_id,
+        ) as session:
+            corpus = load_corpus(
+                analysis_scope_id=session.analysis_scope_id,
+                generation_id=session.generation_id,
+            )
             nodes = Retriever(session, corpus).retrieve(
                 query, cfg, on_progress=on_progress, meta=meta)
     finally:
@@ -34,6 +43,7 @@ def run_search(
 
     meta["coverage"] = {"corpus_nodes": len(corpus.ids)}
     meta["generation_id"] = corpus.generation_id
+    meta["analysis_scope_id"] = session.analysis_scope_id
     meta["quality_status"] = session.quality_status
     meta["call_resolution"] = session.call_resolution
     meta["import_resolution"] = session.import_resolution

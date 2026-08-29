@@ -1,13 +1,16 @@
 """용어집과 약어 근거로 검색 질의를 보강한다.
 
 약어 병기(expand_abbrevs, 결정론) + 근거제약 번역(rewrite_for_cluster, LLM 연결판단만) — 둘 다
-원질의를 대체하지 않고 병합 재료를 만든다. 치환은 용어집 실재 canonical 만 허용, 실패=원질의 폴백.
+원질의를 대체하지 않고 병합 재료를 만든다. 치환은 용어집 실재 canonical 만 허용한다.
 LLM = search.query.query_llm(ROBO_SEARCH_LLM_CONFIG, 기본 Qwen/GPU). 문자열 조립은 코드가 결정론으로.
 """
 from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from search.query.glossary import build as build_glossary, render_for_prompt
 from search.query import query_llm
@@ -15,8 +18,33 @@ from search.ranking.recall import tokenize
 
 # 의미 대조 임계(spec 008) — 0 = off(글자 겹침만). >0 이면 용어카드 임베딩 대조(사내 임베더).
 GLOSSARY_SEM_MIN = float(os.environ.get("ROBO_GLOSSARY_SEM_MIN", "0"))
-_ccache: dict = {}
+_ccache: dict[tuple[str, str], "QueryRewriteResult"] = {}
 _ABBREV = re.compile(r"^[A-Za-z][A-Za-z0-9&-]+$")
+
+
+class GlossarySubstitution(BaseModel):
+    """사용자 질의의 한 표현을 용어집의 정확한 표준어에 연결한다."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_text: str = Field(description="사용자 질의에 실제로 존재하는 원문 일부")
+    canonical_term: str = Field(description="용어집에 실제로 존재하는 표준어 하나")
+
+
+class GlossaryRewriteResponse(BaseModel):
+    """모델이 결정하는 유일한 값: 근거가 있는 용어 치환 목록."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    substitutions: list[GlossarySubstitution]
+
+
+@dataclass(frozen=True)
+class QueryRewriteResult:
+    """검증된 치환을 원문 질의에 결정론적으로 병기한 결과."""
+
+    rewritten_query: str
+    glossary_substitutions: tuple[GlossarySubstitution, ...]
 
 
 def _semantic_scores(q: str, terms: list[dict]) -> list[float]:
@@ -31,9 +59,13 @@ def _semantic_scores(q: str, terms: list[dict]) -> list[float]:
     return (vecs @ qv).tolist()
 
 
-def _shortlist(q: str, top: int = 8) -> list[dict]:
-    """용어집 유력후보 — 글자 겹침 우선 + (임계>0 시) 의미 유사 보강."""
-    glo = build_glossary()
+def _shortlist(
+    q: str,
+    *,
+    analysis_scope_id: str | None = None,
+) -> list[dict]:
+    """글자 겹침 또는 명시된 의미 기준을 만족하는 용어를 모두 반환한다."""
+    glo = build_glossary(analysis_scope_id)
     terms = glo.get("terms", [])
     qt = set(tokenize(q))
     lex = []
@@ -43,29 +75,22 @@ def _shortlist(q: str, top: int = 8) -> list[dict]:
         if ov:
             lex.append((ov, i))
     lex.sort(key=lambda x: -x[0])
-    picked = [i for _, i in lex[:top]]
-    if GLOSSARY_SEM_MIN > 0 and len(picked) < top and terms:
+    picked = [i for _, i in lex]
+    if GLOSSARY_SEM_MIN > 0 and terms:
         sims = _semantic_scores(q, terms)
         sem = [(s, i) for i, s in enumerate(sims) if s >= GLOSSARY_SEM_MIN and i not in set(picked)]
         sem.sort(key=lambda x: -x[0])
-        picked += [i for _, i in sem[: top - len(picked)]]
+        picked += [i for _, i in sem]
     return [terms[i] for i in picked]
 
 
-def _cluster_system(q: str) -> str:
-    cand = "\n".join(
-        f"- 「{t['canonical']}」← 현장: {', '.join((t.get('colloquial') or [])[:6])}"
-        + (f"  · {t.get('meaning', '')}" if t.get("meaning") else "")
-        for t in _shortlist(q)) or "(없음)"
-    glo_text = render_for_prompt(build_glossary())
+def _cluster_system(analysis_scope_id: str | None = None) -> str:
+    glo_text = render_for_prompt(build_glossary(analysis_scope_id))
     return f"""너는 레거시 코드 검색의 **질의 번역기**다. 사용자의 현장 말투 질의를,
 코드그래프 요약문이 쓰는 표준어로 번역한다. 도메인은 아래 용어집에서 스스로 파악하라.
 
 [왜] 질의와 코드 요약문의 어휘가 다르면 검색이 실패한다. 용어집 근거로 현장말투를
 표준어로 치환해 요약문 어휘에 근접시키는 것이 네 일이다.
-
-[★이 질의와 표현이 겹치는 유력 후보 — 치환은 여기서 우선 검토하라]
-{cand}
 
 {glo_text}
 
@@ -80,71 +105,103 @@ def _cluster_system(q: str) -> str:
    canonical 이 여럿이면 하나만 고르지 말고 전부 병기하라(예: "배송망(CJ-EXP·HJ-LOG)").
 3) 사용자가 준 구체 엔터티(고유명사·숫자·영문 식별자·기간)는 **그대로 보존**한다.
 4) 질의의 의도(조회/변경/흐름 질문)를 바꾸지 말고, 사용자가 말하지 않은 개념을 추가하지 마라.
-5) 번역할 게 없으면 원문 그대로 반환한다(substitutions 빈 배열).
-6) **substitutions 에는 용어집 근거 치환만 기재하라** — 어순·조사·동의어 다듬기는 rewritten 에만.
-7) 한 문장, 군더더기 없이.
-
-[출력] 오직 단일 JSON 객체 1개. 마크다운/설명 금지.
-{{"intent": "한 줄 의도", "substitutions": [{{"from": "현장말투", "to": "표준어"}}], "rewritten": "번역된 질의 한 문장"}}
-
-[예시 — 무관 도메인(병원·물류). 패턴만 배우고 단어를 베끼지 마라]
-입력: "환자 몸무게 재는 데가 어디"   (용어집에 「계측」←현장:"재는" 이 있다고 가정)
-출력: {{"intent": "환자 체중 계측 위치", "substitutions": [{{"from": "재는", "to": "계측"}}], "rewritten": "환자 체중을 계측하는 로직"}}"""
+5) 바꿀 근거가 없으면 substitutions를 빈 배열로 반환한다.
+6) source_text는 질의에 실제로 있는 문자열을 그대로 복사한다.
+7) canonical_term은 위 용어집에 적힌 표준어 하나를 그대로 복사한다. 여러 표준어가
+   필요하면 같은 source_text의 항목을 각각 만든다.
+8) 의도·설명·재작성 문장은 출력하지 않는다. 최종 질의 조립은 코드가 수행한다."""
 
 
-def _harvest_subs(q: str, out: dict) -> list[dict]:
-    """모델 출력에서 쓸 수 있는 치환만 수확 — 용어집 실재 to + 질의에 실재하는 from."""
-    glo = build_glossary()
-    canon = {(t.get("canonical") or "").strip().lower() for t in glo.get("terms", [])}
-    canon |= {(a.get("canonical") or "").strip().lower() for a in glo.get("actions", [])}
-    canon.discard("")
-    subs = []
-    for s in out.get("substitutions") or []:
-        frm = (s.get("from") or "").strip()
-        to = (s.get("to") or "").strip()
-        if not frm or not to or to == frm or to in q or frm not in q:
-            continue
-        tl = to.lower()
-        if tl not in canon and not any(tl in c or c in tl for c in canon):
-            continue
-        subs.append({"from": frm, "to": to})
-    return subs
+def _harvest_subs(
+    q: str,
+    out: GlossaryRewriteResponse,
+    analysis_scope_id: str | None = None,
+) -> tuple[GlossarySubstitution, ...]:
+    """모든 모델 치환을 용어집·원질의와 대조하고 안정된 순서로 반환한다."""
+    glo = build_glossary(analysis_scope_id)
+    canonical_order = {
+        canonical.lower(): index
+        for index, term in enumerate(glo.get("terms", []))
+        if (canonical := (term.get("canonical") or "").strip())
+    }
+    unique: dict[tuple[str, str], GlossarySubstitution] = {}
+    for substitution in out.substitutions:
+        source_text = substitution.source_text.strip()
+        canonical_term = substitution.canonical_term.strip()
+        if not source_text or source_text not in q:
+            raise ValueError(
+                f"Search rewrite source_text is not an exact query substring: {source_text!r}"
+            )
+        canonical_key = canonical_term.lower()
+        if canonical_key not in canonical_order:
+            raise ValueError(
+                f"Search rewrite canonical_term is absent from the glossary: {canonical_term!r}"
+            )
+        if source_text == canonical_term or canonical_term in q:
+            raise ValueError(
+                "Search rewrite substitution does not add a new glossary term: "
+                f"{source_text!r} -> {canonical_term!r}"
+            )
+        normalized = GlossarySubstitution(
+            source_text=source_text,
+            canonical_term=canonical_term,
+        )
+        unique[(source_text, canonical_key)] = normalized
+    return tuple(sorted(
+        unique.values(),
+        key=lambda item: (
+            q.index(item.source_text),
+            -len(item.source_text),
+            canonical_order[item.canonical_term.lower()],
+        ),
+    ))
 
 
-def _apply_subs(q: str, subs: list[dict]) -> str:
+def _apply_subs(q: str, subs: tuple[GlossarySubstitution, ...]) -> str:
     """결정론 병기 조립 — 원문 보존하고 frm(to1·to2…) 형태로 삽입(범주어는 전부 병기)."""
     by: dict[str, list[str]] = {}
-    for s in subs:
-        tos = by.setdefault(s["from"], [])
-        if s["to"] not in tos:
-            tos.append(s["to"])
+    for substitution in subs:
+        tos = by.setdefault(substitution.source_text, [])
+        if substitution.canonical_term not in tos:
+            tos.append(substitution.canonical_term)
     rew = q
     for frm, tos in by.items():
         rew = rew.replace(frm, f"{frm}({'·'.join(tos)})", 1)
     return rew
 
 
-def rewrite_for_cluster(q: str) -> dict:
-    """질의 1개 번역. LLM 은 연결 판단(from→to)만, 조립은 코드. 반환 {rewritten, substitutions, intent, ok}."""
-    system = _cluster_system(q)
-    k = hash((system, q))
+def rewrite_for_cluster(
+    q: str,
+    *,
+    analysis_scope_id: str | None = None,
+) -> QueryRewriteResult:
+    """질의 하나당 LLM을 한 번 호출하고 검증된 치환만 코드로 조립한다."""
+    system = _cluster_system(analysis_scope_id)
+    k = (system, q)
     if k in _ccache:
         return _ccache[k]
-    out = query_llm.chat_json(q, system=system, max_tokens=1024)
-    subs = _harvest_subs(q, out) if isinstance(out, dict) else []
-    if subs:
-        res = {"rewritten": _apply_subs(q, subs), "substitutions": subs,
-               "intent": (out.get("intent") or ""), "ok": True}
-    else:
-        res = {"rewritten": q, "substitutions": [], "intent": "", "ok": False}
+    response = query_llm.invoke_structured(
+        system_prompt=system,
+        user_prompt=q,
+        response_model=GlossaryRewriteResponse,
+    )
+    substitutions = _harvest_subs(q, response, analysis_scope_id)
+    res = QueryRewriteResult(
+        rewritten_query=(
+            _apply_subs(q, substitutions) if substitutions else q
+        ),
+        glossary_substitutions=substitutions,
+    )
     _ccache[k] = res
     return res
 
 
-def expand_abbrevs(q: str) -> dict:
+def expand_abbrevs(q: str, *, analysis_scope_id: str | None = None) -> dict:
     """결정론 질의 보강 — 질의와 겹치는 용어집의 영문 약어/시스템명 canonical 병기. LLM 없음."""
-    hits = [t["canonical"] for t in _shortlist(q)
+    hits = [t["canonical"] for t in _shortlist(
+        q, analysis_scope_id=analysis_scope_id,
+    )
             if _ABBREV.match((t.get("canonical") or "").strip())]
     if not hits:
         return {"expanded": q, "terms": []}
-    return {"expanded": f"{q} (관련 표준어: {', '.join(hits[:3])})", "terms": hits[:3]}
+    return {"expanded": f"{q} (관련 표준어: {', '.join(hits)})", "terms": hits}

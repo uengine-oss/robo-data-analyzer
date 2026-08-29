@@ -120,7 +120,8 @@ def test_processing_slot_receives_only_its_structural_expression_closure() -> No
         semantic_expression_wire_bindings((effect,)).values()
     )
     assigned = json.loads(slot_specs_json((effect,)))
-    assert expression_keys.issubset(set(assigned[0]["evidence_refs"]))
+    assigned_slot = next(iter(assigned.values()))
+    assert expression_keys.issubset(set(assigned_slot["evidence"]))
     assert not any(
         fact["kind"] == "EXPRESSION" for fact in prompt["evidence"].values()
     )
@@ -132,11 +133,9 @@ def test_processing_slot_receives_only_its_structural_expression_closure() -> No
     model = semantic_frame_response_model((effect,))
     slot_wire_id = semantic_slot_wire_ids((effect,))[0]
     expression_wire_id = next(iter(expression_keys))
-    response = model.model_validate({"slots": {slot_wire_id: {
-        "meaning": f"copy {expression_wire_id}",
-        "status": "sufficient",
-        "missing_context": [],
-    }}})
+    response = model.model_validate({
+        "slots": {slot_wire_id: f"copy {expression_wire_id}"},
+    })
     normalized = normalize_semantic_frame_response(
         response, profile, (effect,),
     )

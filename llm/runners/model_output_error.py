@@ -15,14 +15,6 @@ ModelOutputFailureKind = Literal[
 ]
 
 
-class ModelGenerationDeadlineExceeded(TimeoutError):
-    """The model kept generating without completing inside the application boundary."""
-
-    def __init__(self, seconds: float) -> None:
-        self.seconds = seconds
-        super().__init__(f"model generation exceeded {seconds:g} seconds")
-
-
 class ModelOutputError(RuntimeError):
     """The provider returned or streamed model content that cannot be trusted."""
 
@@ -51,6 +43,4 @@ def model_output_kind(error: BaseException) -> ModelOutputFailureKind | None:
         return "repetition"
     if name == "LengthFinishReasonError":
         return "length"
-    if name == "ModelGenerationDeadlineExceeded":
-        return "deadline"
     return None

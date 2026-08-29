@@ -41,7 +41,6 @@ call_wrappers:
 framework_runtime_functions:
   - LOG_DBG
   - SAFECPY
-codebase_notes: 'C 쇼핑몰 코어. SQL은 sprintf로 g_sqlbuf에 조립 후 db_query/db_exec로 실행한다. 정적 테이블명은 SQL 리터럴에서 추출하며 C 인접 문자열 경계는 원문 정규식이 처리한다. SELECT(FROM)=READ, INSERT/UPDATE/DELETE=WRITE. 런타임 테이블명은 추측하지 않는다. 모듈 호출은 dispatch_call을 사용한다.'
 ```
 
 ## Why these patterns

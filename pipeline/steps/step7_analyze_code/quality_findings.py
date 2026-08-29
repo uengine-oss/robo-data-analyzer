@@ -1,4 +1,4 @@
-"""Shared CodeNode boundary for visible, quarantined LLM quality findings."""
+"""Run-owned recording boundary for quarantined code-analysis findings."""
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -9,36 +9,30 @@ from pipeline.models.analysis_finding import AnalysisFinding
 from shared.events.runtime_logger import log_warning
 
 
-def apply_analysis_findings(
+def record_code_analysis_findings(
     node: CodeNode,
     findings: Iterable[AnalysisFinding],
     *,
     component: str,
 ) -> None:
-    """Persist new findings once and expose a non-success quality status on the node."""
+    """Persist excluded or untrusted rows once without copying them to CodeNode."""
     new = list(findings)
     if new:
         record_analysis_findings(new)
-    existing = list((node.extra or {}).get("analysis_findings") or ())
-    records = existing + [finding.to_dict() for finding in new]
-    if records:
-        node.extra["analysis_findings"] = records
-        node.extra["analysis_status"] = "completed_with_findings"
+    if new:
+        records = [finding.to_dict() for finding in new]
         log_warning(
             component,
             "analysis_quality_findings",
-            "LLM 후보 일부가 검증되지 않아 trusted graph에서 격리됨",
+            "일부 후보가 제품 공개 대상에서 제외되었거나 검증되지 않아 격리됨",
             code_id=node.id,
             count=len(records),
             by_status={
                 status: sum(item["status"] == status for item in records)
-                for status in ("rejected", "unverified", "unavailable")
+                for status in ("excluded", "rejected", "unverified", "unavailable")
                 if any(item["status"] == status for item in records)
             },
             coordinates=sorted({
                 row for item in records for row in item.get("coordinates", ())
             }),
         )
-    else:
-        node.extra.pop("analysis_findings", None)
-        node.extra["analysis_status"] = "completed"

@@ -173,7 +173,7 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         "effects": {},
         "rows": {"R546": {"role": "decision", "when": ["C546"]}},
     }, case_bundle)
-    assert materialize_rule_items(projected_case, (546,))[0].cond == (
+    assert materialize_rule_items(projected_case, (546,))[0].structural_condition == (
         'F("rc") == F("RC_NFD")'
     )
 
@@ -222,25 +222,30 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         assert [rule.anchor_line for rule in collection.rules] == list(rows)
         assert [rule.anchor_line for rule in baseline.rules] == list(rows)
         changed_conditions.extend(
-            (routine.id, current.anchor_line, previous.cond, current.cond)
+            (
+                routine.id,
+                current.anchor_line,
+                previous.structural_condition,
+                current.structural_condition,
+            )
             for previous, current in zip(
                 baseline.rules, collection.rules, strict=True,
             )
-            if previous.cond != current.cond
+            if previous.structural_condition != current.structural_condition
         )
         projected_rules.extend(collection.rules)
         examples = synthesize_examples(collection.rules)
         examples_by_anchor.update(examples)
         for rule in collection.rules:
             for example in examples[rule.anchor_line]:
-                assert example["then"] == list(rule.then)
-                assert example["given"]
+                assert example["expected_effects"] == list(rule.structural_effects)
+                assert example["given_conditions"]
                 projected_examples += 1
     assert len({rule.anchor_line for rule in projected_rules}) == len(projected_rules)
     actual_case = next(
         rule for rule in projected_rules
         if rule.anchor_line == 546
-        and rule.cond == 'F("rc") == F("RC_NFD")'
+        and rule.structural_condition == 'F("rc") == F("RC_NFD")'
     )
     assert actual_case.anchor_line == 546
     first_case_change = next(
@@ -253,14 +258,16 @@ def test_sealed_skt_structural_expression_replay_is_exact_and_deterministic() ->
         rule for rule in projected_rules
         if rule.anchor_line == 549
     )
-    assert effect_case.cond == (
+    assert effect_case.structural_condition == (
         'not (F("rc") == F("RC_NRM")) and F("rc") == F("RC_ERR")'
     )
-    assert examples_by_anchor[549][0]["given"] == [
+    assert examples_by_anchor[549][0]["given_conditions"] == [
         "F('rc') != F('RC_NRM')",
         "F('rc') == F('RC_ERR')",
     ]
-    assert examples_by_anchor[549][0]["then"] == list(effect_case.then)
+    assert examples_by_anchor[549][0]["expected_effects"] == list(
+        effect_case.structural_effects
+    )
 
     first_fact = first.structural_expression_facts[0]
     offset = first_fact["range"]["charOffset"]

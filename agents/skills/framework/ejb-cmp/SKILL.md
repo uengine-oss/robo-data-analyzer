@@ -36,7 +36,7 @@ ddl_transform:
   fallback_prefixes: []
 ```
 
-## codebase_notes 예시
+## 접근 의미
 
 > 레거시 EJB CMP 프로젝트. Entity Bean 의 ``Home.<method>`` 가 DB 직접 매핑.
 > **Home 메서드명·setter 호출이 함수의 DB 작업 종류 결정:**

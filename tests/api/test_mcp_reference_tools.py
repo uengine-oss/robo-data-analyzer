@@ -23,23 +23,27 @@ from pipeline.models.semantic_frame import (
 def _clusters() -> list:
     rule = {
         "anchor_line": 17,
-        "cond": 'F("stock") < F("required")',
-        "then": ['call("reject_order")'],
-        "nl": "",
+        "structural_condition": 'F("stock") < F("required")',
+        "structural_effects": ['call("reject_order", None, [])'],
+        "business_condition": 'meaning_when("stock < required", "재고가 부족하다")',
+        "business_effects": ['meaning_call("reject_order", None, [], "주문을 거절한다")'],
+        "owner_signature": "checkout()",
         "tables": [
         {"name": "orders", "op": "READ"},
     ], "examples": [
-        {"given": "g1", "when": "w1", "then": "t1", "tables": [{"name": "orders", "op": "R"}]},
+        {"kind": "satisfy", "given_conditions": ["g1"], "expected_effects": ["t1"]},
     ]}
     rule_dup = {
         "anchor_line": 17,
-        "cond": 'F("stock") < F("required")',
-        "then": ['call("reject_order")'],
-        "nl": "",
+        "structural_condition": 'F("stock") < F("required")',
+        "structural_effects": ['call("reject_order", None, [])'],
+        "business_condition": 'meaning_when("stock < required", "재고가 부족하다")',
+        "business_effects": ['meaning_call("reject_order", None, [], "주문을 거절한다")'],
+        "owner_signature": "checkout()",
         "tables": [
         {"name": "orders", "op": "READ"},
     ], "examples": [
-        {"given": "g2", "when": "w2", "then": "t2", "tables": []},
+        {"kind": "satisfy", "given_conditions": ["g2"], "expected_effects": ["t2"]},
     ]}
     anchor = {
         "id": "code:a.c:fa", "element_id": "e1", "name": "fa", "label": "FUNCTION",
@@ -135,6 +139,36 @@ def _frame_json(
     return frame.canonical_json()
 
 
+def _function_meaning_props(summary: str = "주문을 처리한다") -> dict:
+    return {
+        "summary": summary,
+        "stereotype": "Helper",
+        "meaning_status": "sufficient",
+        "missing_context_count": 0,
+    }
+
+
+def _data_object_meaning_props(
+    *, status: str, logical_name: str = "", analyzed_description: str = "",
+    missing_count: int = 0,
+) -> dict:
+    return {
+        **(
+            {
+                "logical_name": logical_name,
+                "analyzed_description": analyzed_description,
+            }
+            if status == "sufficient" else {}
+        ),
+        "meaning_status": status,
+        "missing_context_count": missing_count,
+        **(
+            {"missing_context_artifact_hash": "c" * 64}
+            if missing_count else {}
+        ),
+    }
+
+
 class ListProfileTests(unittest.TestCase):
     def _listed(self):
         return _list_clusters(_clusters(), _BY_ID)
@@ -156,7 +190,10 @@ class ListProfileTests(unittest.TestCase):
         self.assertEqual("기능A", anchor["logical_name"])
         self.assertEqual([{
             "line": 17,
-            "text": '조건: F("stock") < F("required") → 효과: call("reject_order")',
+            "text": (
+                '조건: meaning_when("stock < required", "재고가 부족하다") → 효과: '
+                'meaning_call("reject_order", None, [], "주문을 거절한다")'
+            ),
             "tables": [{"name": "orders", "op": "READ"}],
         }], anchor["rules"])
         self.assertEqual([], evidence["rules"])
@@ -196,91 +233,25 @@ class DetailPayloadTests(unittest.TestCase):
             {"embedding", "graph_owner", "generation_id"} & set(node["properties"])
         )
 
-    def test_code_detail_separates_exact_call_occurrences_from_aggregate_calls(self):
+    def test_code_detail_keeps_occurrence_ledgers_out_of_product_payload(self):
         payload = build_node_detail(
             [{"labels": ["FUNCTION"], "props": {
                 "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
                 "start_line": 1, "end_line": 4, "code_text": "int fa(){}",
             }}],
-            [{"type": "HAS_CALL_OCCURRENCE", "direction": "out",
-              "other_id": "call-occurrence:call-1", "other_name": "",
-              "other_labels": ["CALL_OCCURRENCE"], "properties": {},
-              "other_properties": {
-                  "id": "call-occurrence:call-1", "call_id": "call-1",
-                  "ordinal": 0, "source_id": "source:a.c", "caller_id": "code:a.c:fa",
-                  "owner_status": "resolved", "file": "a.c", "line": 3,
-                  "range_char_offset": 12, "range_char_length": 8,
-                  "callee_range_char_offset": 12, "callee_range_char_length": 4,
-                  "argument_ranges_json": "[]", "callee_kind": "named",
-                  "terminal_name": "work", "grammar_rule": "postfixExpression",
-                  "presence_status": "active",
-                  "presence_json": '{"status":"active"}',
-                  "configured_preprocessing_required": False,
-                  "resolution_status": "unsupported",
-                  "adapter_schema": "language-neutral-resolution/v1",
-                  "outcome": "unresolved", "reason": "missing_trace",
-                  "external_identity_key": "", "declaration_fact_id": "",
-                  "candidate_fact_ids": [],
-                  "preprocessing_evidence_ids": [], "macro_fact_ids": [],
-                  "graph_owner": "analyzer", "generation_id": "run:published",
-              }}],
-            [], [],
+            [], [], [],
         )
 
         self.assertEqual([], payload["node"]["relationships"])
-        self.assertEqual("call-1", payload["node"]["call_resolution"]["occurrences"][0]["call_id"])
-        self.assertEqual("unresolved",
-                         payload["node"]["call_resolution"]["occurrences"][0]["outcome"])
+        self.assertNotIn("call_resolution", payload["node"])
+        self.assertNotIn("import_resolution", payload["node"])
 
         compact = build_gwt_detail({**payload, "node": {
             **payload["node"],
-            "properties": {"semantic_frame_json": _frame_json()},
+            "properties": _function_meaning_props(),
         }}, [])
-        self.assertEqual("call-1",
-                         compact["node"]["linked_context"]["call_occurrences"][0]["call_id"])
-
-    def test_code_detail_exposes_file_scoped_import_occurrences_without_claiming_scope(self):
-        import_id = "a" * 64
-        occurrence = {
-            "occurrence_id": f"{import_id}:0", "import_id": import_id,
-            "ordinal": 0, "entry_ordinal": 0, "evidence_version": "1.1.0",
-            "source_id": "source:a.c", "file": "a.c", "line": 1, "end_line": 1,
-            "range": {"char_offset": 0, "char_length": 20},
-            "directive_kind": "include", "grammar_rule": "includeLine",
-            "presence_status": "active",
-            "presence": {"status": "active", "provenance": "unconditional"},
-            "evidence_status": "complete", "import_kind": "source_file",
-            "target_kind": "quoted", "target": '"common.h"',
-            "target_range": {"char_offset": 9, "char_length": 10},
-            "path_components": ["common.h"],
-            "path_component_ranges": [{"char_offset": 10, "char_length": 8}],
-            "member": None, "member_range": None, "alias": None,
-            "alias_range": None, "relative_level": 0, "wildcard": False,
-            "locality": "local", "outcome": "unresolved",
-            "reason": "insufficient_import_binding_environment",
-            "resolved_module_ids": [],
-        }
-        payload = build_node_detail(
-            [{"labels": ["FUNCTION"], "props": {
-                "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
-                "start_line": 1, "end_line": 4, "code_text": "int fa(){}",
-            }}],
-            [], [], [], import_occurrences=[occurrence],
-        )
-
-        resolution = payload["node"]["import_resolution"]
-        self.assertEqual("source_file", resolution["scope"])
-        self.assertEqual("insufficient", resolution["status"])
-        self.assertEqual(1, resolution["total"])
-        self.assertEqual([], resolution["occurrences"][0]["resolved_module_ids"])
-
-        compact = build_gwt_detail({**payload, "node": {
-            **payload["node"],
-            "properties": {"semantic_frame_json": _frame_json()},
-        }}, [])
-        [published] = compact["node"]["linked_context"]["import_occurrences"]
-        self.assertEqual(f"{import_id}:0", published["occurrence_id"])
-        self.assertEqual("insufficient_import_binding_environment", published["reason"])
+        self.assertNotIn("call_occurrences", compact["node"]["linked_context"])
+        self.assertNotIn("import_occurrences", compact["node"]["linked_context"])
 
     def test_table_has_explicit_unavailable_source_and_columns(self):
         payload = build_node_detail(
@@ -296,20 +267,22 @@ class DetailPayloadTests(unittest.TestCase):
             [{"labels": ["FUNCTION"], "props": {
                 "id": "code:a.c:fa", "name": "fa", "summary": "주문을 처리한다",
                 "logical_name": "주문 처리", "stereotype": "Service",
-                "summary_evidence_status": "partial",
-                "summary_missing_context_json": '["외부 결제 계약"]',
                 "file_path": "a.c", "start_line": 10, "end_line": 20,
                 "code_text": "int fa(){ /* long body */ }",
-                "semantic_frame_json": _frame_json(),
+                **_function_meaning_props("주문을 처리한다"),
             }}],
             [{"type": "CALLS", "direction": "out", "other_id": "code:a.c:fb",
               "other_name": "fb", "other_labels": ["FUNCTION"], "properties": {}}],
             [{"rule_id": "R-12", "anchor_line": 12,
-              "cond": 'F("status == PAID")', "then": ['select("orders")'],
-              "when": "fa", "nl": "결제 상태를 확인한다", "tables": [
+              "structural_condition": 'F("status == PAID")',
+              "structural_effects": ['select("orders")'],
+              "business_condition": 'meaning_when("status == PAID", "결제 완료 상태다")',
+              "business_effects": ['meaning_select("orders", "주문을 조회한다")'],
+              "owner_signature": "fa", "tables": [
                 {"name": "orders", "op": "select"},
-            ], "examples": [{"kind": "satisfy", "given": ["status == PAID"],
-                              "then": ['select("orders")']}]}], [],
+            ], "examples": [{"kind": "satisfy",
+                              "given_conditions": ["status == PAID"],
+                              "expected_effects": ['select("orders")']}]}], [],
         )
         compact = build_gwt_detail(full, [{
             "id": "db:orders", "name": "orders", "access": ["READ"],
@@ -319,9 +292,10 @@ class DetailPayloadTests(unittest.TestCase):
                        "sample_rows": [{"status": "PAID"}]},
         }])
         node = compact["node"]
-        self.assertEqual("semantic-frame-packet/v1", compact["schema_version"])
+        self.assertEqual("semantic-detail/v2", compact["schema_version"])
         self.assertNotIn("source", node)
-        self.assertEqual("semantic-frame/v1", node["semantic_frame"]["schema"])
+        self.assertEqual("sufficient", node["function_meaning"]["meaning_status"])
+        self.assertEqual("주문을 처리한다", node["function_meaning"]["summary"])
         self.assertEqual("code:a.c:fb", node["linked_context"]["callees"][0]["id"])
         self.assertEqual("code:a.c:fa::call::out::code:a.c:fb",
                          node["linked_context"]["callees"][0]["evidence_id"])
@@ -335,7 +309,7 @@ class DetailPayloadTests(unittest.TestCase):
             [{"labels": ["FUNCTION"], "props": {
                 "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
                 "start_line": 10, "end_line": 20, "code_text": "10 | int fa(){}",
-                "semantic_frame_json": _frame_json(),
+                **_function_meaning_props(),
             }}],
             [{"type": "REFERENCES", "direction": "out",
               "other_id": "code:a.c:LIMIT", "other_name": "LIMIT",
@@ -361,7 +335,7 @@ class DetailPayloadTests(unittest.TestCase):
             [{"labels": ["FUNCTION"], "props": {
                 "id": "code:a.c:fa", "name": "fa", "file_path": "a.c",
                 "start_line": 10, "end_line": 20, "code_text": "10 | int fa(){}",
-                "semantic_frame_json": _frame_json(),
+                **_function_meaning_props(),
             }}],
             [
                 {"type": "CALLS", "direction": "out",
@@ -388,37 +362,36 @@ class DetailPayloadTests(unittest.TestCase):
                     [{"labels": [label], "props": {
                         "id": node_id,
                         "name": node_id.rsplit(".", 1)[-1],
-                        "analyzed_description": description,
-                        "semantic_evidence_status": status,
-                        "semantic_missing_context": missing_context,
-                        "semantic_frame_json": _frame_json(
-                            node_id, label=label, meaning=description,
-                            status=status, missing_context=tuple(missing_context),
+                        **_data_object_meaning_props(
+                            status=status,
+                            logical_name="주문" if status == "sufficient" else "",
+                            analyzed_description=description,
+                            missing_count=len(missing_context),
                         ),
                     }}],
                     [], [], [],
                 )
                 node = build_gwt_detail(full, [])["node"]
-                [slot] = node["semantic_frame"]["slots"].values()
-                self.assertEqual(description, slot["meaning"])
-                self.assertEqual(status, slot["status"])
-                self.assertEqual(missing_context, slot["missing_context"])
+                meaning = node["data_object_meaning"]
+                self.assertEqual(description or None, meaning["analyzed_description"])
+                self.assertEqual(status, meaning["meaning_status"])
+                self.assertEqual(len(missing_context), meaning["missing_context_count"])
 
     def test_frame_view_does_not_fall_back_to_legacy_description(self):
         full = build_node_detail(
             [{"labels": ["COLUMN"], "props": {
                 "id": "db:orders.status", "name": "status",
                 "description": "DDL comment description",
-                "analyzed_description": "Analyzer description",
-                "semantic_frame_json": _frame_json(
-                    "db:orders.status", label="COLUMN", meaning="검증된 프레임 설명",
+                **_data_object_meaning_props(
+                    status="sufficient", logical_name="상태",
+                    analyzed_description="Analyzer description",
                 ),
             }}],
             [], [], [],
         )
         self.assertEqual(
-            "검증된 프레임 설명",
-            next(iter(build_gwt_detail(full, [])["node"]["semantic_frame"]["slots"].values()))["meaning"],
+            "Analyzer description",
+            build_gwt_detail(full, [])["node"]["data_object_meaning"]["analyzed_description"],
         )
 
     def test_invalid_view_is_explicit(self):

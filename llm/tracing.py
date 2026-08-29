@@ -33,7 +33,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from shared.config.settings import SETTINGS
 from llm.messages import content_to_text
 from shared.events.runtime_logger import log_warning
 from pipeline.execution.run_output_context import get_run_dir
@@ -44,9 +43,8 @@ _ATOMIC_REPLACE_BASE_DELAY_S = 0.01
 
 
 def _prompts_dir() -> Path:
-    # 분석 중에는 선택된 <run-output>/llm-prompts. 독립 프롬프트 도구는 기존 설정
-    # 루트를 fallback으로 사용한다.
-    return get_run_dir(fallback=SETTINGS.run_output.dir) / "llm-prompts"
+    """Return the active run's prompt ledger; unowned LLM evidence is forbidden."""
+    return get_run_dir() / "llm-prompts"
 
 
 # ── yaml rule 단발 호출 적재 ──────────────────────────────────

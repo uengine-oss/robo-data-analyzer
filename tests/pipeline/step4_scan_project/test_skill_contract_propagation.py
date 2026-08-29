@@ -16,9 +16,6 @@ class ApiContractPropagation(unittest.TestCase):
     def test_proframe_fence_reaches_scan_result(self):
         result = _hydrate_skill_contract(ScanResult(
             matched_skill="proframe-c-pfm-dbio",
-            confidence=0.5,
-            evidence="source evidence",
-            evidence_locations=["a.c:1", "a.c:2", "a.c:3"],
         ))
         contracts = result.api_contracts
         self.assertTrue(contracts, "proframe api_contracts fence 가 전파되지 않음")
@@ -29,9 +26,7 @@ class ApiContractPropagation(unittest.TestCase):
     def test_no_matched_skill_creates_nothing(self):
         result = ScanResult(
             matched_skill=None,
-            confidence=0.5,
-            evidence="source evidence",
-            evidence_locations=["a.c:1", "a.c:2", "a.c:3"],
+            table_access_status="unavailable",
             no_match_reason="no skill",
         )
         self.assertIs(result, _hydrate_skill_contract(result))

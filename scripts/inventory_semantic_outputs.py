@@ -131,7 +131,22 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             },
             "rule": {
                 "outputs": len(rules),
-                "empty_nl": sum(_blank(item.get("nl")) for item in rules),
+                "empty_structural_condition": sum(
+                    _blank(item.get("structural_condition")) for item in rules
+                ),
+                "empty_structural_effects": sum(
+                    _blank(item.get("structural_effects")) for item in rules
+                ),
+                "structural_condition_without_business_condition": sum(
+                    not _blank(item.get("structural_condition"))
+                    and _blank(item.get("business_condition"))
+                    for item in rules
+                ),
+                "structural_effects_without_business_effects": sum(
+                    not _blank(item.get("structural_effects"))
+                    and _blank(item.get("business_effects"))
+                    for item in rules
+                ),
             },
             "table": {
                 "outputs": len(tables),
@@ -277,7 +292,7 @@ def _graph_inventory(
                 record["props"]
                 for record in session.run(
                     "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "WHERE n.analysis_status IS NOT NULL "
+                    "WHERE n.meaning_status IS NOT NULL "
                     "RETURN properties(n) AS props",
                     graph_owner=ANALYZER_GRAPH_OWNER,
                 )
@@ -318,7 +333,7 @@ def _graph_inventory(
                 dict(record)
                 for record in session.run(
                     "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "WHERE n.analysis_status IS NOT NULL "
+                    "WHERE n.meaning_status IS NOT NULL "
                     "WITH n.file_path AS file, n.start_line AS start, n.end_line AS end, "
                     "collect({id:n.id,summary:n.summary,stereotype:n.stereotype}) AS nodes "
                     "WHERE size(nodes)>1 RETURN file,start,end,nodes ORDER BY file,start,end",
@@ -337,18 +352,20 @@ def _graph_inventory(
     finally:
         driver.close()
 
-    empty_then_rules = [item for item in rules if _blank(item.get("then"))]
-    rule_then_classes: Counter[str] = Counter()
-    for item in empty_then_rules:
+    empty_structural_effect_rules = [
+        item for item in rules if _blank(item.get("structural_effects"))
+    ]
+    structural_effect_classes: Counter[str] = Counter()
+    for item in empty_structural_effect_rules:
         row = rule_evidence.get(str(item.get("id") or ""))
         if row is None:
-            rule_then_classes["evidence_missing"] += 1
+            structural_effect_classes["evidence_missing"] += 1
         elif row.get("direct"):
-            rule_then_classes["direct_nonempty_but_then_empty"] += 1
+            structural_effect_classes["direct_nonempty_but_effects_empty"] += 1
         elif row.get("nested_control"):
-            rule_then_classes["nested_control_without_direct"] += 1
+            structural_effect_classes["nested_control_without_direct"] += 1
         else:
-            rule_then_classes["no_direct_not_nested"] += 1
+            structural_effect_classes["no_direct_not_nested"] += 1
 
     def semantic_nodes(items: list[dict[str, Any]], targets: set[str]) -> dict[str, Any]:
         selected = [item for item in items if str(item.get("id") or "") in targets]
@@ -368,10 +385,10 @@ def _graph_inventory(
                 for item in skipped
             ),
             "status": dict(
-                Counter(str(item.get("semantic_evidence_status", "<absent>")) for item in items)
+                Counter(str(item.get("meaning_status", "<absent>")) for item in items)
             ),
             "missing_context_nonempty": sum(
-                _missing_context_nonempty(item.get("semantic_missing_context")) for item in items
+                int(item.get("missing_context_count") or 0) > 0 for item in items
             ),
         }
 
@@ -385,24 +402,40 @@ def _graph_inventory(
             "empty_summary": sum(_blank(item.get("summary")) for item in summaries),
             "empty_stereotype": sum(_blank(item.get("stereotype")) for item in summaries),
             "status": dict(
-                Counter(str(item.get("summary_evidence_status", "<absent>")) for item in summaries)
+                Counter(str(item.get("meaning_status", "<absent>")) for item in summaries)
             ),
             "missing_context_nonempty": sum(
-                _missing_context_nonempty(item.get("summary_missing_context_json"))
-                for item in summaries
+                int(item.get("missing_context_count") or 0) > 0 for item in summaries
             ),
         },
         "rule": {
             "total": len(rules),
-            "empty_cond": sum(_blank(item.get("cond")) for item in rules),
-            "empty_then": len(empty_then_rules),
-            "empty_nl": sum(_blank(item.get("nl")) for item in rules),
-            "empty_then_evidence_class": dict(rule_then_classes),
+            "empty_structural_condition": sum(
+                _blank(item.get("structural_condition")) for item in rules
+            ),
+            "empty_structural_effects": len(empty_structural_effect_rules),
+            "empty_structural_effects_evidence_class": dict(
+                structural_effect_classes
+            ),
+            "structural_condition_without_business_condition": sum(
+                not _blank(item.get("structural_condition"))
+                and _blank(item.get("business_condition"))
+                for item in rules
+            ),
+            "structural_effects_without_business_effects": sum(
+                not _blank(item.get("structural_effects"))
+                and _blank(item.get("business_effects"))
+                for item in rules
+            ),
         },
         "example": {
             "total": len(examples),
-            "empty_given": sum(_blank(item.get("given")) for item in examples),
-            "empty_then": sum(_blank(item.get("then")) for item in examples),
+            "empty_given_conditions": sum(
+                _blank(item.get("given_conditions")) for item in examples
+            ),
+            "empty_expected_effects": sum(
+                _blank(item.get("expected_effects")) for item in examples
+            ),
         },
         "table": semantic_nodes(tables, target_table_ids),
         "column": semantic_nodes(columns, target_column_ids),

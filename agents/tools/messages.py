@@ -19,5 +19,4 @@ TOOL_MESSAGES: dict[str, str] = {
     "list_code_nodes":    "{file} 의 코드노드 목록 추출 중...",
     "list_skills":       "사용 가능한 SKILL 목록 조회 중...",
     "read_skill":        "{name} SKILL 본문 읽는 중...",
-    "write_todos":       "할 일 목록 갱신 중...",
 }

@@ -137,6 +137,22 @@ class WidenedVariantTest(unittest.TestCase):
 
 
 class AdversarialTest(unittest.TestCase):
+    def test_every_verified_structure_candidate_remains_available(self) -> None:
+        separators = ("=", ":", "|", ",", ";", "@", "#", "~")
+        samples = []
+        for file_index in range(2):
+            lines = [
+                f"K{group}{file_index}{item}{separator}VALUE{item}"
+                for group, separator in enumerate(separators)
+                for item in range(3)
+            ]
+            samples.append("\n".join(lines) + "\n")
+
+        candidates = mine_rule_candidates(samples)
+
+        self.assertGreater(len(candidates), 6)
+        self.assertTrue(any(r"\~" in candidate.pattern for candidate in candidates))
+
     def test_single_file_only_structure_is_not_generalized(self) -> None:
         samples = [
             "AAA=1\nAAA=2\nAAA=3\n",                 # 파일1에만 있는 구조

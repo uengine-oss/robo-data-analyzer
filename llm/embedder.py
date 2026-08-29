@@ -1,6 +1,6 @@
 """임베딩 — 텍스트를 벡터로. 어디서 계산하는지는 이 모듈만 안다.
 
-호출자(``embed_step``)는 ``encode_texts(texts)`` 한 줄만 부른다.
+호출자(``build_search_segments_step``)는 ``encode_texts(texts)`` 한 줄만 부른다.
 
 기본 공급자는 사내 임베딩 서버다. 이 서버는 요청 하나의 **총 토큰**이 크면 거부하고(개수가
 아니다), 그 한계가 부하에 따라 흔들린다. 그래서 개수 고정 배치가 아니라 **문자 예산으로 묶고**,
@@ -45,30 +45,14 @@ def encode_texts(texts: Sequence[str]) -> list[Vector]:
         raise EmbeddingError(
             f"알 수 없는 임베딩 공급자: {SETTINGS.embedding.provider!r} (가능: {sorted(_ENCODERS)})"
         )
-    bounded_texts = _truncate_oversized(list(texts))
-    vectors = encode(bounded_texts)
-    if len(vectors) != len(bounded_texts):
+    exact_texts = list(texts)
+    vectors = encode(exact_texts)
+    if len(vectors) != len(exact_texts):
         raise EmbeddingError(
             "임베딩 결과 수 불일치: "
-            f"입력={len(bounded_texts)}, 결과={len(vectors)} — 순서 대응 불가능"
+            f"입력={len(exact_texts)}, 결과={len(vectors)} — 순서 대응 불가능"
         )
     return vectors
-
-
-def _truncate_oversized(texts: list[str]) -> list[str]:
-    """서버 텍스트 한도 초과분만 절단(+경고). 초과 1건이 요청 전체를 거부시켜 노드를 유실시키는
-    것을 막는 최후수단 — 정상 길이는 무변경이고, 절단은 벡터 의미를 바꾸므로 조용히 하지 않는다."""
-    limit = SETTINGS.embedding.max_chars
-    out: list[str] = []
-    for t in texts:
-        if len(t) > limit:
-            log_warning(_STEP, "truncate",
-                        "노드 텍스트가 서버 한도 초과 — 절단(검색 품질 저하 가능)",
-                        chars=len(t), limit=limit)
-            out.append(t[:limit])
-        else:
-            out.append(t)
-    return out
 
 
 # ── 사내 임베딩 서버 (기본) ────────────────────────────────

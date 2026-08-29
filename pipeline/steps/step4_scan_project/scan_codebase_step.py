@@ -1,7 +1,7 @@
 """step4_scan_project — Framework 만 사용. Scan Agent 1회 invoke.
 
 흐름:
-1. ``collect_scanner_input`` — 매니페스트 + 확장자 빈도 + 카테고리별 파일 목록 수집.
+1. ``collect_scanner_input`` — 매니페스트 경로 + 전체 확장자·카테고리 건수 수집.
 2. ``run_scan_agent`` — Agent 호출 → ``ScanResult`` Pydantic.
 3. ``state["scan_result"]`` 에 dict 로 저장 → step5_linking 가 사용.
 """
@@ -45,15 +45,31 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
     started = time.monotonic()
     log_info(_STEP, "scanning", project_root=str(project_root))
 
-    scanner = collect_scanner_input(project_root)
+    closure = cfg.get("source_ast_closure")
+    scanner = collect_scanner_input(
+        project_root,
+        selected_source_paths=(
+            (artifact.source_path for artifact in closure.artifacts)
+            if closure is not None else ()
+        ),
+    )
     log_info(
         _STEP, "scanned",
-        manifest=bool(scanner.get("manifest_content")),
-        ext_kinds=len(scanner.get("extensions_count") or {}),
-        categories=len(scanner.get("scanner_categories") or {}),
+        manifests=len(scanner.get("manifest_paths") or []),
+        extension_kinds=len(scanner.get("extension_counts") or {}),
+        categories=len(scanner.get("scanner_category_file_counts") or {}),
     )
+    selected_agent_paths = None
+    if closure is not None and project.selected_source_ids:
+        selected_agent_paths = (
+            *(artifact.source_path for artifact in closure.artifacts),
+            *(
+                project_root / relative_path
+                for relative_path in scanner.get("manifest_paths") or []
+            ),
+        )
 
-    log_info(_STEP, "agent_invoke", max_calls="(see middleware)")
+    log_info(_STEP, "agent_invoke")
     try:
         result = await run_scan_agent(
             project_root=project_root,
@@ -63,6 +79,7 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
             code_nodes=state.get("code_nodes", []),
             tables=state.get("tables", []),
             stream_emit=stream.emit if stream is not None else None,
+            allowed_source_paths=selected_agent_paths,
         )
     except AgentModelOutputError as error:
         reason = f"{type(error).__name__}: {error}"
@@ -79,30 +96,44 @@ async def scan_codebase_step(state: dict, config: Optional[RunnableConfig] = Non
         )
         result = ScanResult(
             analysis_status="unavailable",
-            confidence=0.0,
-            evidence="scan model output unavailable; see run evidence",
-            evidence_locations=[],
+            table_access_status="unavailable",
             no_match_reason=reason,
         )
 
     result_dict = result.model_dump()
     unavailable = result_dict.get("analysis_status") == "unavailable"
+    table_unavailable = result_dict.get("table_access_status") == "unavailable"
     emit_message(
         stream,
         ("⚠️ 코드베이스 스캔 미가용 — 검증되지 않은 패턴 0건 적용"
          if unavailable else
+         "⚠️ 테이블 접근 계약 미가용 — R/W 패턴 0건, 독립 SKILL 계약 보존"
+         if table_unavailable else
          f"✅ 코드베이스 스캔 완료 — 패턴 {len(result_dict.get('table_access_patterns') or [])}"),
     )
     fields = {
         "matched_skill": result_dict.get("matched_skill"),
-        "confidence": result_dict.get("confidence"),
         "patterns": len(result_dict.get("table_access_patterns") or []),
+        "table_access_status": result_dict.get("table_access_status"),
         "elapsed_sec": f"{time.monotonic() - started:.2f}",
     }
     if unavailable:
         log_warning(
             _STEP, "unavailable",
             "scan 모델 후보 미가용 — 검증되지 않은 패턴은 적용하지 않음",
+            **fields,
+        )
+    elif table_unavailable:
+        record_analysis_findings([AnalysisFinding(
+            concern="table_access_scan",
+            status="unavailable",
+            target_id=str(project_root),
+            reasons=(str(result_dict.get("no_match_reason") or "unknown"),),
+            evidence_rule="table_access_verification",
+        )])
+        log_warning(
+            _STEP, "table_access_unavailable",
+            "R/W 패턴은 적용하지 않고 독립 handler/API/call 계약만 보존",
             **fields,
         )
     else:

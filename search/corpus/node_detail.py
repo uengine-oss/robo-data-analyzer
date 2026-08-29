@@ -15,20 +15,10 @@ from search.corpus.generation import (
     completed_generation_session,
 )
 from graph.ownership import ANALYZER_GRAPH_OWNER
-from pipeline.models.semantic_frame import SemanticFrame
-from pipeline.models.call_resolution import (
-    call_resolution_from_storage,
-    normalize_call_resolution_subset,
-    summarize_call_resolution_subset,
-)
-from pipeline.models.import_resolution import (
-    import_resolution_from_storage,
-    normalize_import_resolution_subset,
-    summarize_import_resolution_subset,
-)
-from graph.schema.rel_types import HAS_CALL_OCCURRENCE
 
-_INTERNAL_PROPERTIES = {"embedding", "graph_owner", "generation_id", "element_id"}
+_INTERNAL_PROPERTIES = {
+    "embedding", "graph_owner", "analysis_scope_id", "generation_id", "element_id",
+}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
 _CODE_LABELS = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
 
@@ -40,21 +30,6 @@ def _error(code: str, message: str) -> dict:
 def _public_properties(properties: dict[str, Any]) -> dict[str, Any]:
     hidden = _INTERNAL_PROPERTIES | _SOURCE_PROPERTIES | {"id", "name"}
     return {key: value for key, value in properties.items() if key not in hidden}
-
-
-def _json_string_list(value: Any) -> list[str]:
-    """Decode one persisted missing-context field without inventing evidence."""
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()]
-    if not isinstance(value, str) or not value.strip():
-        return []
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [str(item) for item in parsed if str(item).strip()]
 
 
 def _semantic_description(properties: dict[str, Any]) -> str:
@@ -73,7 +48,6 @@ def build_node_detail(
     *,
     node_id: str | None = None,
     require_complete_source: bool = True,
-    import_occurrences: list[dict] | None = None,
 ) -> dict:
     """조회 행을 공개 계약으로 직렬화한다. 테스트와 live reader가 같은 검사를 쓴다."""
     requested_id = (node_id or "").strip()
@@ -117,24 +91,8 @@ def build_node_detail(
         }
 
     public_relationships = []
-    call_occurrences = []
     for relationship in relationships:
         other_properties = dict(relationship.get("other_properties") or {})
-        if (
-            relationship.get("type") == HAS_CALL_OCCURRENCE
-            and relationship.get("direction") == "out"
-        ):
-            try:
-                occurrence = call_resolution_from_storage(other_properties)
-            except ValueError as error:
-                return _error("CALL_OCCURRENCE_INVALID", str(error))
-            if occurrence["caller_id"] != actual_id:
-                return _error(
-                    "CALL_OCCURRENCE_OWNER_MISMATCH",
-                    "call occurrence owner does not match requested node",
-                )
-            call_occurrences.append(occurrence)
-            continue
         related_source = None
         if relationship.get("type") == "REFERENCES":
             related_source = {
@@ -156,18 +114,6 @@ def build_node_detail(
             },
         })
 
-    try:
-        call_occurrences = normalize_call_resolution_subset(call_occurrences)
-        call_resolution = summarize_call_resolution_subset(call_occurrences)
-    except ValueError as error:
-        return _error("CALL_OCCURRENCE_INVALID", str(error))
-    try:
-        file_import_occurrences = normalize_import_resolution_subset(
-            import_occurrences or []
-        )
-        import_resolution = summarize_import_resolution_subset(file_import_occurrences)
-    except ValueError as error:
-        return _error("IMPORT_OCCURRENCE_INVALID", str(error))
     return {"node": {
         "id": actual_id,
         "labels": labels,
@@ -177,26 +123,11 @@ def build_node_detail(
         "rules": rules,
         "columns": columns,
         "relationships": public_relationships,
-        **({"call_resolution": {
-            "status": "insufficient" if call_resolution["unresolved"] else "sufficient",
-            **call_resolution,
-            "occurrences": call_occurrences,
-        }} if is_code else {}),
-        **({"import_resolution": {
-            "scope": "source_file",
-            "status": "insufficient" if import_resolution["unresolved"] else "sufficient",
-            **import_resolution,
-            "occurrences": file_import_occurrences,
-        }} if is_code else {}),
     }}
 
 
 def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
-    """Project one node into the source-free Architect semantic-frame packet.
-
-    The historical function name remains an internal compatibility symbol.  The wire
-    schema is semantic-frame-packet/v1; complete source and source hashes are excluded.
-    """
+    """Project one product node into a source-free semantic detail packet."""
     if "error" in detail:
         return detail
     node = detail["node"]
@@ -232,22 +163,109 @@ def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
                 "definition": dict(other.get("properties") or {}),
                 "reference_line": reference_line,
             })
-    raw_frame = props.get("semantic_frame_json")
-    if not isinstance(raw_frame, str) or not raw_frame.strip():
-        return _error(
-            "SEMANTIC_FRAME_UNAVAILABLE",
-            "validated semantic frame is unavailable for this node",
+    is_function = bool(_CODE_LABELS.intersection(node.get("labels") or ()))
+    if is_function:
+        status = props.get("meaning_status")
+        count = props.get("missing_context_count")
+        summary = props.get("summary")
+        stereotype = props.get("stereotype")
+        artifact_hash = props.get("missing_context_artifact_hash")
+        if status not in {"sufficient", "partial", "insufficient"}:
+            return _error(
+                "FUNCTION_MEANING_UNAVAILABLE",
+                "validated function meaning status is unavailable",
+            )
+        has_summary = isinstance(summary, str) and bool(summary.strip())
+        has_stereotype = isinstance(stereotype, str) and bool(stereotype.strip())
+        valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        valid_hash = (
+            isinstance(artifact_hash, str)
+            and len(artifact_hash) == 64
+            and all(character in "0123456789abcdef" for character in artifact_hash)
         )
-    try:
-        frame = SemanticFrame.model_validate(json.loads(raw_frame))
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        return _error("SEMANTIC_FRAME_INVALID", str(exc))
+        valid_presence = (
+            valid_count
+            and has_summary == has_stereotype
+            and (
+                (status == "sufficient" and has_summary and count == 0 and not artifact_hash)
+                or (status == "partial" and has_summary and count > 0 and valid_hash)
+                or (status == "insufficient" and not has_summary and count > 0 and valid_hash)
+            )
+        )
+        if not valid_presence:
+            return _error(
+                "FUNCTION_MEANING_INVALID",
+                "function meaning property presence is inconsistent",
+            )
+        function_meaning = {
+            "summary": summary if has_summary else None,
+            "stereotype": stereotype if has_stereotype else None,
+            "meaning_status": status,
+            "missing_context_count": count,
+            **(
+                {"missing_context_artifact_hash": artifact_hash}
+                if artifact_hash else {}
+            ),
+        }
+    else:
+        status = props.get("meaning_status")
+        count = props.get("missing_context_count")
+        artifact_hash = props.get("missing_context_artifact_hash")
+        logical_name = str(props.get("logical_name") or "").strip()
+        analyzed_description = str(props.get("analyzed_description") or "").strip()
+        valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        valid_hash = (
+            isinstance(artifact_hash, str)
+            and len(artifact_hash) == 64
+            and all(character in "0123456789abcdef" for character in artifact_hash)
+        )
+        if status not in {"sufficient", "insufficient"}:
+            return _error(
+                "DATA_OBJECT_MEANING_UNAVAILABLE",
+                "validated table or column meaning status is unavailable",
+            )
+        valid_presence = (
+            valid_count
+            and (
+                (
+                    status == "sufficient" and logical_name and analyzed_description
+                    and count == 0 and not artifact_hash
+                )
+                or (
+                    status == "insufficient" and not logical_name
+                    and not props.get("analyzed_description")
+                    and count > 0 and valid_hash
+                )
+            )
+        )
+        if not valid_presence:
+            return _error(
+                "DATA_OBJECT_MEANING_INVALID",
+                "table or column meaning property presence is inconsistent",
+            )
+        data_object_meaning = {
+            "logical_name": logical_name or None,
+            "analyzed_description": (
+                    analyzed_description or None
+            ),
+            "meaning_status": status,
+            "missing_context_count": count,
+            **(
+                {"missing_context_artifact_hash": artifact_hash}
+                if artifact_hash else {}
+            ),
+        }
+        function_meaning = None
     structured_rules = gwt_rules(node.get("rules") or [], node_id=str(node.get("id") or ""))
-    return {"schema_version": "semantic-frame-packet/v1", "node": {
+    return {"schema_version": "semantic-detail/v2", "node": {
         "id": node.get("id") or "",
         "labels": list(node.get("labels") or []),
         "name": node.get("name") or "",
-        "semantic_frame": frame.model_dump(mode="json", by_alias=True),
+        **(
+            {"function_meaning": function_meaning}
+            if function_meaning is not None
+            else {"data_object_meaning": data_object_meaning}
+        ),
         "rule_examples": [
             {
                 "anchor_line": rule["line"],
@@ -257,12 +275,6 @@ def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
         ],
         "linked_context": {
             "callees": calls,
-            "call_occurrences": list(
-                (node.get("call_resolution") or {}).get("occurrences") or []
-            ),
-            "import_occurrences": list(
-                (node.get("import_resolution") or {}).get("occurrences") or []
-            ),
             "symbols": symbols,
             "data_objects": [
             {
@@ -299,41 +311,26 @@ def _table_context(
     props = properties
     if props is None:
         rows = session.run(
-            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
+            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
             "RETURN properties(t) AS props",
             id=table_id,
             graph_owner=ANALYZER_GRAPH_OWNER,
         ).data()
         props = dict(rows[0].get("props") or {}) if len(rows) == 1 else {}
     sample = _sample_snapshot(props, table_id)
-    table_frame = _optional_semantic_frame(props.get("semantic_frame_json"))
     columns = read_columns(session, table_id)
-    for column in columns:
-        raw = column.pop("semantic_frame_json", "")
-        column["semantic_frame"] = _optional_semantic_frame(raw)
     return {
         "id": table_id,
         "name": name or props.get("name") or "",
         "access": sorted(set(access)),
-        "evidence_status": props.get("semantic_evidence_status") or "",
-        "missing_context": _json_string_list(
-            props.get("semantic_missing_context")
+        "meaning_status": props.get("meaning_status") or "",
+        "missing_context_count": props.get("missing_context_count") or 0,
+        "missing_context_artifact_hash": (
+            props.get("missing_context_artifact_hash") or ""
         ),
-        "semantic_frame": table_frame,
         "columns": columns,
         "sample": sample,
     }
-
-
-def _optional_semantic_frame(value: Any) -> dict | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        return SemanticFrame.model_validate(json.loads(value)).model_dump(
-            mode="json", by_alias=True,
-        )
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return None
 
 
 def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
@@ -357,7 +354,12 @@ def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
     ]
 
 
-def read_node_detail(node_id: str, *, view: str = "full") -> dict:
+def read_node_detail(
+    node_id: str,
+    *,
+    view: str = "full",
+    analysis_scope_id: str | None = None,
+) -> dict:
     """현재 요청 DB에서 node id 하나를 읽는다. 부재·중복·불완전 소스는 명시 오류다."""
     requested_id = (node_id or "").strip()
     if not requested_id:
@@ -365,9 +367,11 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
 
     driver, database = read_driver()
     try:
-        with completed_generation_session(driver, database) as session:
+        with completed_generation_session(
+            driver, database, analysis_scope_id=analysis_scope_id,
+        ) as session:
             node_rows = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner, generation_id:$generation_id}) "
+                "MATCH (n {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
                 "RETURN labels(n) AS labels, properties(n) AS props",
                 id=requested_id,
                 graph_owner=ANALYZER_GRAPH_OWNER,
@@ -376,8 +380,8 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 return build_node_detail(node_rows, [], [], [], node_id=requested_id)
 
             relationships = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner, generation_id:$generation_id})-[r]-"
-                "(other {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                "MATCH (n {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})-[r]-"
+                "(other {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
                 "RETURN type(r) AS type, "
                 "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction, "
                 "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
@@ -388,24 +392,6 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).data()
             labels = set(node_rows[0].get("labels") or [])
-            node_properties = dict(node_rows[0].get("props") or {})
-            import_occurrences: list[dict] = []
-            source_file = str(node_properties.get("file_path") or "").strip()
-            if labels & _CODE_LABELS and source_file:
-                import_rows = session.run(
-                    "MATCH (occ:IMPORT_OCCURRENCE {graph_owner:$graph_owner, "
-                    "generation_id:$generation_id, file:$file}) "
-                    "RETURN properties(occ) AS props ORDER BY occ.ordinal",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
-                    file=source_file,
-                ).data()
-                try:
-                    import_occurrences = [
-                        import_resolution_from_storage(dict(row.get("props") or {}))
-                        for row in import_rows
-                    ]
-                except ValueError as error:
-                    return _error("IMPORT_OCCURRENCE_INVALID", str(error))
             rules = read_rules(session, requested_id)
             columns = read_columns(session, requested_id) if "TABLE" in labels else []
             detail = build_node_detail(
@@ -415,11 +401,11 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
                 columns,
                 node_id=requested_id,
                 require_complete_source=view == "full",
-                import_occurrences=import_occurrences,
             )
             if view == "full" or "error" in detail:
                 if "error" not in detail:
                     detail["meta"] = {
+                        "analysis_scope_id": session.analysis_scope_id,
                         "generation_id": session.generation_id,
                         "quality_status": session.quality_status,
                         "call_resolution": session.call_resolution,
@@ -440,6 +426,7 @@ def read_node_detail(node_id: str, *, view: str = "full") -> dict:
             packet = build_gwt_detail(detail, tables)
             if "error" not in packet:
                 packet["meta"] = {
+                    "analysis_scope_id": session.analysis_scope_id,
                     "generation_id": session.generation_id,
                     "quality_status": session.quality_status,
                     "call_resolution": session.call_resolution,

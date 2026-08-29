@@ -1,7 +1,0 @@
-old_path	new_path	owner
-analyzer_settings.py	shared/config/settings.py	shared configuration
-runtime_events	shared/events	shared runtime events
-source/file_cache.py	shared/files/cache.py	shared run file cache
-source/path_resolver.py	api/source_resolver.py	source API
-llm/prompt_logging/prompt_logger.py	llm/tracing.py	LLM tracing
-run-output/	output/	generated runtime output

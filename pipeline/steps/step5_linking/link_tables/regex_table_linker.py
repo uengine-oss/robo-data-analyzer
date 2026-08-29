@@ -33,7 +33,7 @@ from graph.schema.graph_nodes import CodeNode, Table
 from pipeline.dml_semantics import dml_semantics, dml_type_of
 from pipeline.languages import ROUTINE_LABELS, lang_of, source_lexicon
 from pipeline.quality_gates.lexing import split_source_for_linking
-from shared.config.settings import SETTINGS
+from shared.files.run_cache_context import read_run_text
 
 # samples 누적 상한 — 검증 피드백·로그용. LLM 컨텍스트 폭증 방지.
 _SAMPLE_CAP = 25
@@ -61,14 +61,12 @@ class LinkOutcome:
     matched_sites: int = 0              # entity 를 추출한 총 매치 수
     partial_entities: int = 0            # entity 앞뒤에 식별자 문자가 남은 부분 추출 수
     token_recognized: int = 0           # 그중 op_token 이 op_mappings 에 인식된 수
-    # 검문소 3지표 (spec 114) — support 는 edges 가 담당.
-    dict_misses: int = 0                # contradiction: 완전한 entity 인데 단어장에 없음
+    unresolved_table_names: int = 0     # 완전한 entity지만 현재 업로드 DDL에는 없음
     ambiguous_sites: int = 0            # ambiguity: entity 가 단어장에서 복수 해석됨
     samples: list[MatchSample] = field(default_factory=list)   # 앞 N건 (피드백용)
     rule_stats: dict[str, "RuleStats"] = field(default_factory=dict)
     exclusion_stats: dict[str, "RuleStats"] = field(default_factory=dict)
     exclusion_conflicts: list["TableAccessExclusionConflict"] = field(default_factory=list)
-    match_locations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -78,7 +76,7 @@ class RuleStats:
     resolved_sites: int = 0
     partial_entities: int = 0
     token_recognized: int = 0
-    dict_misses: int = 0
+    unresolved_table_names: int = 0
     ambiguous_sites: int = 0
 
 
@@ -90,11 +88,9 @@ class PatternVerdict:
     (scan_agent · residual_pattern_loop)는 ok · resolved_ratio · summary 만 읽는다.
     """
     ok: bool
-    resolved_ratio: float               # edges / matched_sites — 검증 실패 시 점수 환산용
+    resolved_ratio: float               # 현재 업로드 DDL에서 해소된 비율(진단값)
     summary: str                        # 사람·LLM 이 읽을 한 줄 요약
-    failed_rule_ids: tuple[str, ...] = ()
-    failed_exclusion_ids: tuple[str, ...] = ()
-    evidence_locations: tuple[str, ...] = ()
+    invalid_access_rule_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -411,7 +407,7 @@ def prepare_link_sources(
         path = Path(file_path)
         src_file = path if path.is_absolute() else root / path
         try:
-            text = src_file.read_text(encoding="utf-8")
+            text = read_run_text(src_file, encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             raise RuntimeError(
                 f"R/W linking source read failed: {src_file}: {error}"
@@ -522,10 +518,6 @@ class RegexTableLinker:
                         seen_exclusion_sites.add(site)
                         stats.matched_sites += 1
                         excluded_spans.append((raw_start, raw_end, exclusion.id))
-                        _record_match_location(
-                            outcome, src_file,
-                            scan_text[:raw_start].count("\n") + 1,
-                        )
             seen_sites: set[tuple[str, int, str, str]] = set()
             for pat, regex, op_lookup in compiled:
                 stats = outcome.rule_stats[pat.id]
@@ -542,7 +534,6 @@ class RegexTableLinker:
                             continue
                         seen_sites.add(site)
                         line = scan_text[:entity_offset].count("\n") + 1
-                        _record_match_location(outcome, src_file, line)
 
                         raw_start, raw_end = _raw_match_span(view, m)
                         overlapping_exclusions = sorted({
@@ -581,8 +572,8 @@ class RegexTableLinker:
                             continue
                         # 검문소 3지표 (spec 114) — 판정 재료만 계수, 엣지 동작은 불변.
                         if entity_complete and not hits:
-                            outcome.dict_misses += 1
-                            stats.dict_misses += 1
+                            outcome.unresolved_table_names += 1
+                            stats.unresolved_table_names += 1
                         if len(set(hits)) > 1:
                             outcome.ambiguous_sites += 1
                             stats.ambiguous_sites += 1
@@ -696,6 +687,9 @@ async def verify_table_patterns(
     exclusion_patterns: tuple[TableAccessExclusionPattern, ...]
     | list[TableAccessExclusionPattern] = (),
     prepared_sources: PreparedLinkSources | None = None,
+    require_each_access_rule_match: bool = True,
+    require_each_exclusion_rule_match: bool = True,
+    require_local_table_resolution: bool = True,
 ) -> PatternVerdict:
     """정규식을 실제 소스에 적용 → 작동 여부 판정 (``RegexTableLinker`` 재사용).
 
@@ -703,10 +697,10 @@ async def verify_table_patterns(
     반드시 이 검증을 통과해야 한다. ``restrict_to_files`` 로 검증 범위를 좁힐 수
     있다 (잔여 루프 — 잔여 케이스 파일만 검증, 전체 재스캔 회피).
 
-    ``ok`` 판정 = 매치 ≥ 1 · 엣지 ≥ 1 · op_token 인식률 ≥ 임계
-    (``ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO``).
-    틀린 정규식 — entity 가 SQL_KEY 통째(``<테이블명>_s0024`` 형태), op_token 이 C
-    변수명 — 은 엣지 0 · token 인식 0 → ``ok=False`` 로 걸린다.
+    모델이 새로 제안한 규칙은 기본적으로 각 규칙의 실제 매치와 로컬 DDL 해소를
+    요구한다. 등록된 SKILL 계약을 partial upload에서 식별할 때는 세 ``require_*``
+    인자를 끄고, 실제 source shape·op token·완전한 entity 추출·중의성만 검증한다.
+    어느 경로에서도 TABLE/비TABLE exclusion 충돌은 허용하지 않는다.
     """
     outcome = await RegexTableLinker().link(
         project_root=project_root,
@@ -724,43 +718,50 @@ async def verify_table_patterns(
     edges = len(outcome.edges)
     resolved_ratio = edges / matched if matched else 0.0
     token_ratio = outcome.token_recognized / matched if matched else 0.0
-    # 검문소 3지표 (spec 114): support=edges, contradiction=단어장 불일치 비율,
-    # ambiguity=복수 해석 비율. "운 좋은 엣지 1개"로 넓은 오탐 규칙이 통과하는 구멍 봉쇄.
-    contradiction_ratio = outcome.dict_misses / matched if matched else 0.0
+    unresolved_table_ratio = outcome.unresolved_table_names / matched if matched else 0.0
     ambiguity_ratio = outcome.ambiguous_sites / matched if matched else 0.0
     has_access_rules = bool(patterns or embedded_rules)
     aggregate_ok = not has_access_rules or (
         matched > 0
-        and edges > 0
         and outcome.partial_entities == 0
-        and token_ratio >= SETTINGS.analysis_agents.scan_regex_min_op_ratio
-        and contradiction_ratio <= SETTINGS.analysis_agents.scan_regex_max_contradiction_ratio
-        and ambiguity_ratio <= SETTINGS.analysis_agents.scan_regex_max_ambiguity_ratio
+        and outcome.token_recognized == matched
+        and outcome.ambiguous_sites == 0
+        and (
+            not require_local_table_resolution
+            or (
+                edges > 0
+                and outcome.unresolved_table_names == 0
+            )
+        )
     )
     summary = (
         f"매치 {matched}건 · R/W엣지 {edges}건 · 미해결 {len(outcome.unresolved)}건 · "
         f"부분추출 {outcome.partial_entities}건 · "
-        f"token인식 {token_ratio:.0%} · 테이블해소 {resolved_ratio:.0%} · "
-        f"모순 {contradiction_ratio:.0%} · 중의 {ambiguity_ratio:.0%}"
+        f"token인식 {token_ratio:.0%} · 로컬테이블해소 {resolved_ratio:.0%} · "
+        f"DDL미해소 {unresolved_table_ratio:.0%} · 중의 {ambiguity_ratio:.0%}"
     )
-    failed_rule_ids = tuple(
+    invalid_access_rule_ids = tuple(
         rule_id
         for rule_id, stats in outcome.rule_stats.items()
-        if not _rule_stats_ok(stats)
+        if not _rule_stats_ok(
+            stats,
+            require_match=require_each_access_rule_match,
+            require_local_table_resolution=require_local_table_resolution,
+        )
     )
-    if failed_rule_ids:
+    if invalid_access_rule_ids:
         failed = "; ".join(
             f"{rule_id}({_rule_stats_summary(outcome.rule_stats[rule_id])})"
-            for rule_id in failed_rule_ids
+            for rule_id in invalid_access_rule_ids
         )
         summary += f" · 규칙별 실패 [{failed}]"
-    failed_exclusion_ids = tuple(
+    unobserved_exclusion_rule_ids = tuple(
         rule_id
         for rule_id, stats in outcome.exclusion_stats.items()
-        if stats.matched_sites == 0
+        if require_each_exclusion_rule_match and stats.matched_sites == 0
     )
-    if failed_exclusion_ids:
-        summary += " · 미검증 제외규칙 [" + ", ".join(failed_exclusion_ids) + "]"
+    if unobserved_exclusion_rule_ids:
+        summary += " · 미관찰 제외규칙 [" + ", ".join(unobserved_exclusion_rule_ids) + "]"
     if outcome.exclusion_conflicts:
         conflicts = "; ".join(
             f"{item.access_rule_id}<->{item.exclusion_rule_id}@{item.file}:{item.line}"
@@ -770,42 +771,52 @@ async def verify_table_patterns(
     return PatternVerdict(
         ok=(
             aggregate_ok
-            and not failed_rule_ids
-            and not failed_exclusion_ids
+            and not invalid_access_rule_ids
+            and not unobserved_exclusion_rule_ids
             and not outcome.exclusion_conflicts
         ),
         resolved_ratio=resolved_ratio,
         summary=summary,
-        failed_rule_ids=failed_rule_ids,
-        failed_exclusion_ids=failed_exclusion_ids,
-        evidence_locations=tuple(outcome.match_locations),
+        invalid_access_rule_ids=invalid_access_rule_ids,
     )
 
 
-def _rule_stats_ok(stats: RuleStats) -> bool:
+def _rule_stats_ok(
+    stats: RuleStats,
+    *,
+    require_match: bool,
+    require_local_table_resolution: bool,
+) -> bool:
     """집계에 기대지 않고 한 규칙 자체가 검문소를 통과하는지 판정한다."""
     matched = stats.matched_sites
+    if matched == 0:
+        return not require_match
     token_ratio = stats.token_recognized / matched if matched else 0.0
-    contradiction_ratio = stats.dict_misses / matched if matched else 0.0
+    unresolved_table_ratio = stats.unresolved_table_names / matched if matched else 0.0
     ambiguity_ratio = stats.ambiguous_sites / matched if matched else 0.0
     return (
-        matched > 0
-        and stats.resolved_sites > 0
-        and stats.partial_entities == 0
-        and token_ratio >= SETTINGS.analysis_agents.scan_regex_min_op_ratio
-        and contradiction_ratio <= SETTINGS.analysis_agents.scan_regex_max_contradiction_ratio
-        and ambiguity_ratio <= SETTINGS.analysis_agents.scan_regex_max_ambiguity_ratio
+        stats.partial_entities == 0
+        and stats.token_recognized == matched
+        and stats.ambiguous_sites == 0
+        and (
+            not require_local_table_resolution
+            or (
+                stats.resolved_sites > 0
+                and stats.unresolved_table_names == 0
+            )
+        )
     )
 
 
 def _rule_stats_summary(stats: RuleStats) -> str:
     matched = stats.matched_sites
     token_ratio = stats.token_recognized / matched if matched else 0.0
-    contradiction_ratio = stats.dict_misses / matched if matched else 0.0
+    unresolved_table_ratio = stats.unresolved_table_names / matched if matched else 0.0
     ambiguity_ratio = stats.ambiguous_sites / matched if matched else 0.0
     return (
         f"매치 {matched}, 해소 {stats.resolved_sites}, 부분 {stats.partial_entities}, "
-        f"token {token_ratio:.0%}, 모순 {contradiction_ratio:.0%}, 중의 {ambiguity_ratio:.0%}"
+        f"token {token_ratio:.0%}, DDL미해소 {unresolved_table_ratio:.0%}, "
+        f"중의 {ambiguity_ratio:.0%}"
     )
 
 
@@ -861,7 +872,6 @@ def _embedded_sql_edges(
                 entity = m.group("entity")
                 raw_offset = base + m.start("entity")
                 line = scan_text[:raw_offset].count("\n") + 1
-                _record_match_location(outcome, src_file, line)
                 hits = _resolve_table_hits(entity, table_lookup, ddl_transform)
                 caller_id = locator.locate(str(src_file), line)
 
@@ -870,8 +880,8 @@ def _embedded_sql_edges(
                 stats.matched_sites += 1
                 stats.token_recognized += 1
                 if not hits:
-                    outcome.dict_misses += 1
-                    stats.dict_misses += 1
+                    outcome.unresolved_table_names += 1
+                    stats.unresolved_table_names += 1
                     continue
                 if len(set(hits)) > 1:
                     outcome.ambiguous_sites += 1
@@ -945,13 +955,6 @@ def _raw_match_span(view: _SourceView, match: re.Match) -> tuple[int, int]:
     start = view.raw_offset(match.start())
     end = view.raw_offset(match.end() - 1) + 1
     return (min(start, end), max(start, end))
-
-
-def _record_match_location(outcome: LinkOutcome, path: Path, line: int) -> None:
-    """Keep a bounded, distinct source-coordinate proof for skill selection."""
-    location = f"{path}:{line}"
-    if location not in outcome.match_locations and len(outcome.match_locations) < _SAMPLE_CAP:
-        outcome.match_locations.append(location)
 
 
 class CodeLocator:

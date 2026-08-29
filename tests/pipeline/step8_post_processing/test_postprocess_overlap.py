@@ -21,28 +21,23 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
-from pipeline.steps.step8_post_processing.summarize_module_step import (
-    _match_code_to_modules,
-    _select_analyzed_code_nodes,
-    summarize_module_step,
-)
-from pipeline.models.aggregate_semantic_frame import (
-    project_aggregate_frame as deterministic_aggregate_projection,
+from pipeline.steps.step8_post_processing.build_module_summary_rollups_step import (
+    _group_functions_by_module,
+    build_module_summary_rollups_step,
 )
 from shared.concurrency.priority_semaphore import PrioritySemaphore
-from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
 
 @dataclass
 class _Node:
     id: str
     label: str = "FUNCTION"
+    owner_id: str = "mod:m.c"
     file_path: str = "m.c"
     start_line: int = 1
     end_line: int = 9
     signature: str = "int f(void)"
     summary: Optional[str] = None
-    logical_name: Optional[str] = None
     extra: dict = field(default_factory=dict)
 
 
@@ -54,11 +49,8 @@ class _Module:
     start_line: int = 0
     end_line: int = 0
     label: str = "FILE"
-    summary: Optional[str] = None
-    stereotype: Optional[str] = None
-    logical_name: Optional[str] = None
-    semantic_frame_schema: str = ""
-    semantic_frame_json: str = ""
+    summary_rollup_function_ids: tuple[str, ...] = ()
+    summary_rollup_summaries: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,25 +64,67 @@ class _Strategy:
 
 
 class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
-    def test_module_member_projection_order_is_source_order_not_state_order(self) -> None:
-        later = _Node("code:later", start_line=20, end_line=29)
-        earlier = _Node("code:earlier", start_line=2, end_line=9)
+    def test_module_rollup_uses_owner_id_and_function_id_order(self) -> None:
+        later_but_first_id = _Node("code:a", start_line=20, end_line=29)
+        earlier_but_last_id = _Node("code:z", start_line=2, end_line=9)
 
-        matched = _match_code_to_modules([later, earlier], [_Module()])
-
-        self.assertEqual(
-            [node.id for node in matched["mod:m.c"]],
-            ["code:earlier", "code:later"],
+        grouped = _group_functions_by_module(
+            [earlier_but_last_id, later_but_first_id],
+            [_Module()],
         )
 
-    def test_module_summary_uses_strategy_analysis_targets(self) -> None:
+        self.assertEqual(
+            [node.id for node in grouped["mod:m.c"]],
+            ["code:a", "code:z"],
+        )
+
+    def test_module_rollup_excludes_non_function_nodes(self) -> None:
         routine = _Node("code:f", label="FUNCTION")
         control = _Node("code:f:IF@2", label="IF")
-        strategy = _Strategy(steps=())
 
         self.assertEqual(
-            _select_analyzed_code_nodes(strategy, [routine, control]),
-            [routine],
+            _group_functions_by_module([control, routine], [_Module()]),
+            {"mod:m.c": [routine]},
+        )
+
+    def test_module_rollup_rejects_unknown_or_duplicate_function_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "owner_id"):
+            _group_functions_by_module(
+                [_Node("code:f", owner_id="mod:missing")],
+                [_Module()],
+            )
+        with self.assertRaisesRegex(ValueError, "duplicate function IDs"):
+            _group_functions_by_module(
+                [_Node("code:f"), _Node("code:f")],
+                [_Module()],
+            )
+
+    async def test_module_rollup_preserves_each_summary_byte_identically(self) -> None:
+        handoff = AnalysisHandoff(PrioritySemaphore(8))
+        first = _Node("code:a", summary="첫째 요약")
+        second = _Node("code:z", summary="둘째 요약\n두 번째 줄")
+        handoff.expect([first.id, second.id])
+        handoff.publish_summary(second)
+        handoff.publish_summary(first)
+        handoff.resolve(first.id)
+        handoff.resolve(second.id)
+        handoff.close()
+
+        result = await build_module_summary_rollups_step(
+            {"modules": [_Module()], "code_nodes": [second, first]},
+            config={
+                "configurable": {
+                    "analysis_handoff": handoff,
+                    "neo_client": None,
+                }
+            },
+        )
+
+        module = result["modules"][0]
+        self.assertEqual(("code:a", "code:z"), module.summary_rollup_function_ids)
+        self.assertEqual(
+            ("첫째 요약", "둘째 요약\n두 번째 줄"),
+            module.summary_rollup_summaries,
         )
 
     async def test_module_summary_starts_before_step7_finishes(self) -> None:
@@ -103,10 +137,6 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
             """실제 step7 의 신호 순서 — #1 확정이 노드 완료보다 한참 이르다."""
             handoff.expect(["code:f"])
             node.summary = "확정된 요약"
-            node.logical_name = "확정된 논리명"
-            node.extra["_summary_semantic_frame"] = semantic_frame_for_node(
-                node, meaning="확정된 요약",
-            )
             handoff.publish_summary(node)
             timeline.append("step7:summary_published")
             await asyncio.sleep(0.05)          # 남은 rules 콜(기준선 100초 구간)
@@ -118,31 +148,25 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
 
         seen_summaries: list[str] = []
 
-        def fake_projection(profile, specs, member_frames, **kwargs):
-            timeline.append("postprocess:projection")
+        def observed_grouping(code_nodes, modules):
+            timeline.append("postprocess:rollup")
             seen_summaries.extend(
-                slot.meaning
-                for frame in member_frames
-                for slot in frame.slots.values()
+                node.summary for node in code_nodes if node.summary
             )
             self.assertFalse(
                 step7_done.is_set(),
-                "후처리 projection이 step7 완료 뒤에야 시작됐다 — 겹치지 않았다",
+                "후처리 rollup이 step7 완료 뒤에야 시작됐다 — 겹치지 않았다",
             )
-            return deterministic_aggregate_projection(
-                profile, specs, member_frames, **kwargs,
-            )
+            return _group_functions_by_module(code_nodes, modules)
 
         state = {
             "run": None,
             "modules": [_Module()],
             "code_nodes": [_Node("code:f")],     # state 사본 — 확정본은 handoff 가 갖는다
         }
-        target = "pipeline.steps.step8_post_processing.summarize_module_step"
-        with mock.patch(f"{target}.project_aggregate_frame", side_effect=fake_projection), \
-             mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
-             mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
-            strategy = _Strategy(steps=((fake_analyze_code_step, summarize_module_step),))
+        target = "pipeline.steps.step8_post_processing.build_module_summary_rollups_step"
+        with mock.patch(f"{target}._group_functions_by_module", side_effect=observed_grouping):
+            strategy = _Strategy(steps=((fake_analyze_code_step, build_module_summary_rollups_step),))
             app = build_langgraph_workflow(strategy, checkpointer=MemorySaver())
             config: RunnableConfig = {
                 "configurable": {
@@ -159,9 +183,9 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
             timeline[0], "step7:summary_published",
             "후처리가 #1 확정 전에 시작했다 — 부분 입력으로 프롬프트가 만들어진다",
         )
-        self.assertIn("postprocess:projection", timeline)
+        self.assertIn("postprocess:rollup", timeline)
         self.assertLess(
-            timeline.index("postprocess:projection"), timeline.index("step7:done"),
+            timeline.index("postprocess:rollup"), timeline.index("step7:done"),
             "후처리가 step7 완료 뒤에 시작했다 — 배리어가 남아 있다",
         )
         self.assertIn(
@@ -181,7 +205,7 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 handoff.abort(error)
                 raise
 
-        strategy = _Strategy(steps=((exploding_step7, summarize_module_step),))
+        strategy = _Strategy(steps=((exploding_step7, build_module_summary_rollups_step),))
         app = build_langgraph_workflow(strategy, checkpointer=MemorySaver())
         config: RunnableConfig = {
             "configurable": {
@@ -199,9 +223,6 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
     async def test_module_summary_is_quarantined_when_member_summary_is_missing(self) -> None:
         handoff = AnalysisHandoff(PrioritySemaphore(8))
         available = _Node("code:ok", summary="검증된 멤버 요약")
-        available.extra["_summary_semantic_frame"] = semantic_frame_for_node(
-            available, meaning="검증된 멤버 요약",
-        )
         missing = _Node("code:missing", summary=None)
         handoff.expect([available.id, missing.id])
         handoff.publish_summary(available)
@@ -209,10 +230,7 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
         handoff.resolve(available.id)
         handoff.resolve(missing.id)
         handoff.close()
-        target = "pipeline.steps.step8_post_processing.summarize_module_step"
-        with mock.patch(f"{target}.upsert_modules", mock.AsyncMock()), \
-             mock.patch(f"{target}.emit_nodes", mock.AsyncMock()):
-            result = await summarize_module_step(
+        result = await build_module_summary_rollups_step(
                 {
                     "run": None,
                     "modules": [_Module()],
@@ -228,7 +246,8 @@ class PostprocessOverlapTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        self.assertIsNone(result["modules"][0].summary)
+        self.assertEqual((), result["modules"][0].summary_rollup_function_ids)
+        self.assertEqual((), result["modules"][0].summary_rollup_summaries)
 
 
 if __name__ == "__main__":

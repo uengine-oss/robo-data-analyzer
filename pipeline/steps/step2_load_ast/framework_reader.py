@@ -14,7 +14,6 @@ ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인�
 """
 from __future__ import annotations
 
-from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,11 +28,18 @@ from graph.schema.node_ids import child_id, code_ns_id, positioned
 from pipeline.steps.step2_load_ast.node_builders import (
     ParseResult, _derive_structure_edges, _file_module_id,
     _folder_package, _make_code_node, _make_constant, _make_data_type,
-    _make_module, _make_variable, _node_id, _src_path, _unique_id,
+    _make_module, _make_variable, _node_id, _absolute_source_path,
+    _required_source_id, _unique_id,
 )
 from pipeline.steps.step2_load_ast.evidence_ir import (
     CommonEvidenceContractError,
     ValidatedCommonEvidence,
+)
+from pipeline.steps.step2_load_ast.structural_call_projection import (
+    build_call_occurrence_record,
+    physical_line,
+    physical_line_starts,
+    project_callable_definitions,
 )
 from pipeline.steps.step2_load_ast.c_structural_expression_adapter import (
     StructuralExpressionAdapterError,
@@ -65,8 +71,9 @@ def _read_framework(
     """
     _validate_control_ownership(raw, source_ref=str(json_path))
     result = ParseResult()
-    src_path = _src_path(raw, source_root, json_path)
-    rel = raw.get("filePath") or raw.get("fileName") or json_path.name
+    source_id = _required_source_id(raw, json_path)
+    src_path = _absolute_source_path(source_id, source_root, json_path)
+    rel = source_id
     package_id, package = _folder_package(rel)
     if package is not None:
         result.packages.append(package)
@@ -75,7 +82,7 @@ def _read_framework(
         # c / python — **파일이 곧 모듈**이다 (start/end = 0 → 파일 전체).
         module_id = _file_module_id(rel)
         result.modules.append(_make_module(
-            raw, module_id, Path(raw.get("fileName") or json_path.name).stem,
+            raw, module_id, Path(source_id).stem,
             src_path, 0, 0,
         ))
     else:
@@ -90,6 +97,9 @@ def _read_framework(
     if evidence is not None:
         _bind_call_evidence(result, evidence)
         _bind_callable_evidence(result, evidence)
+        _bind_parameter_evidence(result, evidence)
+        _bind_binding_target_evidence(result, evidence)
+        _bind_scope_directive_evidence(result, evidence)
         if "structural_expression" in evidence.completeness:
             _bind_structural_expression_evidence(result, evidence)
         _bind_import_evidence(result, evidence)
@@ -338,70 +348,42 @@ def _bind_call_evidence(
 ) -> None:
     """Bind grammar occurrences to enclosing routines without source reparsing.
 
-    Parser listener traversal produces both the compatibility FUNCTION_CALL tree and
+    Parser listener traversal produces both the structural FUNCTION_CALL tree and
     evidence candidates.  Their traversal populations/order must agree exactly; the
     Analyzer only adds its owner mapping.
     """
-    legacy = list(result.call_sites)
+    structural_calls = list(result.call_sites)
     facts = list(evidence.call_facts)
-    if len(legacy) != len(facts):
+    if len(structural_calls) != len(facts):
         raise CommonEvidenceContractError(
             "common evidence call population: "
-            f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
+            f"tree={len(structural_calls)}, facts={len(facts)}, source={evidence.source_id}"
         )
-    line_starts = _physical_line_starts(evidence.decoded_text)
-    source = evidence.decoded_text
-
-    def exact_source(source_range) -> str:
-        start = source_range.char_offset
-        return source[start:start + source_range.char_length]
+    line_starts = physical_line_starts(evidence.decoded_text)
 
     bound: list[dict] = []
-    for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
-        line = _physical_line(line_starts, fact.call_range.char_offset)
+    for index, (observed, fact) in enumerate(zip(structural_calls, facts, strict=True)):
+        line = physical_line(line_starts, fact.call_range.char_offset)
         if int(observed.get("line") or 0) != line:
             raise CommonEvidenceContractError(
                 "common evidence call traversal: "
-                f"line mismatch at index={index}, legacy={observed.get('line')}, "
+                f"line mismatch at index={index}, tree={observed.get('line')}, "
                 f"canonical={line}, factId={fact.fact_id}"
             )
-        legacy_name = str(observed.get("call_text") or "")
-        if fact.callee_kind == "named" and legacy_name != fact.terminal_name:
+        tree_name = str(observed.get("call_text") or "")
+        if fact.callee_kind == "named" and tree_name != fact.terminal_name:
             raise CommonEvidenceContractError(
                 "common evidence call traversal: "
-                f"terminal mismatch at index={index}, legacy={legacy_name!r}, "
+                f"terminal mismatch at index={index}, tree={tree_name!r}, "
                 f"canonical={fact.terminal_name!r}, factId={fact.fact_id}"
             )
-        bound.append({
-            "call_id": fact.fact_id,
-            "caller_id": str(observed.get("caller_id") or ""),
-            "owner_status": "resolved" if observed.get("caller_id")
-            else "unresolved_no_routine",
-            "call_text": fact.terminal_name or "",
-            "callee_kind": fact.callee_kind,
-            "source_id": evidence.source_id,
-            "file": observed.get("file", ""),
-            "line": line,
-            "range": fact.call_range.as_dict(),
-            "call_source": exact_source(fact.call_range),
-            "callee_range": fact.callee_range.as_dict(),
-            "callee_source": exact_source(fact.callee_range),
-            "argument_ranges": [item.as_dict() for item in fact.argument_ranges],
-            "argument_sources": [
-                exact_source(item) for item in fact.argument_ranges
-            ],
-            "receiver_range": (
-                fact.receiver_range.as_dict() if fact.receiver_range is not None else None
-            ),
-            "receiver_source": (
-                exact_source(fact.receiver_range)
-                if fact.receiver_range is not None else None
-            ),
-            "scope_path": [item.as_record() for item in fact.scope_path],
-            "grammar_rule": fact.grammar_rule,
-            "presence_status": fact.presence["status"],
-            "presence": dict(fact.presence),
-        })
+        bound.append(build_call_occurrence_record(
+            fact,
+            evidence,
+            caller_id=str(observed.get("caller_id") or ""),
+            file_path=str(observed.get("file") or ""),
+            line_starts=line_starts,
+        ))
     ids = [site["call_id"] for site in bound]
     if len(ids) != len(set(ids)):
         raise CommonEvidenceContractError(
@@ -414,38 +396,65 @@ def _bind_callable_evidence(
     result: ParseResult,
     evidence: ValidatedCommonEvidence,
 ) -> None:
-    """Bind structural definition facts to their exact compatibility AST node."""
-    line_starts = _physical_line_starts(evidence.decoded_text)
-    records: list[dict] = []
-    for fact in evidence.callable_facts:
-        code_node_id: str | None = None
-        if fact.role == "definition":
-            line = _physical_line(line_starts, fact.callable_range.char_offset)
-            matches = [
-                node for node in result.code_nodes
-                if node.name == fact.terminal_name and node.start_line == line
-            ]
-            if len(matches) != 1:
-                raise CommonEvidenceContractError(
-                    "common evidence callable definition projection: "
-                    f"factId={fact.fact_id}, name={fact.terminal_name!r}, "
-                    f"line={line}, codeNodes={len(matches)}"
-                )
-            code_node_id = matches[0].id
-        records.append(fact.as_record(code_node_id=code_node_id))
+    """Bind structural definition facts to their exact AST CodeNode."""
+    project_callable_definitions(
+        result,
+        evidence,
+        is_routine_node=lambda node: (
+            role_of(node.label, evidence.language or "") == "function"
+        ),
+    )
+
+
+def _bind_parameter_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Project grammar-owned parameter names without reparsing source text."""
+    records = [fact.as_record() for fact in evidence.parameter_facts]
     ids = [record["fact_id"] for record in records]
     if len(ids) != len(set(ids)):
         raise CommonEvidenceContractError(
-            f"common evidence callable population: duplicate fact IDs in {evidence.source_id}"
+            f"common evidence parameter population: duplicate fact IDs in {evidence.source_id}"
         )
-    result.callable_facts.extend(records)
+    result.parameter_facts.extend(records)
+
+
+def _bind_binding_target_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Carry exact Python grammar targets to the Analyzer semantic adapter."""
+    records = [fact.as_record() for fact in evidence.binding_target_facts]
+    ids = [record["fact_id"] for record in records]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            "common evidence binding target population: duplicate fact IDs in "
+            f"{evidence.source_id}"
+        )
+    result.binding_target_facts.extend(records)
+
+
+def _bind_scope_directive_evidence(
+    result: ParseResult,
+    evidence: ValidatedCommonEvidence,
+) -> None:
+    """Carry explicit Python global/nonlocal names to the language adapter."""
+    records = [fact.as_record() for fact in evidence.scope_directive_facts]
+    ids = [record["fact_id"] for record in records]
+    if len(ids) != len(set(ids)):
+        raise CommonEvidenceContractError(
+            "common evidence scope directive population: duplicate fact IDs in "
+            f"{evidence.source_id}"
+        )
+    result.scope_directive_facts.extend(records)
 
 
 def _bind_structural_expression_evidence(
     result: ParseResult,
     evidence: ValidatedCommonEvidence,
 ) -> None:
-    """Project exact expression facts onto compatibility AST fields once.
+    """Project exact expression facts onto AST CodeNode fields once.
 
     The correspondence is listener traversal order plus an exact source-slice
     equality check.  Lines are diagnostics only; they are never used to choose a
@@ -463,7 +472,7 @@ def _bind_structural_expression_evidence(
             if not node.target or not node.expression:
                 raise CommonEvidenceContractError(
                     "common evidence structural expression projection: "
-                    f"incomplete legacy assignment {node.id}"
+                    f"incomplete AST assignment {node.id}"
                 )
             if node.statement_origin == "declaration_initializer":
                 expected.append((node, "initializer_value", node.expression))
@@ -479,11 +488,11 @@ def _bind_structural_expression_evidence(
     if len(expected) != len(facts):
         raise CommonEvidenceContractError(
             "common evidence structural expression population: "
-            f"legacy={len(expected)}, canonical={len(facts)}, "
+            f"tree={len(expected)}, facts={len(facts)}, "
             f"source={evidence.source_id}"
         )
     source = evidence.decoded_text
-    line_starts = _physical_line_starts(source)
+    line_starts = physical_line_starts(source)
     records: list[dict] = []
     semantic_records: list[dict] = []
     resolved_records: list[dict] = []
@@ -492,7 +501,7 @@ def _bind_structural_expression_evidence(
     ):
         start = fact.expression_range.char_offset
         expression_source = source[start:fact.expression_range.end]
-        owner_line = _physical_line(line_starts, fact.owner_range.char_offset)
+        owner_line = physical_line(line_starts, fact.owner_range.char_offset)
         if (
             fact.role != expected_role
             or (expected_source is not None and expression_source != expected_source)
@@ -515,8 +524,8 @@ def _bind_structural_expression_evidence(
                 code_node_id=node.id,
             )
             semantic_records.append(semantic.as_record())
-            expression_line = _physical_line(line_starts, start)
-            expression_end_line = _physical_line(
+            expression_line = physical_line(line_starts, start)
+            expression_end_line = physical_line(
                 line_starts, max(start, fact.expression_range.end - 1),
             )
             resolved_records.append(
@@ -546,13 +555,13 @@ def _bind_import_evidence(
     result: ParseResult,
     evidence: ValidatedCommonEvidence,
 ) -> None:
-    """Bind Parser import facts to their compatibility AST projection exactly once."""
-    legacy = list(result.import_refs)
+    """Bind Parser import facts to their structural AST projection exactly once."""
+    structural_imports = list(result.import_refs)
     facts = list(evidence.import_facts)
     completeness = evidence.completeness["import"]
     status = str(completeness.get("status") or "")
     if status in {"unsupported", "not_applicable"}:
-        for observed in legacy:
+        for observed in structural_imports:
             observed.update({
                 "import_id": "",
                 "source_id": evidence.source_id,
@@ -560,16 +569,16 @@ def _bind_import_evidence(
                 "evidence_reason": "parser_import_evidence_not_available",
             })
         return
-    if len(legacy) != len(facts):
+    if len(structural_imports) != len(facts):
         raise CommonEvidenceContractError(
             "common evidence import population: "
-            f"legacy={len(legacy)}, canonical={len(facts)}, source={evidence.source_id}"
+            f"tree={len(structural_imports)}, facts={len(facts)}, source={evidence.source_id}"
         )
-    line_starts = _physical_line_starts(evidence.decoded_text)
+    line_starts = physical_line_starts(evidence.decoded_text)
     bound: list[dict] = []
-    for index, (observed, fact) in enumerate(zip(legacy, facts, strict=True)):
-        line = _physical_line(line_starts, fact.directive_range.char_offset)
-        end_line = _physical_line(
+    for index, (observed, fact) in enumerate(zip(structural_imports, facts, strict=True)):
+        line = physical_line(line_starts, fact.directive_range.char_offset)
+        end_line = physical_line(
             line_starts,
             max(fact.directive_range.char_offset, fact.directive_range.end - 1),
         )
@@ -579,7 +588,7 @@ def _bind_import_evidence(
         ):
             raise CommonEvidenceContractError(
                 "common evidence import traversal: "
-                f"mismatch at index={index}, legacyLines="
+                f"mismatch at index={index}, treeLines="
                 f"{observed.get('line')}-{observed.get('end_line')}, "
                 f"canonicalLines={line}-{end_line}, factId={fact.fact_id}"
             )
@@ -628,24 +637,21 @@ def _bind_import_evidence(
             if str(observed.get("name") or "") != target:
                 raise CommonEvidenceContractError(
                     "common evidence import traversal: "
-                    f"mismatch at index={index}, legacyName={observed.get('name')!r}, "
+                    f"mismatch at index={index}, treeName={observed.get('name')!r}, "
                     f"canonicalTarget={target!r}, factId={fact.fact_id}"
                 )
         bound.append({
             "import_id": fact.fact_id,
             "evidence_version": evidence.version,
-            "legacy_name": str(observed.get("name") or ""),
-            "name": str(observed.get("name") or ""),
             "source_id": evidence.source_id,
-            "file": observed.get("file", ""),
             "line": line,
             "end_line": end_line,
             "range": fact.directive_range.as_dict(),
             "directive_kind": fact.directive_kind,
+            "scope_path": [item.as_record() for item in fact.scope_path],
             "entries": entries,
             "grammar_rule": fact.grammar_rule,
             "presence_status": fact.presence["status"],
-            "presence": dict(fact.presence),
             "evidence_status": status,
         })
     ids = [ref["import_id"] for ref in bound]
@@ -654,24 +660,6 @@ def _bind_import_evidence(
             f"common evidence import population: duplicate fact IDs in {evidence.source_id}"
         )
     result.import_refs[:] = bound
-
-
-def _physical_line_starts(source: str) -> tuple[int, ...]:
-    starts = [0]
-    index = 0
-    while index < len(source):
-        if source[index] == "\r":
-            if index + 1 < len(source) and source[index + 1] == "\n":
-                index += 1
-            starts.append(index + 1)
-        elif source[index] == "\n":
-            starts.append(index + 1)
-        index += 1
-    return tuple(starts)
-
-
-def _physical_line(line_starts: tuple[int, ...], offset: int) -> int:
-    return bisect_right(line_starts, offset)
 
 
 # ── DBMS (plsql / plpgsql) ────────────────────────────────────

@@ -5,11 +5,11 @@ matched SKILL의 access/exclusion/DDL 계약은 문서 소유의 폐쇄 계약�
 strict schema로 한 번 제안받아 코드가 일괄 검증·적용한다.
 
 한 라운드:
-1. 잔여 샘플(~30) → 단일 strict-schema LLM 호출이 공통 패턴/DDL 변환을 제안.
+1. 현재 잔여 모집단 전체 → 단일 strict-schema LLM 호출이 공통 패턴/DDL 변환을 제안.
 2. ``verify_table_patterns`` 로 코드 검증 — 통과 못하면 내용 오류로 중단.
 3. 통과분을 패턴 집합에 추가 → 잔여 케이스 파일에 재적용 → 잔여·엣지 갱신.
 
-종료 = 잔여 0 / 명시적 무패턴 / 진전 없음 / 반복 상한.
+종료 = 잔여 0 / 명시적 무패턴 / 진전 없음.
 끝내 못 푼 잔여는 정직하게 "미해결"로 돌려준다 (가짜 답 X).
 """
 from __future__ import annotations
@@ -32,7 +32,6 @@ from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
 )
 from graph.schema.graph_edges import ReadsWrites
 from graph.schema.graph_nodes import CodeNode, Table
-from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from shared.files.cache import SourceFileCache
@@ -108,20 +107,24 @@ async def run_residual_loop(
     edges: list[ReadsWrites] = []
     round_no = 0
 
-    for round_no in range(1, SETTINGS.analysis_pipeline.residual_max_rounds + 1):
-        if not fixable:
-            break
-        sample = fixable[: SETTINGS.analysis_pipeline.residual_sample_size]
+    while fixable:
+        round_no += 1
+        # Every currently unresolved physical occurrence is visible.  A fixed sample
+        # size could leave a later syntax shape permanently unseen; a fixed round cap
+        # could stop after verified progress.  Successful rounds strictly reduce this
+        # finite population, while no-pattern and no-progress terminate immediately.
+        sample = list(fixable)
         log_info(_STEP, "round_start", round=round_no, residual=len(fixable), sample=len(sample))
 
         found = await _find_pattern(
             sample=sample, scan=scan, ddl_transform=ddl_transform,
+            active_patterns=[*scan.table_access_patterns, *extra_patterns],
             project_root=project_root, tables=tables,
             cost_budget=cost_budget, round_no=round_no,
         )
         if not found.table_access_patterns and found.ddl_transform_override is None:
             log_info(_STEP, "round_stop", round=round_no,
-                     reason=found.no_pattern_reason)
+                     reason="model proposed no new pattern or DDL transform")
             break
 
         effective_transform = found.ddl_transform_override or ddl_transform
@@ -172,7 +175,6 @@ async def run_residual_loop(
             fixable,
             baseline_resolved_sites=getattr(baseline, "resolved_sites", set()),
             applied_resolved_sites=getattr(applied, "resolved_sites", set()),
-            new_edges=edges,
         )
         resolved_count = len(fixable) - len(next_fixable)
         log_info(
@@ -201,40 +203,29 @@ def _remaining_original_cases(
     *,
     baseline_resolved_sites: set[tuple[str, int, str]],
     applied_resolved_sites: set[tuple[str, int, str]],
-    new_edges: list[ReadsWrites],
 ) -> list[dict]:
     """원래 잔여 모집단을 유지하고 증거가 생긴 물리 지점만 제거한다.
 
     전체 패턴 재적용은 다른 pattern ID의 미해결 행을 새로 만들 수 있다.
     그 행으로 원래 큐를 교체하면 잔여 수가 부풀기 때문에 절대 합치지
-    않는다. 새 실행은 절대 문자 offset으로 동일 지점을 판별하고, 구형
-    입력에는 file/line/source 좌표를 호환 경로로 사용한다.
+    않는다. 절대 문자 offset으로만 동일 물리 지점을 판별한다.
     """
     newly_resolved_sites = applied_resolved_sites - baseline_resolved_sites
-    newly_resolved_lines = {
-        (edge.evidence_file, edge.evidence_line, edge.source_id)
-        for edge in new_edges
-        if edge.evidence_file is not None and edge.evidence_line is not None
-    }
 
     remaining: list[dict] = []
     for case in original_cases:
         offset = case.get("evidence_offset")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ResidualPatternVerificationError(
+                "residual case is missing a nonnegative evidence_offset: "
+                f"case_id={case.get('case_id')!r}"
+            )
         exact_site = (
             str(case.get("file") or ""),
             offset,
             str(case.get("source_id") or ""),
         )
-        line_site = (
-            str(case.get("file") or ""),
-            case.get("line"),
-            str(case.get("source_id") or ""),
-        )
-        resolved = (
-            offset is not None and exact_site in newly_resolved_sites
-        ) or (
-            offset is None and line_site in newly_resolved_lines
-        )
+        resolved = exact_site in newly_resolved_sites
         if not resolved:
             remaining.append(case)
     return remaining
@@ -245,6 +236,7 @@ async def _find_pattern(
     sample: list[dict],
     scan: ScanResult,
     ddl_transform: DdlTransform,
+    active_patterns: list[TableAccessPattern],
     project_root: Path,
     tables: list[Table],
     cost_budget: CostBudget,
@@ -252,7 +244,8 @@ async def _find_pattern(
 ) -> ResidualPatternResult:
     """잔여 샘플 1배치 → strict schema로 패턴/변환을 한 번 제안한다."""
     values = _residual_prompt_values(
-        _samples_with_numbered_context(sample, project_root), scan, ddl_transform, tables,
+        _cases_with_numbered_source(sample, project_root), scan, ddl_transform, tables,
+        active_patterns=active_patterns,
         round_no=round_no,
     )
     return await run_yaml_rule(
@@ -270,6 +263,7 @@ def _residual_prompt_values(
     ddl_transform: DdlTransform,
     tables: list[Table],
     *,
+    active_patterns: list[TableAccessPattern],
     round_no: int,
 ) -> dict[str, str]:
     """잔여 샘플과 확정 맥락을 YAML prompt placeholder로 직렬화한다.
@@ -278,13 +272,12 @@ def _residual_prompt_values(
     """
     return {
         "id": f"residual-round-{round_no}",
-        "matched_skill": scan.matched_skill or "(없음)",
         "framework_runtime_functions": (
             ", ".join(scan.framework_runtime_functions) or "(없음)"
         ),
         "ddl_tables": ", ".join(sorted(t.name for t in tables)) or "(DDL 없음)",
         "confirmed_patterns": json.dumps(
-            [p.model_dump() for p in scan.table_access_patterns],
+            [p.model_dump() for p in active_patterns],
             ensure_ascii=False,
             indent=2,
         ),
@@ -316,7 +309,12 @@ def _attempted_patterns(
 
 
 def _prompt_case(case: dict) -> dict:
-    """반복 정규식 본문을 registry로 올리고 사례별 변동 증거만 남긴다."""
+    """Return only facts that can change the proposed common access pattern.
+
+    Physical identity and coordinate metadata remain in the Analyzer-owned residual
+    ledger.  The model needs the unresolved call, why confirmed patterns did not
+    resolve it, and an exact line-numbered source window — nothing else.
+    """
     attempts = [
         {
             "pattern_id": attempt.get("pattern_id"),
@@ -326,25 +324,24 @@ def _prompt_case(case: dict) -> dict:
         for attempt in (case.get("attempted_patterns") or [])
     ]
     return {
-        "case_id": case.get("case_id"),
-        "file": case.get("file"),
-        "line": case.get("line"),
         "call_text": case.get("call_text"),
-        "source_id": case.get("source_id"),
         "attempted_patterns": attempts,
-        "source_context_status": case.get("source_context_status"),
-        "source_coordinate_system": case.get("source_coordinate_system"),
-        "numbered_source_context": case.get("numbered_source_context"),
+        "numbered_source": case.get("numbered_source"),
     }
 
 
-def _samples_with_numbered_context(
+def _cases_with_numbered_source(
     sample: list[dict],
     project_root: Path,
     *,
     radius: int = 5,
 ) -> list[dict]:
-    """잔여 케이스에 접근 가능한 SOURCE 주변 절대 줄번호를 붙인다."""
+    """Attach exact numbered source or fail before asking the model.
+
+    An empty/unreadable/out-of-scope source window cannot justify a new production
+    regex.  Passing a status flag to the model would only expose Analyzer metadata
+    while still inviting an ungrounded proposal, so the boundary is fail-closed.
+    """
     root = project_root.resolve()
     cache = SourceFileCache()
     enriched: list[dict] = []
@@ -354,15 +351,16 @@ def _samples_with_numbered_context(
         path = (raw_path if raw_path.is_absolute() else root / raw_path).resolve()
         try:
             path.relative_to(root)
-        except ValueError:
-            item["source_context_status"] = "outside-project-root"
-            item["numbered_source_context"] = ""
-            enriched.append(item)
-            continue
+        except ValueError as error:
+            raise ResidualPatternVerificationError(
+                "residual source is outside the analysis root"
+            ) from error
         line = max(int(case.get("line") or 1), 1)
         excerpt = cache.excerpt(str(path), max(1, line - radius), line + radius)
-        item["source_context_status"] = excerpt.status
-        item["source_coordinate_system"] = excerpt.coordinate_system
-        item["numbered_source_context"] = excerpt.numbered_text
+        if excerpt.status != "available" or not excerpt.numbered_text:
+            raise ResidualPatternVerificationError(
+                f"residual source context is unavailable: {excerpt.status}"
+            )
+        item["numbered_source"] = excerpt.numbered_text
         enriched.append(item)
     return enriched

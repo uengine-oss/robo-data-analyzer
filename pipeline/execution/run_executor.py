@@ -1,4 +1,4 @@
-"""Run 1회 실행 어댑터 — rmtree latest + LangGraph workflow 실행 + 종료 처리.
+"""Run 1회 실행 어댑터 — run 경로 준비 + LangGraph workflow + 원자적 공개.
 
 흐름:
 1. 선택된 run-output 루트를 초기화한다. 미지정 시 기존 기본 ``logs/``를 사용한다.
@@ -26,19 +26,29 @@ import shutil
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from graph.schema import graph_edges, graph_nodes
 from pipeline.models import analysis_context, human_glossary
+from pipeline.models.data_object_usage import (
+    DataObjectUsageEvidence,
+    DatabaseLinkComponentEvidence,
+    QualifiedColumnUsage,
+    UnqualifiedIdentifierUsage,
+)
+from pipeline.models.external_reference_resolution import ResolvedExternalReferenceLink
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
+from pipeline.models.semantic_frame import SemanticFrame, SlotSpec, StructuralProfile
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
 from pipeline.models.human_glossary import HumanGlossary, load_human_glossary
 from shared.config.settings import SETTINGS
 
 from llm import response_cache
+from llm.model_runtime_capabilities import load_model_runtime_capabilities
 from llm.usage.cost_budget import CostBudget
 from shared.events.runtime_logger import (
     attach_run_file_handlers,
@@ -48,6 +58,7 @@ from shared.events.runtime_logger import (
 )
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
+from graph.product_batch_writer import write_product_batch
 from graph.schema.constraints import ensure_schema
 from graph.generation import begin_generation, publish_generation, terminate_generation
 from pipeline.models.call_resolution import normalize_call_resolution_ledger, summarize_call_resolution_ledger
@@ -57,9 +68,19 @@ from pipeline.models.import_resolution import (
 )
 from graph.connection_context import get_override
 from shared.files.cache import SourceFileCache
+from shared.files.run_cache_context import reset_run_file_cache, set_run_file_cache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
 from pipeline.execution.pause_controller import PauseController
+from pipeline.execution.sealed_analysis_inputs import (
+    SealedAnalysisInputs,
+    build_sealed_analysis_inputs,
+    write_sealed_analysis_inputs,
+)
+from pipeline.publication.product_plan import (
+    CompleteProductPlanInput,
+    build_complete_product_write_plan,
+)
 from pipeline.execution.run_registry import clear as clear_active_run
 from pipeline.execution.run_registry import set_active as set_active_run
 from pipeline.execution.run_registry import ConcurrentAnalysisRunError
@@ -74,10 +95,154 @@ from pipeline.steps.step2_load_ast.source_ast_closure import (
     SourceAstClosure,
     verify_source_ast_closure,
 )
+from pipeline.steps.step3_load_external.inventory import inventory_project
 
 
 _RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
 _RUN_OUTPUT_OWNER_MARKER_CONTENT = "robo-data-analyzer\n"
+
+_PRODUCT_STATE_FIELDS = (
+    "packages",
+    "modules",
+    "code_nodes",
+    "belongs_to_edges",
+    "has_member_edges",
+    "parent_of_edges",
+    "statement_next_edges",
+    "tables",
+    "columns",
+    "has_column_edges",
+    "fk_edges",
+    "external_source_records",
+    "resolved_external_reference_links",
+    "external_reference_ledger",
+    "calls_edges",
+    "call_resolution_ledger",
+    "reads_writes_edges",
+    "rules",
+    "examples",
+    "has_rule_edges",
+    "has_example_edges",
+    "component_member_ids_by_component_id",
+    "search_segments",
+)
+
+
+async def _read_final_workflow_state(app: Any, config: dict) -> dict[str, Any]:
+    """Read the one final checkpoint after the workflow has completed."""
+    snapshot = await app.aget_state(config)
+    values = getattr(snapshot, "values", None)
+    if not isinstance(values, Mapping):
+        raise ValueError("completed workflow checkpoint has no mapping state")
+    missing = sorted(field for field in _PRODUCT_STATE_FIELDS if field not in values)
+    if missing:
+        raise ValueError(
+            "completed workflow state is missing product producer fields: "
+            + ", ".join(missing)
+        )
+    return dict(values)
+
+
+def _build_complete_product_input(
+    *,
+    final_state: Mapping[str, Any],
+    run: AnalysisRun,
+    source_ast_closure: SourceAstClosure,
+    glossary: HumanGlossary,
+    call_resolution_ledger: Sequence[Mapping[str, Any]],
+    import_resolution_ledger: Sequence[Mapping[str, Any]],
+    prepublish_wall_time_ms: int,
+    prepublish_performance_artifact_hash: str,
+) -> CompleteProductPlanInput:
+    """Bind the final workflow state to the closed product-plan contract."""
+    final_call_ledger = normalize_call_resolution_ledger(
+        final_state["call_resolution_ledger"]
+    )
+    captured_call_ledger = normalize_call_resolution_ledger(
+        call_resolution_ledger
+    )
+    if final_call_ledger != captured_call_ledger:
+        raise ValueError(
+            "final workflow call ledger differs from its sole streamed producer"
+        )
+    final_import_ledger = normalize_import_resolution_ledger(
+        final_state["import_resolution_ledger"]
+    )
+    captured_import_ledger = normalize_import_resolution_ledger(
+        import_resolution_ledger
+    )
+    if final_import_ledger != captured_import_ledger:
+        raise ValueError(
+            "final workflow import ledger differs from its sole streamed producer"
+        )
+
+    return CompleteProductPlanInput(
+        analysis_scope_id=run.analysis_scope_id,
+        generation_id=run.run_id,
+        source_ast_closure=source_ast_closure,
+        human_glossary=glossary,
+        packages=final_state["packages"],
+        modules=final_state["modules"],
+        code_nodes=final_state["code_nodes"],
+        belongs_to_edges=final_state["belongs_to_edges"],
+        has_member_edges=final_state["has_member_edges"],
+        parent_of_edges=final_state["parent_of_edges"],
+        statement_next_edges=final_state["statement_next_edges"],
+        tables=final_state["tables"],
+        columns=final_state["columns"],
+        has_column_edges=final_state["has_column_edges"],
+        foreign_key_edges=final_state["fk_edges"],
+        external_source_records=final_state["external_source_records"],
+        resolved_external_reference_links=(
+            final_state["resolved_external_reference_links"]
+        ),
+        external_reference_ledger=final_state["external_reference_ledger"],
+        calls_edges=final_state["calls_edges"],
+        call_resolution_ledger=final_call_ledger,
+        reads_writes_edges=final_state["reads_writes_edges"],
+        rules=final_state["rules"],
+        examples=final_state["examples"],
+        has_rule_edges=final_state["has_rule_edges"],
+        has_example_edges=final_state["has_example_edges"],
+        component_member_ids_by_component_id=(
+            final_state["component_member_ids_by_component_id"]
+        ),
+        search_segments=final_state["search_segments"],
+        prepublish_wall_time_ms=prepublish_wall_time_ms,
+        prepublish_performance_artifact_hash=(
+            prepublish_performance_artifact_hash
+        ),
+    )
+
+
+def _write_content_addressed_performance_artifact(
+    run_dir: Path,
+    payload: Mapping[str, Any],
+) -> str:
+    """Persist one canonical performance ledger and return its byte hash."""
+    encoded = (
+        json.dumps(
+            dict(payload),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    artifact_dir = run_dir / "performance"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    target = artifact_dir / f"{digest}.json"
+    if target.exists():
+        if target.read_bytes() != encoded:
+            raise ValueError(
+                "content-addressed performance artifact hash collision"
+            )
+    else:
+        temporary = artifact_dir / f"{digest}.json.tmp"
+        temporary.write_bytes(encoded)
+        temporary.replace(target)
+    return digest
 
 
 def _capture_call_resolution_update(
@@ -94,9 +259,10 @@ def _capture_call_resolution_update(
 
 
 def _require_call_resolution_producer(strategy_name: str, seen: bool) -> None:
-    if strategy_name == "framework" and not seen:
+    if not seen:
         raise ValueError(
-            "Framework workflow did not produce a complete call_resolution_ledger"
+            f"{strategy_name} workflow did not produce a complete "
+            "call_resolution_ledger"
         )
 
 
@@ -141,7 +307,20 @@ def _state_msgpack_allowlist() -> tuple[type, ...]:
         for obj in vars(analysis_context).values()
         if isinstance(obj, type) and dataclasses.is_dataclass(obj)
     ]
-    types += [Codebase, AnalysisRun]
+    types += [
+        Codebase,
+        AnalysisRun,
+        ExternalSourceFile,
+        ExternalSourceRecord,
+        ResolvedExternalReferenceLink,
+        DataObjectUsageEvidence,
+        QualifiedColumnUsage,
+        UnqualifiedIdentifierUsage,
+        DatabaseLinkComponentEvidence,
+        StructuralProfile,
+        SlotSpec,
+        SemanticFrame,
+    ]
     return tuple(types)
 
 
@@ -188,20 +367,23 @@ async def execute_run(
 
     output_context_token = None
     locale_context_token = None
+    file_cache_context_token = None
+    source_cache = SourceFileCache()
     try:
-        corpus_root = (codebase.corpus_root or codebase.root).resolve()
+        file_cache_context_token = set_run_file_cache(source_cache)
+        corpus_root = codebase.corpus_root.resolve()
         human_glossary = load_human_glossary(corpus_root)
         _reset_run_output_root(run_output_root, run.run_dir, strategy)
         output_context_token = set_run_dir(run.run_dir)
         locale_context_token = set_response_locale(codebase.locale)
-        _write_initial_manifest(run, strategy, human_glossary)
-
         # ── 파일 핸들러 attach (ROBO_RUNTIME_EVENT_FILE_ENABLED=true 일 때만) ──
         # analyzer.log (INFO+) + error.log (WARNING+) → tail -f 로 실시간 추적 가능.
         # 운영기 OFF → 빈 리스트 → detach no-op → 디스크 I/O 0.
         # mkdir 직후 attach — 즉시 발생하는 ensure_schema / LangGraph 빌드 / step 로그 다 포함.
         file_handlers = attach_run_file_handlers(run.run_dir)
     except BaseException:
+        if file_cache_context_token is not None:
+            reset_run_file_cache(file_cache_context_token)
         if locale_context_token is not None:
             reset_response_locale(locale_context_token)
         if output_context_token is not None:
@@ -219,10 +401,10 @@ async def execute_run(
             root=str(codebase.root),
             strategy=getattr(strategy, "name", "?"),
             run_id=run.run_id,
+            analysis_scope_id=run.analysis_scope_id,
         )
         # Canonical source/AST/diagnostic population must close before any graph
-        # mutation, including the destructive replacement of the previous graph.
-        source_cache = SourceFileCache()
+        # mutation or generation publication begins.
         ast_root, parser_source_root = ast_and_source_roots(
             codebase.root, codebase.corpus_root,
         )
@@ -231,8 +413,15 @@ async def execute_run(
             ast_root=ast_root,
             source_root=parser_source_root,
             source_cache=source_cache,
+            selected_source_ids=codebase.selected_source_ids,
         )
-        _write_source_ast_closure(run.run_dir, source_ast_closure)
+        (
+            source_ast_closure_ref,
+            source_ast_closure_bytes,
+            source_ast_closure_sha256,
+        ) = _write_source_ast_closure(
+            run.run_dir, source_ast_closure,
+        )
         log_info(
             "run",
             "source_ast_closure_verified",
@@ -240,7 +429,56 @@ async def execute_run(
             ast_artifacts=len(source_ast_closure.artifacts),
             diagnostics=len(source_ast_closure.artifacts),
         )
-        neo_client = Neo4jClient(generation_id=run.run_id)
+        # The parsed object is process-cached for repeated consumers inside one
+        # run.  Clear it at the run boundary so this preflight always verifies
+        # the current sealed bytes instead of inheriting a previous run object.
+        load_model_runtime_capabilities.cache_clear()
+        model_runtime = load_model_runtime_capabilities(
+            SETTINGS.analysis_llm.model_runtime_capabilities_ref,
+            SETTINGS.analysis_llm.model_runtime_capabilities_sha256,
+        )
+        project_input_inventory = inventory_project(
+            codebase.root,
+            source_cache,
+            selected_source_paths=(
+                tuple(artifact.source_path for artifact in source_ast_closure.artifacts)
+                if codebase.selected_source_ids else None
+            ),
+            excluded_roots=(run_output_root,),
+        )
+        sealed_analysis_inputs = build_sealed_analysis_inputs(
+            codebase=codebase,
+            neo4j_database=_resolved_neo4j_database(),
+            project_input_paths=(item.path for item in project_input_inventory),
+            source_ast_closure_ref=source_ast_closure_ref,
+            source_ast_closure_bytes=source_ast_closure_bytes,
+            source_ast_closure_sha256=source_ast_closure_sha256,
+            strategy_prompts_dir=Path(getattr(strategy, "prompts_dir", "llm/prompts")),
+            human_glossary_manifest=human_glossary.manifest_dict(corpus_root),
+            source_cache=source_cache,
+            model_runtime=model_runtime,
+            settings=SETTINGS,
+            repository_root=Path(__file__).resolve().parents[2],
+        )
+        write_sealed_analysis_inputs(
+            run.run_dir / "sealed-analysis-inputs.json", sealed_analysis_inputs,
+        )
+        _write_initial_manifest(run, sealed_analysis_inputs)
+        log_info(
+            "run",
+            "analysis_inputs_sealed",
+            sealed_analysis_inputs_sha256=sealed_analysis_inputs.sha256,
+            analysis_scope_files=(
+                sealed_analysis_inputs.payload["analysis_scope_files"]["file_count"]
+            ),
+            ddl_files=(
+                sealed_analysis_inputs.payload["ddl_files"].get("file_count", 0)
+            ),
+        )
+        neo_client = Neo4jClient(
+            generation_id=run.run_id,
+            analysis_scope_id=run.analysis_scope_id,
+        )
         generation_started = False
         generation_terminal = False
         try:
@@ -292,12 +530,13 @@ async def execute_run(
                     "run": run,
                     "cost_budget": cost_budget,
                     "stream": stream,
-                    "neo_client": neo_client,
                     "pause": pause,
                     "llm_semaphore": llm_semaphore,   # run 공유 동시성 한도 (총량 단일 진실)
                     "analysis_handoff": analysis_handoff,  # step7 분할 확정 → 후처리 인계
                     "human_glossary": human_glossary,
                     "source_ast_closure": source_ast_closure,
+                    "project_input_inventory": project_input_inventory,
+                    "sealed_analysis_inputs": sealed_analysis_inputs,
                     # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
                     #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
                     #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).
@@ -317,6 +556,8 @@ async def execute_run(
             call_resolution_seen = False
             import_resolution_ledger: list[dict] = []
             import_resolution_seen = False
+            workflow_started_at = time.monotonic()
+            workflow_node_completion_timeline: list[dict[str, Any]] = []
             try:
                 async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
                     if isinstance(chunk, dict):
@@ -335,6 +576,13 @@ async def execute_run(
                                     update,
                                 )
                             )
+                            workflow_node_completion_timeline.append({
+                                "ordinal": len(workflow_node_completion_timeline),
+                                "node": str(node_name),
+                                "completed_elapsed_ms": int(
+                                    (time.monotonic() - workflow_started_at) * 1000
+                                ),
+                            })
                             if stream is not None:
                                 stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
                     await pause.gate()
@@ -373,17 +621,93 @@ async def execute_run(
                     call_resolution_ledger=call_resolution_ledger,
                     import_resolution_ledger=import_resolution_ledger,
                 )
+                final_state = await _read_final_workflow_state(app, config)
+                prepublish_wall_time_ms = int(
+                    (time.monotonic() - run_started_at) * 1000
+                )
+                prepublish_performance_artifact_hash = (
+                    _write_content_addressed_performance_artifact(
+                        run.run_dir,
+                        {
+                            "schema_version": "prepublish-performance/v1",
+                            "analysis_scope_id": run.analysis_scope_id,
+                            "generation_id": run.run_id,
+                            "measurement_boundary": (
+                                "run_start_through_final_workflow_state_before_"
+                                "product_plan_build_and_product_writes"
+                            ),
+                            "prepublish_wall_time_ms": prepublish_wall_time_ms,
+                            "workflow_node_completion_timeline": (
+                                workflow_node_completion_timeline
+                            ),
+                        },
+                    )
+                )
+                product_plan = build_complete_product_write_plan(
+                    _build_complete_product_input(
+                        final_state=final_state,
+                        run=run,
+                        source_ast_closure=source_ast_closure,
+                        glossary=human_glossary,
+                        call_resolution_ledger=call_resolution_ledger,
+                        import_resolution_ledger=import_resolution_ledger,
+                        prepublish_wall_time_ms=prepublish_wall_time_ms,
+                        prepublish_performance_artifact_hash=(
+                            prepublish_performance_artifact_hash
+                        ),
+                    )
+                )
+                product_stage_write_timings: list[dict[str, Any]] = []
+                for batch in product_plan.batches:
+                    stage_started_at = time.monotonic()
+                    receipt = await write_product_batch(neo_client, batch)
+                    product_stage_write_timings.append({
+                        "stage_name": receipt.stage_name,
+                        "wall_time_ms": int(
+                            (time.monotonic() - stage_started_at) * 1000
+                        ),
+                        "operation_count": receipt.operation_count,
+                        "idempotent_replay": receipt.idempotent_replay,
+                    })
+                publish_started_at = time.monotonic()
                 graph_closure = await publish_generation(
                     neo_client,
                     generation_id=run.run_id,
                     quality_status=quality_summary["run_quality_status"],
                     call_resolution_ledger=call_resolution_ledger,
                     import_resolution_ledger=import_resolution_ledger,
+                    product_plan=product_plan,
+                )
+                publish_transaction_wall_time_ms = int(
+                    (time.monotonic() - publish_started_at) * 1000
                 )
                 quality_summary["run_quality_status"] = graph_closure["quality_status"]
                 generation_terminal = True
                 try:
-                    _write_graph_generation_closure(run.run_dir, graph_closure)
+                    _write_product_generation_closure(run.run_dir, graph_closure)
+                    _write_content_addressed_performance_artifact(
+                        run.run_dir,
+                        {
+                            "schema_version": "postcommit-performance/v1",
+                            "analysis_scope_id": run.analysis_scope_id,
+                            "generation_id": run.run_id,
+                            "prepublish_performance_artifact_hash": (
+                                prepublish_performance_artifact_hash
+                            ),
+                            "product_plan_sha256": graph_closure[
+                                "product_plan_sha256"
+                            ],
+                            "product_stage_write_timings": (
+                                product_stage_write_timings
+                            ),
+                            "publish_transaction_wall_time_ms": (
+                                publish_transaction_wall_time_ms
+                            ),
+                            "total_wall_time_ms": int(
+                                (time.monotonic() - run_started_at) * 1000
+                            ),
+                        },
+                    )
                     _update_run_manifest(
                         run.run_dir,
                         status=quality_summary["run_quality_status"],
@@ -447,7 +771,11 @@ async def execute_run(
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
         try:
-            _update_run_manifest(run.run_dir, status="failed")
+            manifest_path = run.run_dir / "manifest.json"
+            if manifest_path.is_file():
+                _update_run_manifest(run.run_dir, status="failed")
+            else:
+                _write_preflight_failure_manifest(run, e)
         except Exception as manifest_error:
             log_error(
                 "run", "write_failed_run_manifest_failed", manifest_error,
@@ -477,6 +805,8 @@ async def execute_run(
             reset_run_dir(output_context_token)
         if locale_context_token is not None:
             reset_response_locale(locale_context_token)
+        if file_cache_context_token is not None:
+            reset_run_file_cache(file_cache_context_token)
         # 성공·실패 무관 스트림 종료 — 안 닫으면 consumer 가 stream_end 를 영구 대기 (hang).
         if stream is not None:
             await stream.close()
@@ -598,22 +928,6 @@ def _reset_run_output_root(
         (resolved_run_dir / "llm-prompts").mkdir(parents=True, exist_ok=True)
 
 
-def _prompt_tree_sha256(prompts_root: Path) -> str:
-    """prompt 상대경로와 바이트를 안정 순서로 해시한다."""
-    digest = hashlib.sha256()
-    for path in sorted(
-        (item for item in prompts_root.rglob("*") if item.is_file()),
-        key=lambda item: item.relative_to(prompts_root).as_posix(),
-    ):
-        relative = path.relative_to(prompts_root).as_posix().encode("utf-8")
-        payload = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(payload).to_bytes(8, "big"))
-        digest.update(payload)
-    return digest.hexdigest()
-
-
 def _resolved_neo4j_database() -> str:
     override = get_override()
     return (
@@ -624,37 +938,33 @@ def _resolved_neo4j_database() -> str:
 
 
 def _write_initial_manifest(
-    run: AnalysisRun, strategy: Any, human_glossary: HumanGlossary,
+    run: AnalysisRun,
+    sealed_analysis_inputs: SealedAnalysisInputs,
 ) -> None:
-    """그래프 변경/LLM 호출 전에 현행 실행의 입력 정체성과 prompt hash를 기록한다."""
-    repository_root = Path(__file__).resolve().parents[2]
-    strategy_prompts = Path(getattr(strategy, "prompts_dir", "llm/prompts"))
-    if not strategy_prompts.is_absolute():
-        strategy_prompts = repository_root / strategy_prompts
-    prompts_root = strategy_prompts.resolve().parent
-    if prompts_root.name != "prompts":
-        prompts_root = (repository_root / "llm" / "prompts").resolve()
-
+    """Write the run identity as a reference to the one complete immutable input seal."""
     source_root = run.codebase.root.resolve()
-    corpus_root = (run.codebase.corpus_root or run.codebase.root).resolve()
+    corpus_root = run.codebase.corpus_root.resolve()
     ddl_root = run.codebase.ddl_dir.resolve() if run.codebase.ddl_dir else None
     manifest = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "run_id": run.run_id,
+        "analysis_scope_id": run.analysis_scope_id,
         "generation_id": run.run_id,
         "status": "initializing",
         "started_at": run.started_at.isoformat(),
         "corpus_root": str(corpus_root),
         "source_root": str(source_root),
+        "selected_source_ids": list(run.codebase.selected_source_ids),
         "ddl_root": str(ddl_root) if ddl_root else None,
         "strategy": run.codebase.strategy,
         "locale": run.codebase.locale,
         "neo4j_database": _resolved_neo4j_database(),
         "run_output_root": str(run.run_dir.resolve()),
         "run_dir": str(run.run_dir.resolve()),
-        "llm_config": SETTINGS.analysis_llm.config,
-        "prompt_tree_sha256": _prompt_tree_sha256(prompts_root),
-        "human_glossary": human_glossary.manifest_dict(corpus_root),
+        "sealed_analysis_inputs": {
+            "ref": str((run.run_dir / "sealed-analysis-inputs.json").resolve()),
+            "sha256": sealed_analysis_inputs.sha256,
+        },
     }
     manifest_path = run.run_dir / "manifest.json"
     with manifest_path.open("x", encoding="utf-8") as file:
@@ -662,20 +972,44 @@ def _write_initial_manifest(
         file.write("\n")
 
 
-def _write_source_ast_closure(run_dir: Path, closure: SourceAstClosure) -> None:
+def _write_preflight_failure_manifest(run: AnalysisRun, error: BaseException) -> None:
+    """Record an explicit failed preflight without pretending that inputs were sealed."""
+    manifest = {
+        "schema_version": "2.0",
+        "run_id": run.run_id,
+        "analysis_scope_id": run.analysis_scope_id,
+        "generation_id": run.run_id,
+        "status": "failed_preflight",
+        "started_at": run.started_at.isoformat(),
+        "strategy": run.codebase.strategy,
+        "error": f"{type(error).__name__}: {error}",
+        "sealed_analysis_inputs": None,
+    }
+    target = run.run_dir / "manifest.json"
+    with target.open("x", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2, sort_keys=True)
+        file.write("\n")
+
+
+def _write_source_ast_closure(
+    run_dir: Path, closure: SourceAstClosure,
+) -> tuple[Path, bytes, str]:
     """Persist the exact closed population before graph mutation."""
     target = run_dir / "source-ast-closure.json"
     temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(closure.as_dict(), ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    payload = (
+        json.dumps(
+            closure.as_dict(), ensure_ascii=False, indent=2, sort_keys=True,
+        ) + "\n"
+    ).encode("utf-8")
+    temporary.write_bytes(payload)
     temporary.replace(target)
+    return target.resolve(), payload, hashlib.sha256(payload).hexdigest()
 
 
-def _write_graph_generation_closure(run_dir: Path, closure: dict[str, Any]) -> None:
-    """Persist the full canonical node/edge/slot identity ledger after publish."""
-    target = run_dir / "graph-generation-closure.json"
+def _write_product_generation_closure(run_dir: Path, closure: dict[str, Any]) -> None:
+    """Persist the complete verified product ledger after publication."""
+    target = run_dir / "product-generation-closure.json"
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(
         json.dumps(closure, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -696,12 +1030,14 @@ def _update_run_manifest(
     manifest["status"] = status
     manifest["generation_id"] = manifest["run_id"]
     if graph_closure is not None:
-        manifest["graph_closure"] = {
+        manifest["product_closure"] = {
             key: {
                 "count": graph_closure[key]["count"],
                 "sha256": graph_closure[key]["sha256"],
             }
-            for key in ("nodes", "edges", "slots")
+            for key in (
+                "product_stages", "product_operations", "product_records",
+            )
         }
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(

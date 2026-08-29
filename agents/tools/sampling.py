@@ -17,11 +17,16 @@ from collections import Counter
 import regex
 from langchain.tools import tool
 
-_MAX_FILES = 3
+_OVERVIEW_PAGE_SIZE = 20
 _MAX_RANGE_LINES = 50
 _MAX_GREP_HITS = 20
 _SHAPE_WIDTH = 48
 _TOP_SHAPES = 6
+
+
+def _effective_grep_timeout(text_length: int) -> float:
+    """Allow one linear full-text pass without a fixed wall-clock ceiling."""
+    return 0.1 + text_length * 1e-6
 
 
 def _shape(line: str) -> str:
@@ -34,11 +39,11 @@ def _shape(line: str) -> str:
 
 def make_sample_exploration_tools(samples: list[str]):
     """samples(전문)를 묶은 탐색 도구 3종을 만든다."""
-    full = samples[:_MAX_FILES]
+    full = list(samples)
     line_lists = [text.splitlines() for text in full]
 
     @tool
-    def sample_overview() -> str:
+    def sample_overview(offset: int = 0) -> str:
         """파일별 크기와 '줄 모양' 분포를 요약한다.
 
         **언제 사용**: 첫 관찰 단계에서 1회 — 구조가 몇 종류인지, 미리보기 밖
@@ -48,8 +53,16 @@ def make_sample_exploration_tools(samples: list[str]):
         줄 번호. 미리보기에서 못 본 모양이 있으면 그 줄 번호를 `read_sample_range`
         로 정독하라.
         """
-        lines_out: list[str] = []
-        for index, lines in enumerate(line_lists):
+        if offset < 0:
+            return "INVALID_OFFSET: offset must be non-negative"
+        end = min(offset + _OVERVIEW_PAGE_SIZE, len(line_lists))
+        next_offset = end if end < len(line_lists) else None
+        lines_out: list[str] = [
+            f"PAGE offset={offset} returned={end - offset} total={len(line_lists)} "
+            f"next_offset={next_offset if next_offset is not None else 'null'}"
+        ]
+        for index in range(offset, end):
+            lines = line_lists[index]
             lines_out.append(
                 f"sample[{index}]: {len(full[index]):,}자 · {len(lines):,}줄")
             counts: Counter[str] = Counter(_shape(line) for line in lines)
@@ -81,10 +94,15 @@ def make_sample_exploration_tools(samples: list[str]):
         start = max(1, min(int(start_line), len(lines)))
         window = lines[start - 1:start - 1 + _MAX_RANGE_LINES]
         body = "\n".join(f"{start + offset:>6}| {line}" for offset, line in enumerate(window))
-        return f"sample[{file_index}] {start}~{start + len(window) - 1}줄 / 총 {len(lines)}줄\n{body}"
+        last = start + len(window) - 1
+        next_start = last + 1 if last < len(lines) else None
+        return (
+            f"sample[{file_index}] {start}~{last}줄 / 총 {len(lines)}줄 "
+            f"next_start_line={next_start if next_start is not None else 'null'}\n{body}"
+        )
 
     @tool
-    def grep_samples(pattern: str) -> str:
+    def grep_samples(pattern: str, offset: int = 0) -> str:
         """정규식/토큰이 sample 전체 어디에 나오는지 찾는다 (파일·줄 번호 목록).
 
         **언제 사용**: 특정 토큰(구분자·헤더 후보)이 파일 전반에 고르게 나오는지,
@@ -94,21 +112,27 @@ def make_sample_exploration_tools(samples: list[str]):
             compiled = regex.compile(pattern, regex.MULTILINE)
         except regex.error as error:
             return f"INVALID_REGEX: {error}"
+        if offset < 0:
+            return "INVALID_OFFSET: offset must be non-negative"
         hits: list[str] = []
-        total = 0
         for index, text in enumerate(full):
             try:
-                for match in compiled.finditer(text, timeout=0.1):
-                    total += 1
-                    if len(hits) < _MAX_GREP_HITS:
-                        line_number = text.count("\n", 0, match.start()) + 1
-                        excerpt = match.group(0).replace("\n", "\\n")[:80]
-                        hits.append(f"  sample[{index}] {line_number}줄: '{excerpt}'")
+                for match in compiled.finditer(
+                    text, timeout=_effective_grep_timeout(len(text)),
+                ):
+                    line_number = text.count("\n", 0, match.start()) + 1
+                    excerpt = match.group(0).replace("\n", "\\n")[:80]
+                    hits.append(f"  sample[{index}] {line_number}줄: '{excerpt}'")
             except TimeoutError:
                 return "TIMEOUT: 패턴이 너무 느리다 — 더 구체적으로"
         if not hits:
             return "매치 0건"
-        head = f"총 {total}건" + (f" (앞 {_MAX_GREP_HITS}건 표시)" if total > _MAX_GREP_HITS else "")
-        return head + "\n" + "\n".join(hits)
+        page = hits[offset:offset + _MAX_GREP_HITS]
+        next_offset = offset + len(page) if offset + len(page) < len(hits) else None
+        head = (
+            f"PAGE offset={offset} returned={len(page)} total={len(hits)} "
+            f"next_offset={next_offset if next_offset is not None else 'null'}"
+        )
+        return head + "\n" + "\n".join(page)
 
     return [sample_overview, read_sample_range, grep_samples]

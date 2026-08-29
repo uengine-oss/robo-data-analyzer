@@ -76,7 +76,9 @@ def _json(payload: dict) -> str:
 
 @mcp.tool()
 async def cluster_retrieve(
-    query: str, database: Optional[str] = None,
+    query: str,
+    database: Optional[str] = None,
+    analysis_scope_id: Optional[str] = None,
 ) -> str:
     """자연어 요구사항 → 관련 레거시 노드 목록·규칙 근거. 응답은 JSON 텍스트.
 
@@ -95,8 +97,11 @@ async def cluster_retrieve(
         from search.corpus.corpus import SearchUnavailable, load_corpus
         from search.service import run_search
         try:
-            clusters, meta = run_search(q)
-            corpus = load_corpus(generation_id=meta.get("generation_id"))
+            clusters, meta = run_search(q, analysis_scope_id=analysis_scope_id)
+            corpus = load_corpus(
+                analysis_scope_id=meta.get("analysis_scope_id"),
+                generation_id=meta.get("generation_id"),
+            )
         except SearchUnavailable as e:
             return {"error": {"code": "SEARCH_UNAVAILABLE", "message": str(e)}}
         return {"clusters": _list_clusters(clusters, corpus.by_id), "meta": meta}
@@ -109,7 +114,10 @@ async def cluster_retrieve(
 
 @mcp.tool()
 async def node_detail(
-    node_id: str, database: Optional[str] = None, view: str = "frame",
+    node_id: str,
+    database: Optional[str] = None,
+    view: str = "frame",
+    analysis_scope_id: Optional[str] = None,
 ) -> str:
     """선택한 노드의 검증된 semantic frame과 연결 근거를 조회한다.
 
@@ -133,6 +141,7 @@ async def node_detail(
         return read_node_detail(
             requested_id,
             view="frame" if requested_view == "gwt" else requested_view,
+            analysis_scope_id=analysis_scope_id,
         )
 
     return _json(await asyncio.to_thread(_run))

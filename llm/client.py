@@ -31,10 +31,9 @@ from shared.config.settings import SETTINGS
 from llm.configs.loader import LLMConfig, load_llm_config
 
 
-# 운영기 캐시 OFF 강제 (ROBO_CACHE_ENABLED=false 일 때 set_llm_cache(None)).
-# import 시점에 1회 실행.
-if not SETTINGS.llm_response_cache.enabled:
-    set_llm_cache(None)
+# LangChain의 별도 전역 cache가 조용히 개입하지 못하게 한다. Analyzer의 유일한 영속
+# 응답 cache 경계는 ``llm.response_cache``이며 봉인 runtime SHA-256을 요구한다.
+set_llm_cache(None)
 
 
 def build_llm_client(
@@ -60,9 +59,32 @@ def build_llm_client(
         RuntimeError: ``ROBO_LLM_CONFIG`` 미설정 / config 파일 없음 / API key 누락 등.
     """
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
+    return build_llm_client_from_config(
+        cfg,
+        api_key=SETTINGS.analysis_llm.api_key,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        streaming=streaming,
+    )
 
-    if not SETTINGS.analysis_llm.api_key:
-        raise RuntimeError("ROBO_LLM_API_KEY 가 .env 에 설정되지 않음.")
+
+def build_llm_client_from_config(
+    cfg: LLMConfig,
+    *,
+    api_key: str,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    streaming: bool = False,
+):
+    """이미 선택된 설정과 인증값으로 LangChain 클라이언트를 만든다.
+
+    분석과 검색처럼 모델 설정의 소유자가 다른 경계가 동일한 provider 어댑터를
+    공유할 때 사용한다. 호출자가 선택한 설정·키 외에 다른 환경설정을 다시 읽지 않는다.
+    """
+    if not api_key:
+        raise RuntimeError("LLM API key가 설정되지 않음.")
 
     model = cfg.model if model is None else model
     temperature = cfg.sampling.temperature if temperature is None else temperature
@@ -81,8 +103,12 @@ def build_llm_client(
         raise RuntimeError("LLM max_tokens override must be a positive integer")
 
     if cfg.provider == "anthropic":
-        return _build_anthropic_client(cfg, model, temperature, max_tokens, streaming)
-    return _build_openai_compatible_client(cfg, model, temperature, max_tokens, streaming)
+        return _build_anthropic_client(
+            cfg, api_key, model, temperature, max_tokens, streaming
+        )
+    return _build_openai_compatible_client(
+        cfg, api_key, model, temperature, max_tokens, streaming
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -92,6 +118,7 @@ def build_llm_client(
 
 def _build_anthropic_client(
     cfg: LLMConfig,
+    api_key: str,
     model: str,
     temperature: float,
     max_tokens: int,
@@ -104,11 +131,12 @@ def _build_anthropic_client(
     """
     kwargs: dict[str, Any] = dict(
         model=model,
-        anthropic_api_key=SETTINGS.analysis_llm.api_key or None,
+        anthropic_api_key=api_key,
         temperature=temperature,
         top_p=cfg.sampling.top_p,
         max_tokens=max_tokens,
         timeout=cfg.timeout_seconds,
+        max_retries=0,
         streaming=streaming,
     )
 
@@ -121,6 +149,7 @@ def _build_anthropic_client(
 
 def _build_openai_compatible_client(
     cfg: LLMConfig,
+    api_key: str,
     model: str,
     temperature: float,
     max_tokens: int,
@@ -133,12 +162,13 @@ def _build_openai_compatible_client(
     """
     kwargs: dict[str, Any] = dict(
         model=model,
-        openai_api_key=SETTINGS.analysis_llm.api_key or None,
+        openai_api_key=api_key,
         openai_api_base=cfg.api_base or None,
         temperature=temperature,
         top_p=cfg.sampling.top_p,
         max_tokens=max_tokens,
         timeout=cfg.timeout_seconds,
+        max_retries=0,
     )
     if streaming:
         # 스트리밍 집계 시에도 최종 usage 를 받도록 stream_usage 필수 —

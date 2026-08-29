@@ -144,18 +144,26 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
         framework_source = (
             repository_root / "pipeline/steps/step7_analyze_code/framework_per_node.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("pause.run_restartable_during_pause", framework_source)
+        self.assertIn("await pause.gate()", framework_source)
+        self.assertIn("pause.set_inflight(list(pending))", framework_source)
 
     def test_all_step7_item_fanouts_are_restartable_and_stop_responsive(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         for relative_path in (
             "pipeline/steps/step8_post_processing/enrich_table_description_step.py",
-            "pipeline/steps/step8_post_processing/build_components_step.py",
-            "pipeline/steps/step8_post_processing/summarize_module_step.py",
+            "pipeline/steps/step8_post_processing/build_module_summary_rollups_step.py",
         ):
             source = (repository_root / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
                 self.assertIn("pause.run_restartable_during_pause", source)
+
+        component_source = (
+            repository_root
+            / "pipeline/steps/step8_post_processing/build_components_step.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("await asyncio.to_thread(_cluster", component_source)
+        self.assertGreaterEqual(component_source.count("await pause.gate()"), 2)
+        self.assertNotIn("pause.run_restartable_during_pause", component_source)
 
 
 if __name__ == "__main__":

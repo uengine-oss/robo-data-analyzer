@@ -15,6 +15,7 @@ class EncodingReaderTest(unittest.TestCase):
         value = "주문조회 한글설명"
         cases = (
             (codecs.BOM_UTF8 + value.encode("utf-8"), "utf-8-sig"),
+            (codecs.BOM_UTF16_LE + value.encode("utf-16-le"), "utf-16"),
             (value.encode("cp949"), "cp949"),
             # EUC-KR byte sequences are a strict subset of CP949, so either
             # truthful decoder name is acceptable when the text is identical.
@@ -37,6 +38,12 @@ class EncodingReaderTest(unittest.TestCase):
         for raw in (b"abc\x00def", b"\xff"):
             with self.subTest(raw=raw), self.assertRaises(TextDecodeError):
                 decode_bytes(raw)
+
+    def test_binary_marker_after_old_probe_window_is_still_rejected(self) -> None:
+        raw = (b"plain text\n" * 900) + b"\x00binary tail"
+
+        with self.assertRaises(TextDecodeError):
+            decode_bytes(raw)
 
     def test_shared_cache_reads_once_and_replays_read_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

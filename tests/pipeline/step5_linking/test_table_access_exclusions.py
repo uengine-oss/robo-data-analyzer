@@ -140,7 +140,27 @@ class TableAccessExclusionTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(verdict.ok)
-        self.assertEqual(("sequence_object_key",), verdict.failed_exclusion_ids)
+        self.assertIn("미관찰 제외규칙 [sequence_object_key]", verdict.summary)
+
+    async def test_registered_contract_allows_unobserved_exclusion_in_partial_upload(self):
+        self.source.write_text(
+            'void f(void) { db_exec("orders_r001"); }\n',
+            encoding="utf-8",
+        )
+        verdict = await verify_table_patterns(
+            patterns=[_normal_pattern()],
+            exclusion_patterns=_exclusions(),
+            ddl_transform=self.transform,
+            project_root=self.root,
+            code_nodes=[self.node],
+            tables=[],
+            require_each_access_rule_match=False,
+            require_each_exclusion_rule_match=False,
+            require_local_table_resolution=False,
+        )
+
+        self.assertTrue(verdict.ok)
+        self.assertIn("DDL미해소 100%", verdict.summary)
 
 
 if __name__ == "__main__":

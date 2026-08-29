@@ -30,6 +30,9 @@ class SourceAstArtifact:
     ast_sha256: str
     diagnostic_sha256: str
     language: str
+    # Parsed once at the closure boundary. Step 2 consumes this exact object instead of
+    # reopening the same AST path after its hash has already been sealed.
+    ast_document: dict
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,7 @@ def verify_source_ast_closure(
     ast_root: Path,
     source_root: Path,
     source_cache: SourceFileCache,
+    selected_source_ids: tuple[str, ...] = (),
 ) -> SourceAstClosure:
     """Fail closed unless supported source, AST, and diagnostics are exact one-to-one."""
     project_root = project_root.resolve()
@@ -170,10 +174,45 @@ def verify_source_ast_closure(
         ) from error
 
     expected: dict[str, tuple[Path, str]] = {}
-    for path in sorted(item for item in project_root.rglob("*") if item.is_file()):
+    selected = tuple(selected_source_ids)
+    if len(selected) != len(set(selected)):
+        raise SourceAstClosureError("selected source IDs contain duplicates")
+    if selected:
+        source_paths: list[Path] = []
+        for source_id in sorted(selected):
+            relative = PurePosixPath(source_id)
+            if (
+                relative.is_absolute()
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise SourceAstClosureError(
+                    f"invalid selected source ID: {source_id!r}"
+                )
+            path = source_root.joinpath(*relative.parts).resolve()
+            try:
+                path.relative_to(project_root)
+            except ValueError as error:
+                raise SourceAstClosureError(
+                    f"selected source is outside project root: {source_id!r}"
+                ) from error
+            if not path.is_file():
+                raise SourceAstClosureError(
+                    f"selected source file not found: {source_id!r}"
+                )
+            if not is_supported(path.suffix):
+                raise SourceAstClosureError(
+                    f"selected source type is unsupported: {source_id!r}"
+                )
+            source_paths.append(path)
+    else:
+        source_paths = sorted(
+            item for item in project_root.rglob("*") if item.is_file()
+        )
+
+    for path in source_paths:
         if not is_supported(path.suffix):
             continue
-        source_id = path.resolve().relative_to(source_root).as_posix()
+        source_id = path.relative_to(source_root).as_posix()
         payload = source_cache.read_bytes(path)
         # Decoding belongs to the Parser evidence envelope.  The later AST read binds
         # these exact bytes to sourceEncoding/decodedText before any graph mutation.
@@ -190,6 +229,8 @@ def verify_source_ast_closure(
         if str(raw.get("type") or "").strip() != "FILE":
             raise SourceAstClosureError(f"AST root must be FILE: {ast_path}")
         source_id = _source_id(raw.get("filePath"), owner=ast_path)
+        if selected and source_id not in expected:
+            continue
         file_name = str(raw.get("fileName") or "").strip()
         if file_name != PurePosixPath(source_id).name:
             raise SourceAstClosureError(
@@ -216,7 +257,7 @@ def verify_source_ast_closure(
     artifacts: list[SourceAstArtifact] = []
     for source_id in sorted(expected):
         source_path, source_sha256 = expected[source_id]
-        ast_path, ast_sha256, _raw = ast_by_source[source_id]
+        ast_path, ast_sha256, raw_ast = ast_by_source[source_id]
         diagnostic_path = (diagnostics_root / f"{source_id}.parse.json").resolve()
         try:
             diagnostic_path.relative_to(diagnostics_root)
@@ -240,6 +281,7 @@ def verify_source_ast_closure(
             ast_sha256=ast_sha256,
             diagnostic_sha256=diagnostic_sha256,
             language=language,
+            ast_document=raw_ast,
         ))
 
     return SourceAstClosure(

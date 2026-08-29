@@ -8,6 +8,14 @@ from pipeline.steps.step5_linking.link_calls.call_classifier import (
     CallClassificationInvariantError,
     classify_call_sites,
 )
+from pipeline.steps.step5_linking.link_calls.resolution_core import (
+    resolve_candidate_set,
+)
+from pipeline.steps.step5_linking.link_calls.semantic_adapter import (
+    LanguageSemanticCandidateSet,
+    SemanticCallableCandidate,
+    semantic_adapter,
+)
 
 
 def _node(node_id: str, name: str, file_path: str) -> CodeNode:
@@ -151,6 +159,492 @@ def test_visible_external_declaration_joins_one_compatible_definition() -> None:
     assert result.resolution_counts == {"internal": 1}
 
 
+def test_language_adapter_emits_candidates_without_final_binding() -> None:
+    caller = _node("code:a.c:caller", "caller", "a.c")
+    target = _node("code:a.c:target", "target", "a.c")
+    callable_fact = _callable(
+        "def-candidate", "target", "a.c", role="definition",
+        code_node_id=target.id,
+    )
+    adapter = semantic_adapter("c", "antlr-c/v1")
+    assert adapter is not None
+
+    candidate_set = adapter.adapt(
+        _call("call-candidate", caller, "target"), [callable_fact],
+    )
+
+    assert candidate_set.terminal_status == ""
+    assert candidate_set.terminal_reason == ""
+    assert [candidate.fact_id for candidate in candidate_set.candidates] == [
+        "def-candidate",
+    ]
+    assert candidate_set.candidates[0].code_node_id == target.id
+
+
+def test_python_parameter_binding_blocks_same_name_internal_guess() -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": "python-parameter-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+    parameter = {
+        "fact_id": "python-parameter",
+        "source_id": "sample.py",
+        "terminal_name": "handler",
+        "range": _range(28, 7),
+        "scope_path": function_scope,
+    }
+
+    result = adapter.adapt(call, [], [parameter])
+
+    assert result.terminal_status == "dynamic"
+    assert result.terminal_reason == "python_parameter_binding"
+    assert result.candidates == ()
+
+
+def _python_name_component(name: str, start: int) -> dict:
+    return {
+        "grammar_rule": "name",
+        "range": _range(start, len(name)),
+        "direct_tokens": [{
+            "token_kind": "NAME", "text": name,
+            "range": _range(start, len(name)),
+        }],
+        "children": [],
+    }
+
+
+def _python_binding_target(
+    name: str,
+    function_scope: list[dict],
+    *,
+    context: str = "assignment",
+    attribute_target: bool = False,
+) -> dict:
+    name_component = _python_name_component(name, 40)
+    root = name_component
+    if attribute_target:
+        root = {
+            "grammar_rule": "expr",
+            "range": _range(32, 15),
+            "direct_tokens": [],
+            "children": [
+                {
+                    "grammar_rule": "atom",
+                    "range": _range(32, 3),
+                    "direct_tokens": [],
+                    "children": [_python_name_component("obj", 32)],
+                },
+                {
+                    "grammar_rule": "trailer",
+                    "range": _range(35, 12),
+                    "direct_tokens": [{
+                        "token_kind": "DOT", "text": ".",
+                        "range": _range(35, 1),
+                    }],
+                    "children": [name_component],
+                },
+            ],
+        }
+    return {
+        "fact_id": f"python-target-{context}-{attribute_target}",
+        "source_id": "sample.py",
+        "binding_context": context,
+        "scope_path": function_scope,
+        "syntax": {"schema": "python-binding-target-syntax/v1", "root": root},
+    }
+
+
+@pytest.mark.parametrize(
+    "binding_context", (
+        "assignment", "function_definition", "class_definition", "delete_target",
+    ),
+)
+def test_python_local_name_target_blocks_same_name_internal_guess(
+    binding_context: str,
+) -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": "python-local-target-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+
+    result = adapter.adapt(
+        call, [], [], [_python_binding_target(
+            "handler", function_scope, context=binding_context,
+        )],
+    )
+
+    assert result.terminal_status == "dynamic"
+    assert result.terminal_reason == "python_local_binding_target"
+    assert result.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_reason"),
+    [
+        ("attribute", "python_name_binding_facts_required"),
+        ("comprehension", "python_name_binding_facts_required"),
+    ],
+)
+def test_python_nonlocal_target_shapes_do_not_mask_function_name(
+    target: str,
+    expected_reason: str,
+) -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": f"python-{target}-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+    fact = _python_binding_target(
+        "handler", function_scope,
+        context="comprehension_target" if target == "comprehension" else "assignment",
+        attribute_target=target == "attribute",
+    )
+
+    result = adapter.adapt(call, [], [], [fact])
+
+    assert result.terminal_status == "dynamic"
+    assert result.terminal_reason == expected_reason
+    assert result.candidates == ()
+
+
+def test_python_comprehension_target_masks_body_but_not_outer_iterable() -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    enclosing_scope = [
+        {"kind": "translation_unit", "range": _range(0, 240)},
+        {"kind": "function", "range": _range(20, 200)},
+        {"kind": "block", "range": _range(30, 180)},
+    ]
+    comprehension_scope = [
+        *enclosing_scope,
+        {"kind": "comprehension", "range": _range(50, 80)},
+    ]
+    target = _python_binding_target(
+        "handler", comprehension_scope, context="comprehension_target",
+    )
+    body_call = {
+        "call_id": "python-comprehension-body-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(55, 9),
+        "receiver_range": None,
+        "scope_path": comprehension_scope,
+    }
+    outer_iterable_call = {
+        **body_call,
+        "call_id": "python-comprehension-outer-iterable-call",
+        "range": _range(90, 9),
+        "scope_path": enclosing_scope,
+    }
+
+    body = adapter.adapt(body_call, [], [], [target])
+    outer = adapter.adapt(outer_iterable_call, [], [], [target])
+
+    assert body.terminal_reason == "python_local_binding_target"
+    assert outer.terminal_reason == "python_name_binding_facts_required"
+
+
+@pytest.mark.parametrize(
+    ("directive_kind", "expected_reason"),
+    [
+        ("global", "python_global_binding"),
+        ("nonlocal", "python_nonlocal_binding"),
+    ],
+)
+def test_python_scope_directive_overrides_local_assignment_classification(
+    directive_kind: str,
+    expected_reason: str,
+) -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": f"python-{directive_kind}-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+    directive = {
+        "fact_id": f"python-directive-{directive_kind}",
+        "source_id": "sample.py",
+        "terminal_name": "handler",
+        "directive_kind": directive_kind,
+        "scope_path": function_scope,
+    }
+
+    result = adapter.adapt(
+        call,
+        [],
+        [],
+        [_python_binding_target("handler", function_scope)],
+        [directive],
+    )
+
+    assert result.terminal_status == "dynamic"
+    assert result.terminal_reason == expected_reason
+    assert result.candidates == ()
+
+
+def test_python_conflicting_scope_directives_fail_closed() -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": "python-conflicting-directives",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+    directives = [
+        {
+            "fact_id": f"python-directive-{kind}",
+            "source_id": "sample.py",
+            "terminal_name": "handler",
+            "directive_kind": kind,
+            "scope_path": function_scope,
+        }
+        for kind in ("global", "nonlocal")
+    ]
+
+    result = adapter.adapt(call, [], [], [], directives)
+
+    assert result.terminal_status == "unsupported"
+    assert result.terminal_reason == "python_conflicting_scope_directives"
+    assert result.candidates == ()
+
+
+def _python_import_ref(
+    *,
+    import_id: str,
+    scope_path: list[dict],
+    import_kind: str = "module_member",
+    path_components: list[str] | None = None,
+    member: str | None = "handler",
+    alias: str | None = None,
+    wildcard: bool = False,
+) -> dict:
+    return {
+        "import_id": import_id,
+        "source_id": "sample.py",
+        "evidence_status": "complete",
+        "presence_status": "active",
+        "scope_path": scope_path,
+        "entries": [{
+            "entry_ordinal": 0,
+            "import_kind": import_kind,
+            "path_components": path_components or ["pkg"],
+            "member": member,
+            "alias": alias,
+            "wildcard": wildcard,
+        }],
+    }
+
+
+@pytest.mark.parametrize(
+    "import_ref",
+    [
+        _python_import_ref(
+            import_id="import-member",
+            scope_path=[
+                {"kind": "translation_unit", "range": _range(0, 200)},
+                {"kind": "function", "range": _range(20, 160)},
+            ],
+        ),
+        _python_import_ref(
+            import_id="import-alias",
+            scope_path=[
+                {"kind": "translation_unit", "range": _range(0, 200)},
+                {"kind": "function", "range": _range(20, 160)},
+            ],
+            member="original", alias="handler",
+        ),
+        _python_import_ref(
+            import_id="import-module",
+            scope_path=[{"kind": "translation_unit", "range": _range(0, 200)}],
+            import_kind="module", path_components=["handler", "tools"], member=None,
+        ),
+    ],
+)
+def test_python_import_binding_uses_structural_entry_and_scope(
+    import_ref: dict,
+) -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    function_scope = [
+        {"kind": "translation_unit", "range": _range(0, 200)},
+        {"kind": "function", "range": _range(20, 160)},
+    ]
+    call = {
+        "call_id": "python-import-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": function_scope,
+    }
+
+    result = adapter.adapt(call, [], [], [], [], [import_ref])
+
+    assert result.terminal_status == "dynamic"
+    assert result.terminal_reason == "python_import_binding"
+    assert result.candidates == ()
+
+
+def test_python_import_from_sibling_function_does_not_mask_name() -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    call_scope = [
+        {"kind": "translation_unit", "range": _range(0, 300)},
+        {"kind": "function", "range": _range(20, 100)},
+    ]
+    sibling_scope = [
+        {"kind": "translation_unit", "range": _range(0, 300)},
+        {"kind": "function", "range": _range(150, 100)},
+    ]
+    call = {
+        "call_id": "python-sibling-import-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": call_scope,
+    }
+    import_ref = _python_import_ref(
+        import_id="sibling-import", scope_path=sibling_scope,
+    )
+
+    result = adapter.adapt(call, [], [], [], [], [import_ref])
+
+    assert result.terminal_reason == "python_name_binding_facts_required"
+
+
+def test_python_visible_wildcard_import_fails_closed() -> None:
+    adapter = semantic_adapter("python", "antlr-python/v1")
+    assert adapter is not None
+    module_scope = [{"kind": "translation_unit", "range": _range(0, 200)}]
+    call = {
+        "call_id": "python-wildcard-import-call",
+        "call_text": "handler",
+        "callee_kind": "named",
+        "source_id": "sample.py",
+        "range": _range(80, 9),
+        "receiver_range": None,
+        "scope_path": module_scope,
+    }
+    import_ref = _python_import_ref(
+        import_id="wildcard-import", scope_path=module_scope,
+        member=None, wildcard=True,
+    )
+
+    result = adapter.adapt(call, [], [], [], [], [import_ref])
+
+    assert result.terminal_reason == "python_wildcard_import_binding"
+
+
+def test_c_adapter_owns_declaration_order_visibility_fact() -> None:
+    caller = _node("code:a.c:caller", "caller", "a.c")
+    adapter = semantic_adapter("c", "antlr-c/v1")
+    assert adapter is not None
+
+    candidate_set = adapter.adapt(
+        _call("call-visibility", caller, "target"),
+        [
+            _callable(
+                "before-call", "target", "a.c", role="declaration",
+                declaration_point=30,
+            ),
+            _callable(
+                "after-call", "target", "a.c", role="definition",
+                code_node_id="code:a.c:target", declaration_point=70,
+            ),
+        ],
+    )
+
+    assert {
+        candidate.fact_id: candidate.linkage_visibility
+        for candidate in candidate_set.candidates
+    } == {"before-call": "visible", "after-call": "not_visible"}
+
+
+def test_neutral_core_does_not_reapply_c_declaration_order_rule() -> None:
+    candidate = SemanticCallableCandidate(
+        fact_id="java-method",
+        source_id="Sample.java",
+        terminal_name="target",
+        role="definition",
+        scope_path=(("translation_unit", 0, 200), ("class", 60, 100)),
+        declaration_point=70,
+        type_compatibility="compatible",
+        linkage_visibility="visible",
+        linkage_key="Sample#target()",
+        linkage_scope="project",
+        type_key="java-signature",
+        code_node_id="code:Sample.java:target",
+        presence_status="active",
+    )
+    result = resolve_candidate_set(LanguageSemanticCandidateSet(
+        call_id="java-call",
+        adapter_schema="test-java-semantics/v1",
+        language="java",
+        terminal_name="target",
+        source_id="Sample.java",
+        call_start=50,
+        scope_path=(("translation_unit", 0, 200),),
+        candidates=(candidate,),
+        external_identity_namespace="java-linkage/v1",
+    ))
+
+    assert result.status == "internal"
+    assert result.target_id == "code:Sample.java:target"
+
+
 def test_same_name_without_visible_declaration_is_external_without_stub_edge() -> None:
     caller = _node("code:a.c:caller", "caller", "a.c")
     same_name = _node("code:b.c:target", "target", "b.c")
@@ -225,8 +719,8 @@ def test_unregistered_language_is_unsupported_without_name_fallback() -> None:
     )
 
     assert result.edges == []
-    assert result.ledger[0]["resolution_status"] == "unsupported"
-    assert result.ledger[0]["reason"] == "unsupported_language_adapter"
+    assert result.ledger[0]["resolution_status"] == "dynamic"
+    assert result.ledger[0]["reason"] == "python_name_binding_facts_required"
 
 
 def test_partial_callable_evidence_fails_closed_at_affected_source() -> None:
@@ -257,4 +751,19 @@ def test_duplicate_call_id_rejects_before_resolution() -> None:
         classify_call_sites(
             [call, dict(call)], [caller], evidence_sources=sources,
             evidence_completeness=completeness,
+        )
+
+
+def test_duplicate_import_fact_id_rejects_before_python_resolution() -> None:
+    caller = _node("code:sample.py:caller", "caller", "sample.py")
+    call = _call("python-import-exact-once", caller, "handler")
+    sources, completeness = _context("sample.py", language="python")
+    ref = _python_import_ref(
+        import_id="same-import-id", scope_path=_scope(),
+    )
+
+    with pytest.raises(CallClassificationInvariantError, match="import evidence IDs"):
+        classify_call_sites(
+            [call], [caller], import_refs=[ref, dict(ref)],
+            evidence_sources=sources, evidence_completeness=completeness,
         )

@@ -63,6 +63,72 @@ class InventoryTest(unittest.TestCase):
             item = inventory_project(root, FailingCache())[0]
             self.assertEqual(("failed", "read_failed"), (item.status, item.reason))
 
+    def test_partial_scope_never_reads_unselected_source_but_keeps_external_input(self) -> None:
+        class RecordingCache(SourceFileCache):
+            def __init__(self) -> None:
+                super().__init__()
+                self.paths: list[Path] = []
+
+            def read_bytes(self, file_path):
+                self.paths.append(Path(file_path).resolve())
+                return super().read_bytes(file_path)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            selected = root / "selected.c"
+            unselected = root / "unselected.c"
+            external = root / "app.properties"
+            selected.write_text("int selected(void);\n", encoding="utf-8")
+            unselected.write_text("int unselected(void);\n", encoding="utf-8")
+            external.write_text("mode=test\n", encoding="utf-8")
+            cache = RecordingCache()
+
+            items = inventory_project(
+                root,
+                cache,
+                selected_source_paths=(selected,),
+            )
+
+        self.assertEqual(
+            ["app.properties", "selected.c"],
+            [item.relpath for item in items],
+        )
+        self.assertNotIn(unselected.resolve(), cache.paths)
+        self.assertEqual(
+            {selected.resolve(), external.resolve()},
+            set(cache.paths),
+        )
+
+    def test_explicit_output_root_is_not_inventoried(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "runs"
+            output.mkdir()
+            (output / "manifest.json").write_text("{}\n", encoding="utf-8")
+            (root / "selected.c").write_text("int f(void);\n", encoding="utf-8")
+
+            items = inventory_project(
+                root,
+                SourceFileCache(),
+                excluded_roots=(output,),
+            )
+
+        self.assertEqual(["selected.c"], [item.relpath for item in items])
+
+    def test_output_parent_cannot_silently_exclude_complete_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            root = parent / "source"
+            root.mkdir()
+            (root / "selected.c").write_text("int f(void);\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(InventorySecurityError, "contains"):
+                inventory_project(
+                    root,
+                    SourceFileCache(),
+                    excluded_roots=(parent,),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

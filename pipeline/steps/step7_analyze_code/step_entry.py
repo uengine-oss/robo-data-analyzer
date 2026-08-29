@@ -1,14 +1,8 @@
-"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 관심사 fan-out.
+"""Step 7 entry: validate structural inputs and delegate one injected analysis engine.
 
-순서:
-0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
-   결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
-1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
-2. dataflow 스케줄링 — callee 의존이 풀린 코드노드부터 즉시 분석 (라운드 배리어 없음),
-   끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
-3. 각 코드노드 = summary/table LLM concern + 결정론 Rule 물질화.
-
-결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
+이 모듈은 table/column·framework 계약을 AnalysisContext에 결합하고 Framework 또는 DBMS
+전략 구현을 한 번 호출한다. LLM을 직접 호출하거나 module intent를 별도 생성하지 않으며,
+어떤 종료 경로에서도 run-scoped handoff를 닫는다.
 """
 from __future__ import annotations
 
@@ -21,7 +15,7 @@ from shared.config.settings import SETTINGS
 from shared.files.cache import SourceFileCache
 from pipeline.languages import ROUTINE_LABELS, lang_of
 from pipeline.quality_gates.branch_inventory import validate_static_jump_targets
-from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
+from pipeline.execution.analysis_handoff import AnalysisHandoff, handoff_of
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
 from pipeline.execution.step_config import step_config
 
@@ -32,7 +26,6 @@ from pipeline.steps.step7_analyze_code.column_usage_projection import (
 from shared.events.runtime_logger import log_info
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.processing_events import step_processing_scope
-from graph.neo4j_client import Neo4jClient
 
 _STEP = "step7.analyze_code"
 
@@ -99,20 +92,16 @@ def _build_table_contexts(
 async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """Bottom-up DAG + 관심사 fan-out.
 
-    코드노드 분석 결과는 **코드노드 단위 즉시** Neo4j 박힘 + NDJSON stream emit — 라운드 또는
-    step 끝까지 batch 누적 안 함. 메모리 누적 0, 그래프 실시간 반영.
+    코드노드 분석 결과는 **코드노드 단위 즉시** state에 합치고 NDJSON 진행 이벤트를
+    보낸다. 제품 그래프 저장은 전체 계획 검증 뒤 최종 공개 경로만 수행한다.
     """
     cfg = step_config(config)
     strategy = cfg.get("strategy")
     cost_budget = cfg.get("cost_budget")
-    neo: Neo4jClient | None = cfg.get("neo_client")
     stream: Optional[NDJSONStream] = cfg.get("stream")
     pause: PauseController = cfg.get("pause") or NULL_PAUSE
-    # 후처리와 슬롯·분할 확정 신호를 나누는 run 스코프 채널 (spec 096).
-    # 없으면(단독 호출·테스트) 이 run 안에서만 쓰는 것을 만든다 — 겹칠 상대가 없어 동작 동일.
-    handoff: AnalysisHandoff = cfg.get("analysis_handoff") or AnalysisHandoff(
-        analysis_llm_slots()
-    )
+    # 후처리와 슬롯·분할 확정 신호를 나누는 유일한 run 스코프 채널.
+    handoff: AnalysisHandoff = handoff_of(cfg)
 
     contexts = state.get("analysis_contexts", {})
     code_node_list = state.get("code_nodes", [])
@@ -146,8 +135,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
             for table_id in dict.fromkeys((*ctx.reads, *ctx.writes))
         }
 
-    # ScanResult의 결정론적 계약만 downstream에 전달한다. Scan Agent가 만든 자유문
-    # codebase_notes는 다른 LLM의 의미 근거가 될 수 없으므로 여기서 소비하지 않는다.
+    # Analyzer가 검증한 구조화 계약만 downstream에 전달한다.
     scan_result = state.get("scan_result") or {}
 
     # SKILL 계약의 핸들러 마커(PFM_CATCH 류) — 분기표 [handler] 행의 원천 (spec 116).
@@ -197,7 +185,7 @@ async def analyze_code_step(state: dict, config: Optional[RunnableConfig] = None
     try:
         with step_processing_scope(_STEP, stream):
             result = await strategy.code_analyzer(
-                state, contexts, code_by_id, strategy, cost_budget, neo, stream,
+                state, contexts, code_by_id, strategy, cost_budget, stream,
                 table_descriptions, pause, source_cache,
                 handoff,
             )

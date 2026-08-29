@@ -11,7 +11,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from pipeline.steps.step7_analyze_code.table_prompt_context import (
-    dump_table_refs,
+    dump_linked_table_descriptions,
 )
 from pipeline.models.data_object_usage import (
     DatabaseLinkComponentEvidence,
@@ -21,61 +21,106 @@ from pipeline.models.data_object_usage import (
     exact_direct_table_ids,
 )
 from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import AnalysisContext, ControlSubtreeNode
-from pipeline.steps.step7_analyze_code.batch_prompt_values import (
-    _build_batch_values,
-    build_table_insight_batch_values,
+from pipeline.models.analysis_context import AnalysisContext
+from pipeline.steps.step7_analyze_code.table_usage_prompt_values import (
+    build_table_usage_meaning_batch_values,
 )
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+    semantic_concern_slots,
+)
+from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
+    _table_usage_meaning_values,
+)
 from shared.files.cache import SourceFileCache
 import unittest
 from tests.unittest_function_cases import load_function_cases
 
 
-def test_table_id_is_separate_from_description_and_columns() -> None:
-    dumped = dump_table_refs(
-        ("db:comm_code",),
+def test_linked_table_descriptions_exclude_ddl_columns_and_sample_rows() -> None:
+    dumped = dump_linked_table_descriptions(
+        ("db:orders",),
         {
-            "db:comm_code": {
-                "description": "공통코드: 설명에 콜론이 있어도 ID가 아니다",
-                "columns": ["code_group", "code_value"],
-                "sample_rows": [],
+            "db:orders": {
+                "description": "주문",
+                "columns": ["order_id", "status"],
+                "sample_rows": [{"order_id": 1, "status": "READY"}],
             },
         },
     )
-    records = json.loads(dumped)
-    assert records == [{
-        "table_id": "db:comm_code",
-        "description": "공통코드: 설명에 콜론이 있어도 ID가 아니다",
-        "columns": ["code_group", "code_value"],
-        "sample_rows": [],
-    }]
-    assert not dumped.startswith("db:comm_code:")
+    assert json.loads(dumped) == {"db:orders": "주문"}
 
 
-def test_empty_and_multiple_table_sets_are_exact() -> None:
-    contexts = {
-        "db:orders": {"description": "주문", "columns": ["order_id"]},
-        "db:shipping": {"description": "배송", "columns": ["order_id"]},
-    }
-    assert dump_table_refs((), contexts) == "[]"
-    records = json.loads(dump_table_refs(("db:orders", "db:shipping"), contexts))
-    assert [record["table_id"] for record in records] == ["db:orders", "db:shipping"]
-
-
-def test_code_node_prompt_omits_unowned_columns_without_name_inference() -> None:
-    context = {
-        "db:orders": {
-            "description": "주문",
-            "columns": ["order_id", "status", "unused_note"],
-        }
-    }
-    dumped = dump_table_refs(
-        ("db:orders",),
-        context,
-        include_columns=False,
+def test_framework_table_packet_contains_only_nonduplicated_model_inputs() -> None:
+    node = CodeNode(
+        id="code:orders.c:load",
+        signature="void load(void)",
+        file_path="orders.c",
+        start_line=10,
+        end_line=12,
+        label="FUNCTION",
+        name="load",
     )
-    assert json.loads(dumped)[0]["columns"] == []
+    context = AnalysisContext(
+        id=node.id,
+        signature=node.signature,
+        file_path=node.file_path,
+        start_line=10,
+        end_line=12,
+        direct_reads=("db:orders",),
+        data_object_usages=(DataObjectUsageEvidence(
+            source_id=node.id,
+            raw_reference="ORDERS",
+            name="ORDERS",
+            access="READ",
+            evidence_file=node.file_path,
+            evidence_line=11,
+            table_id="db:orders",
+            resolution="exact",
+            qualified_columns=(QualifiedColumnUsage(
+                raw_reference="O.STATUS",
+                qualifier="O",
+                name="STATUS",
+                evidence_line=11,
+            ),),
+        ),),
+    )
+    context.extra["ast_statements"] = ()
+    context.extra["table_op"] = {"db:orders": "SELECT"}
+    profile, specs = build_code_semantic_plan(node, context)
+    usage_specs = semantic_concern_slots(specs)["table_usage_meanings"]
+
+    values = _table_usage_meaning_values(
+        profile,
+        usage_specs,
+        ("db:orders",),
+        (),
+        {
+            "db:orders": {
+                "description": "주문",
+                "columns": ["order_id", "status", "unused_note"],
+                "sample_rows": [{"order_id": 1}],
+            },
+        },
+        {
+            "numbered_source_code": "10 | void load(void) {\n11 | SELECT ...\n12 | }",
+            "column_usage_candidates": {"must_not_be_sent": True},
+        },
+    )
+
+    assert set(values) == {
+        "assigned_table_usages",
+        "table_contexts",
+        "code_body",
+    }
+    assert json.loads(values["table_contexts"]) == {"db:orders": "주문"}
+    packet = "\n".join(values.values())
+    assert "must_not_be_sent" not in packet
+    assert "unused_note" not in packet
+    assert "sample_rows" not in packet
+    assert "direct_reads" not in packet
+    assert "direct_writes" not in packet
 
 
 def test_data_object_usage_keeps_alias_column_ownership_separate_per_table() -> None:
@@ -114,16 +159,16 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:RWIS.RDD01DD_TB",),
+            data_object_usages=(DataObjectUsageEvidence(
+                source_id=node.id, raw_reference="RDD01DD_TB", name="RDD01DD_TB",
+                alias="B", access="READ", evidence_file=str(source), evidence_line=1,
+                table_id="db:RWIS.RDD01DD_TB", resolution="exact",
+                qualified_columns=(QualifiedColumnUsage(
+                    raw_reference="B.VAL", qualifier="B", name="VAL", evidence_line=1,
+                ),),
+            ),),
         )
         context.extra["ast_statements"] = ()
-        context.extra["data_object_usages"] = (DataObjectUsageEvidence(
-            source_id=node.id, raw_reference="RDD01DD_TB", name="RDD01DD_TB",
-            alias="B", access="READ", evidence_file=str(source), evidence_line=1,
-            table_id="db:RWIS.RDD01DD_TB", resolution="exact",
-            qualified_columns=(QualifiedColumnUsage(
-                raw_reference="B.VAL", qualifier="B", name="VAL", evidence_line=1,
-            ),),
-        ),)
         context.extra["column_usage_candidates"] = {
             "db:RWIS.RDD01DD_TB": {
                 "VAL": {
@@ -134,113 +179,92 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
             },
         }
 
-        values, _ = _build_batch_values(
-            Batch(None, (node.id,)), {node.id: context}, {node.id: node},
-            {"db:RWIS.RDD01DD_TB": {}}, SourceFileCache(),
+        profile, specs = build_code_semantic_plan(node, context)
+        context.extra["_semantic_frame_plan"] = (
+            profile,
+            specs,
+            semantic_concern_slots(specs),
         )
 
-        assert 'direct_data_object_usages_json: [{"relation":"TARGET_ACCESSES_DATA_OBJECT","table_id":"db:RWIS.RDD01DD_TB"' in values["nodes"]
-        assert '"raw_reference":"B.VAL","qualifier":"B","name":"VAL"' in values["nodes"]
-        assert "column_usage_candidates_json:" not in values["nodes"]
-
-        insight_values = build_table_insight_batch_values(
+        usage_values = build_table_usage_meaning_batch_values(
             batch=Batch(None, (node.id,)),
             contexts={node.id: context},
-            code_by_id={node.id: node},
             table_descriptions={"db:RWIS.RDD01DD_TB": {}},
             cache=SourceFileCache(),
         )
-        assert "direct_reads_json:" in insight_values["table_usage_nodes"]
-        assert "column_usage_candidates_json:" in insight_values["table_usage_nodes"]
-        assert '"VAL":{"evidence_lines":[1],"ownership":"qualified"' in insight_values["table_usage_nodes"]
-        assert "[CONTROL_FLOW_INDEX]" not in insight_values["table_usage_nodes"]
-        assert "callee_interfaces_json" not in insight_values["table_usage_nodes"]
+        packets = json.loads(usage_values["table_usage_packets"])
+        assert len(packets) == 1
+        assert set(packets[0]) == {
+            "node_key",
+            "assigned_table_usages",
+            "linked_table_contexts",
+            "numbered_source",
+        }
+        assert packets[0]["linked_table_contexts"] == {
+            "db:RWIS.RDD01DD_TB": "",
+        }
+        assert set(usage_values) == {"table_usage_packets"}
+        serialized_packet = usage_values["table_usage_packets"]
+        assert "column_usage_candidates" not in serialized_packet
+        assert "referenced_symbol" not in serialized_packet
+        assert "external_context" not in serialized_packet
+        assert "CONTROL_FLOW_INDEX" not in serialized_packet
 
 
-def test_dbms_summary_prompt_projects_false_and_error_paths_explicitly() -> None:
-    with TemporaryDirectory() as tmp:
-        source = Path(tmp) / "p.sql"
-        source.write_text(
-            "BEGIN\nIF MATCH_COUNT >= 1 THEN\n  WORK;\nEND IF;\n"
-            "EXCEPTION\nWHEN OTHERS THEN\n  LOG_ERROR;\nEND;\n",
-            encoding="utf-8",
-        )
-        node = CodeNode(
-            id="procedure:1", signature="P", file_path=str(source),
-            start_line=1, end_line=8, label="PROCEDURE",
-        )
-        context = AnalysisContext(
-            id=node.id, signature=node.signature, file_path=str(source),
-            start_line=1, end_line=8,
-        )
-        context.extra["control_subtree"] = [
-            ControlSubtreeNode(
-                "if@2", "IF", 2, 4, expression="MATCH_COUNT >= 1",
-            ),
-            ControlSubtreeNode("exception@5", "EXCEPTION", 5, 8),
-        ]
-        context.extra["ast_statements"] = ()
-
-        values, _ = _build_batch_values(
-            Batch(None, (node.id,)), {node.id: context}, {node.id: node},
-            {}, SourceFileCache(),
-        )
-
-        assert "[implicit_false]" in values["nodes"]
-        assert "[error_only]" in values["nodes"]
-        assert "handler 진입 아님" in values["nodes"]
-        evidence = context.extra["summary_comparison_evidence"]
-        assert "MATCH_COUNT >= 1" in evidence
-        assert "[implicit_false]" in evidence
-
-
-def test_unresolved_object_reference_is_not_scheduled_as_exact_table_insight() -> None:
+def test_unresolved_occurrence_is_not_scheduled_as_exact_table_usage() -> None:
     context = AnalysisContext(
         id="select:1", signature="SELECT", file_path="p.sql",
         start_line=1, end_line=1,
-        direct_reads=("db:shop.PUBLIC.ORDERS", "object-ref:abc"),
-    )
-    context.extra["data_object_usages"] = (
-        DataObjectUsageEvidence(
-            source_id=context.id, raw_reference="ORDERS", name="ORDERS",
-            access="READ", evidence_file="p.sql", evidence_line=1,
-            table_id="db:shop.PUBLIC.ORDERS", resolution="exact",
-        ),
-        DataObjectUsageEvidence(
-            source_id=context.id, raw_reference="REMOTE_T@LINK", name="REMOTE_T",
-            database_link="LINK", database_link_components=(
-                DatabaseLinkComponentEvidence(role="database", name="LINK"),
-            ), access="READ", evidence_file="p.sql", evidence_line=1,
+        direct_reads=("db:shop.PUBLIC.ORDERS",),
+        data_object_usages=(
+            DataObjectUsageEvidence(
+                source_id="select:1", raw_reference="ORDERS", name="ORDERS",
+                access="READ", evidence_file="p.sql", evidence_line=1,
+                table_id="db:shop.PUBLIC.ORDERS", resolution="exact",
+            ),
+            DataObjectUsageEvidence(
+                source_id="select:1", raw_reference="REMOTE_T@LINK", name="REMOTE_T",
+                database_link="LINK", database_link_components=(
+                    DatabaseLinkComponentEvidence(role="database", name="LINK"),
+                ), access="READ", evidence_file="p.sql", evidence_line=1,
+            ),
         ),
     )
 
     assert exact_direct_table_ids(context, "READ") == ("db:shop.PUBLIC.ORDERS",)
 
 
-def test_framework_and_dbms_use_the_same_serializer() -> None:
-    framework = (_ROOT / "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py").read_text(encoding="utf-8")
-    # DBMS 프롬프트 조립은 batch_prompt_values 로 이사 (2026-07 리팩토링) — 계약 대상 갱신.
-    dbms = (_ROOT / "pipeline/steps/step7_analyze_code/batch_prompt_values.py").read_text(encoding="utf-8")
-    assert '"direct_reads": dump_table_refs(' in framework
-    assert '"direct_writes": dump_table_refs(' in framework
-    assert "include_columns=False" in framework
-    assert '"table_ops": json.dumps(' in framework
-    assert "direct_reads_json:" in dbms
-    assert "direct_writes_json:" in dbms
-    assert "direct_table_operations_json:" in dbms
-    assert "direct_data_object_usages_json:" in dbms
+def test_direct_table_id_without_exact_usage_evidence_is_not_trusted() -> None:
+    context = AnalysisContext(
+        id="function:1",
+        signature="load()",
+        file_path="load.c",
+        start_line=1,
+        end_line=3,
+        direct_reads=("db:ORDERS",),
+    )
 
-    common_prompt = (_ROOT / "llm/prompts/framework/_common.yaml").read_text(encoding="utf-8")
-    assert "linked_table_operations_json:" in common_prompt
-    assert "{table_ops}" in common_prompt
-    assert "{data_object_usages}" in common_prompt
+    assert exact_direct_table_ids(context, "READ") == ()
+
+
+def test_framework_table_prompt_uses_its_nonduplicated_projection() -> None:
+    framework = (_ROOT / "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py").read_text(encoding="utf-8")
+    dbms = (
+        _ROOT / "pipeline/steps/step7_analyze_code/table_usage_prompt_values.py"
+    ).read_text(encoding="utf-8")
+    assert "dump_linked_table_descriptions(" in framework
+    assert '"direct_reads"' not in framework
+    assert '"direct_writes"' not in framework
+    assert '"data_object_usages"' not in framework
+    assert "dump_linked_table_descriptions(" in dbms
+    assert '"direct_reads_json"' not in dbms
+    assert '"direct_writes_json"' not in dbms
+    assert '"direct_data_object_usages_json"' not in dbms
 
 
 if __name__ == "__main__":
-    test_table_id_is_separate_from_description_and_columns()
-    test_empty_and_multiple_table_sets_are_exact()
-    test_framework_and_dbms_use_the_same_serializer()
-    print("[OK] table prompt context: 3/3 passed")
+    test_framework_table_prompt_uses_its_nonduplicated_projection()
+    print("[OK] table prompt context passed")
 
 
 def load_tests(_loader, standard_tests, _pattern):

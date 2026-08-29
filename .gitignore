@@ -31,7 +31,6 @@ logs/
 logs-*/
 run-output/
 _runs/
-specs/131-cross-node-semantic-grounding/_artifacts/
 tests/log/
 
 # 임시 파일

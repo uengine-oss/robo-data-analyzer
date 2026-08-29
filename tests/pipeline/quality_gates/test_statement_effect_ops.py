@@ -23,6 +23,7 @@ from pipeline.models.rule_materialization import (
     render_structural_effect,
 )
 from pipeline.quality_gates.branch_inventory import build_inventory
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step6_build_context.control_subtree import build_statement_facts
 
@@ -50,6 +51,14 @@ class JumpVocabularyTest(unittest.TestCase):
         effect = StructuralEffect(
             op="jump", target="PFM_CATCH", value=None, from_source=None)
         self.assertEqual('jump("PFM_CATCH")', render_structural_effect(effect))
+
+
+class CallVocabularyTest(unittest.TestCase):
+    def test_call_requires_receiver_and_ordered_argument_slots(self):
+        parsed = parse_effect('call("handle", None, [F("ctx")])')
+        self.assertEqual("call", parsed.func.id)
+        with self.assertRaises(LeafVocabularyError):
+            parse_effect('call("handle")')
 
 
 class TransactionEffectTest(unittest.TestCase):
@@ -83,7 +92,7 @@ class TransactionEffectTest(unittest.TestCase):
         inventory = build_inventory(
             source, tree, "sql",
             statements=(StatementFact("rb6", "ROLLBACK", 6, 6),),
-            call_lines=((5, "dbms_output.put_line"),),
+            call_occurrences=parser_call_occurrences(((5, "dbms_output.put_line"),)),
         )
         payload = rule_evidence(inventory, (3,))
         direct = payload["rows"]["R3"].get("direct") or []
@@ -199,7 +208,7 @@ class JumpEvidenceTest(unittest.TestCase):
     def test_goto_only_branch_gets_jump_effect(self):
         inventory = build_inventory(
             self.SOURCE, self.TREE, "c", handler_markers=("PFM_CATCH",),
-            statements=self.STATEMENTS, call_lines=(),
+            statements=self.STATEMENTS, call_occurrences=(),
         )
         payload = rule_evidence(inventory, (2,))
         direct = payload["rows"]["R2"].get("direct") or []

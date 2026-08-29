@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import yaml
 
+from shared.files.run_cache_context import read_run_text
+
 from llm.runners.prompt_values import _safe_format
 from pipeline.execution.run_output_context import get_response_locale
 
@@ -29,7 +31,9 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
 
     ``model`` 은 분할 고유 > 공통 순으로 우선.
     """
-    rule = yaml.safe_load((prompts_dir / f"{rule_name}.yaml").read_text(encoding="utf-8"))
+    rule = yaml.safe_load(read_run_text(
+        prompts_dir / f"{rule_name}.yaml", encoding="utf-8",
+    ))
 
     static_values: dict[str, str] = {}
     prompts_root = prompts_dir.parent.resolve()
@@ -37,7 +41,7 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         path = (prompts_dir / str(relative_path)).resolve()
         if path != prompts_root and prompts_root not in path.parents:
             raise ValueError(f"shared prompt value escapes prompts root: {relative_path}")
-        static_values[str(key)] = path.read_text(encoding="utf-8").strip()
+        static_values[str(key)] = read_run_text(path, encoding="utf-8").strip()
     rendered_templates = "".join(str(rule.get(key, "")) for key in (
         "user_template_specific",
         "user_template_inputs",
@@ -79,7 +83,9 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         rule["static_values"] = static_values
         return rule
 
-    common = yaml.safe_load((prompts_dir / f"{extends}.yaml").read_text(encoding="utf-8"))
+    common = yaml.safe_load(read_run_text(
+        prompts_dir / f"{extends}.yaml", encoding="utf-8",
+    ))
     inherit_inputs = rule.get("inherit_inputs", True)
     if not isinstance(inherit_inputs, bool):
         raise ValueError(f"inherit_inputs must be boolean: {rule_name}")
@@ -92,11 +98,6 @@ def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
         ),
         "model": rule.get("model") or common.get("model"),
         "max_tokens": rule.get("max_tokens") or common.get("max_tokens"),
-        "wall_timeout_seconds": (
-            rule["wall_timeout_seconds"]
-            if "wall_timeout_seconds" in rule
-            else common.get("wall_timeout_seconds")
-        ),
         "structured_output_method": (
             rule.get("structured_output_method")
             or common.get("structured_output_method")

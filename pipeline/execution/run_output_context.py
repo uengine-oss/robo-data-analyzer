@@ -1,7 +1,7 @@
-"""현재 분석 run의 산출물 경로와 LLM 응답 언어 컨텍스트.
+"""현재 분석 run이 소유하는 산출물 경로와 LLM 응답 언어 컨텍스트.
 
-명시적인 ``--run-output``이 있으면 해당 경로를, 없으면 기존 설정 경로를 사용한다.
-하위 run 디렉터리를 만들지 않으며 선택된 경로 자체가 현행 run 출력 루트다.
+산출물을 만들거나 프롬프트를 렌더링하는 경로는 반드시 분석 run 안에서 실행한다.
+소유자가 없으면 전역 경로나 임의 언어를 고르지 않고 계약 오류로 중단한다.
 """
 from __future__ import annotations
 
@@ -27,17 +27,15 @@ def reset_run_dir(token: contextvars.Token) -> None:
     _run_dir.reset(token)
 
 
-def get_run_dir(*, fallback: Path | None = None) -> Path:
+def get_run_dir() -> Path:
     run_dir = _run_dir.get()
     if run_dir is not None:
         return run_dir
-    if fallback is not None:
-        return fallback
     raise RuntimeError("analysis run output context is not set")
 
 
 def active_run_dir() -> Path | None:
-    """현재 활성 분석 run의 출력 루트. 독립 호출·단위 테스트면 ``None``."""
+    """현재 활성 분석 run의 출력 루트. 읽기 전용 점검이면 ``None``."""
     return _run_dir.get()
 
 
@@ -51,5 +49,8 @@ def reset_response_locale(token: contextvars.Token) -> None:
     _response_locale.reset(token)
 
 
-def get_response_locale(*, fallback: str = "ko") -> str:
-    return _response_locale.get() or fallback
+def get_response_locale() -> str:
+    locale = _response_locale.get()
+    if locale is None:
+        raise RuntimeError("analysis response locale context is not set")
+    return locale

@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
+from pipeline.models.rule_meaning_frame import RuleMeaningProjection
 from pipeline.models.rule_materialization import (
     StructuralEffect,
     materialize_rule_items,
@@ -14,7 +15,13 @@ from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step7_analyze_code import rule_row_batching
 from pipeline.quality_gates.rule_obligations import required_rule_rows
-from pipeline.steps.step7_analyze_code.rule_row_batching import materialize_and_validate_rules
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    RowCollection,
+    apply_rule_meaning_projections,
+    mark_rule_meanings_unavailable,
+    materialize_and_validate_rules,
+)
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
 SOURCE = (
@@ -37,7 +44,9 @@ TREE = [ControlSubtreeNode(
 def _inventory():
     return build_inventory(
         SOURCE, TREE, "c", statements=(),
-        call_lines=((3, "x"), (7, "y"), (11, "z")),
+        call_occurrences=parser_call_occurrences(
+            ((3, "x"), (7, "y"), (11, "z"))
+        ),
     )
 
 
@@ -55,10 +64,9 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         self.assertEqual([1, 5, 9], [rule.anchor_line for rule in collection.rules])
         self.assertEqual([], collection.findings)
         self.assertEqual(0, collection.calls)
-        self.assertEqual([""], sorted({rule.nl for rule in collection.rules}))
-        self.assertEqual(['call("x")'], collection.rules[0].then)
-        self.assertEqual(['call("y")'], collection.rules[1].then)
-        self.assertEqual(['call("z")'], collection.rules[2].then)
+        self.assertEqual(['call("x", None, [])'], collection.rules[0].structural_effects)
+        self.assertEqual(['call("y", None, [])'], collection.rules[1].structural_effects)
+        self.assertEqual(['call("z", None, [])'], collection.rules[2].structural_effects)
 
     def test_structure_only_row_is_preserved_with_empty_outcome(self):
         source = 'if (ready)\n{\n  ;\n}\n'
@@ -75,9 +83,8 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         )
 
         self.assertEqual(1, len(collection.rules))
-        self.assertEqual('F("ready")', collection.rules[0].cond)
-        self.assertEqual([], collection.rules[0].then)
-        self.assertEqual("", collection.rules[0].nl)
+        self.assertEqual('F("ready")', collection.rules[0].structural_condition)
+        self.assertEqual([], collection.rules[0].structural_effects)
         self.assertEqual(0, collection.calls)
 
     def test_unverified_row_is_scoped_and_quarantined_while_sibling_is_trusted(self):
@@ -90,7 +97,7 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
             ),
             "java",
             statements=(StatementFact("t1", "THROW", 1, 1),),
-            call_lines=((2, "go"),),
+            call_occurrences=parser_call_occurrences(((2, "go"),)),
         )
 
         collection = materialize_and_validate_rules(
@@ -105,6 +112,58 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         self.assertEqual("unverified", finding.status)
         self.assertEqual("code:sample:fn::R-1", finding.target_id)
         self.assertEqual((1,), finding.coordinates)
+
+    def test_only_sufficient_business_rows_are_published(self):
+        structural = materialize_and_validate_rules(
+            inventory=_inventory(),
+            target_scope="code:sample:fn",
+            source=SOURCE,
+        )
+        projections = (
+            RuleMeaningProjection(
+                "R1", 1, 'meaning_when("a", "첫 업무 조건")',
+                ('meaning_call("x", None, [], "첫 업무 처리")',),
+                "business_rule", "sufficient",
+            ),
+            RuleMeaningProjection(
+                "R5", 5, None, (), "implementation_detail", "not_business",
+            ),
+            RuleMeaningProjection(
+                "R9", 9, 'meaning_when("a", "불완전한 조건")', (),
+                "business_rule", "partial",
+            ),
+        )
+
+        result = apply_rule_meaning_projections(
+            structural, projections, target_scope="code:sample:fn",
+        )
+
+        self.assertEqual([1], [rule.anchor_line for rule in result.rules])
+        self.assertEqual(
+            [(5, "excluded"), (9, "unverified")],
+            [(finding.coordinates[0], finding.status) for finding in result.findings],
+        )
+        self.assertEqual(
+            "implementation_detail",
+            result.findings[0].candidate["row_disposition"],
+        )
+
+    def test_unavailable_meaning_call_publishes_no_structural_rule(self):
+        structural = materialize_and_validate_rules(
+            inventory=_inventory(),
+            target_scope="code:sample:fn",
+            source=SOURCE,
+        )
+
+        result = mark_rule_meanings_unavailable(
+            structural,
+            target_scope="code:sample:fn",
+            reason="provider unavailable",
+        )
+
+        self.assertEqual([], result.rules)
+        self.assertEqual([1, 5, 9], [item.coordinates[0] for item in result.findings])
+        self.assertTrue(all(item.status == "unavailable" for item in result.findings))
 
     def test_post_test_loop_condition_is_not_a_body_precondition(self):
         source = "do {\n  x = 1;\n  if (flag) { y = 2; }\n} while (again);\n"
@@ -134,10 +193,10 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
 
         rules = materialize_rule_items(evidence, [1, 3])
 
-        self.assertIsNone(rules[0].cond)
-        self.assertEqual('F("flag")', rules[1].cond)
-        self.assertEqual(['set(F("x"), F("1"))'], rules[0].then)
-        self.assertEqual(['set(F("y"), F("2"))'], rules[1].then)
+        self.assertIsNone(rules[0].structural_condition)
+        self.assertEqual('F("flag")', rules[1].structural_condition)
+        self.assertEqual(['set(F("x"), F("1"))'], rules[0].structural_effects)
+        self.assertEqual(['set(F("y"), F("2"))'], rules[1].structural_effects)
 
     def test_assigned_rows_must_match_evidence_exactly(self):
         evidence = rule_evidence(_inventory(), [1, 5])
@@ -162,7 +221,13 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
 
     def test_closed_effect_vocabulary_renders_without_interpretation(self):
         cases = (
-            (StructuralEffect(op="call", target="svc", value=None, from_source=None), 'call("svc")'),
+            (
+                StructuralEffect(
+                    op="call", target="svc", value=None, from_source=None,
+                    occurrence_id="call-1", call_source="svc()",
+                ),
+                'call("svc", None, [])',
+            ),
             (StructuralEffect(op="ret", target=None, value="rc", from_source=True), 'ret(F("rc"))'),
             (StructuralEffect(op="ret", target=None, value=None, from_source=None), "ret(None)"),
             (StructuralEffect(op="set", target="x", value="1", from_source=True), 'set(F("x"), F("1"))'),

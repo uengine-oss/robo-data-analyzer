@@ -14,7 +14,6 @@ LangGraph step 안 "지금 누구를 처리 중" (코드노드 / 모듈 / 테이
 ─────────────────────────────────────
 | ``phase_event``         | step 전체 (executor 가 emit)              |
 | ``tool_event``          | Agent 도구 호출 (Scan/Residual 미들웨어)    |
-| ``todo_update``         | Agent todo (미들웨어)                      |
 | ``node_event`` / ``relationship_event`` | 그래프 결과 노드/엣지 (완료) |
 | **``processing_event`` (이 모듈)** | step 안 처리 단위 진행 (코드노드 / 모듈 / 테이블 / split) |
 

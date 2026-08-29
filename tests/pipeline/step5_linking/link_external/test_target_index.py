@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from graph.schema.graph_nodes import ExternalChunk, ProjectFile
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 from pipeline.steps.step3_load_external.span_verifier import sha256_text
 from pipeline.steps.step5_linking.link_external.target_index import (
     TargetIndex,
@@ -12,20 +12,31 @@ from pipeline.steps.step5_linking.link_external.target_index import (
 
 
 def _chunk(chunk_id: str, keys: tuple[str, ...], relpath: str,
-           addressable: bool = True) -> ExternalChunk:
+           addressable: bool = True) -> ExternalSourceRecord:
     text = f"<e>{keys[0]}</e>"
-    return ExternalChunk(
-        id=chunk_id, name=keys[0], keys=keys, semantic_kind="xml_element", text=text,
-        file_path=relpath, char_start=0, char_end=len(text), start_line=1, end_line=1,
-        provenance="source_span", source_hash=sha256_text(text), content_hash=sha256_text(text),
+    return ExternalSourceRecord(
+        source_record_id=chunk_id,
+        source_file_id=f"source:{chunk_id}",
+        external_adapter_id="analyzer.external.xml",
+        external_adapter_version="analyzer-external-span-adapter/v1",
         addressable_keys=keys if addressable else (),
+        semantic_kind="xml_element", exact_text=text,
+        project_relative_path=relpath,
+        source_character_start=0, source_character_end=len(text),
+        source_start_line=1, source_end_line=1,
+        provenance="source_span", source_sha256=sha256_text(text),
+        content_sha256=sha256_text(text),
     )
 
 
-def _file(file_id: str, relpath: str) -> ProjectFile:
-    return ProjectFile(id=file_id, name=relpath.rsplit("/", 1)[-1], project="p",
-                       relpath=relpath, ext="." + relpath.rsplit(".", 1)[-1],
-                       category="config", status="registered")
+def _file(file_id: str, relpath: str) -> ExternalSourceFile:
+    return ExternalSourceFile(
+        source_file_id=file_id,
+        project_relative_path=relpath,
+        extension="." + relpath.rsplit(".", 1)[-1],
+        category="config",
+        status="registered",
+    )
 
 
 class SuffixCandidateTest(unittest.TestCase):

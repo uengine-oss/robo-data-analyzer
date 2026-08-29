@@ -1,16 +1,15 @@
 # Analyzer 작업 재개 관문
 
-루트 `D:\work\robo\AGENTS.md`의 공통 memory 세 파일을 모두 읽은 뒤, Analyzer를 계획·검토·수정·실행하기 전에 다음 파일을 순서대로 전부 읽는다.
+루트 `D:\work\robo\AGENTS.md`가 지정한 공통 memory 세 파일을 읽은 뒤, Analyzer 작업은 다음
+현재 정본만 순서대로 읽는다.
 
 1. `specs/131-cross-node-semantic-grounding/README.md`
 2. `.specify/memory/constitution.md`
-3. `specs/131-cross-node-semantic-grounding/ABSOLUTE_RULES.md`
+3. `specs/131-cross-node-semantic-grounding/spec.md`
 4. `specs/131-cross-node-semantic-grounding/CURRENT_STATUS.md`
-5. `specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`
 
-자동 컨텍스트 요약, 새 세션, 작업 재개, 목표 변경이 발생하면 위 순서를 다시 수행한다. 요약문은 길찾기용일 뿐 사실 정본이 아니다.
+`plan.md`, `tasks.md`, `contracts/`는 현재 작업 좌표에 필요한 부분만 읽는다. 과거 작업 문서는
+현재 계약을 대신하지 않는다. `_runs/`는 마지막 봉인 검증에 필요한 로컬 실행 자료이며 spec이 아니다.
 
-`specs/131-cross-node-semantic-grounding/context/DOCUMENT_MAP.md`는 기존 handoff·spec·evidence의 위치와 상태만 분류한다.
-`ABSOLUTE_RULES.md`는 현재 사용자 지침을 반영한 작업 불변식이고, `CURRENT_STATUS.md`는 현재
-HEAD·발견·다음 행동만 소유한다. 과거 수치·전략 A/B 상세·실험 이력은 기존 canonical handoff와
-evidence가 소유하며 삭제하거나 현재 사실로 자동 승격하지 않는다.
+Architect와 goal-verify는 Analyzer 작업 범위 밖이다. 코드·서비스·DB·WIP를 읽거나 실행하거나
+수정하거나 stage하지 않는다.

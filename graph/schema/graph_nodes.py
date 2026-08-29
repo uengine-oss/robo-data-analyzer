@@ -63,7 +63,7 @@ class Table:
     """DB 테이블.
 
     DDL 파싱 또는 Catalog exact resolver에서 생성한다. Catalog 경로는 실제 metadata로
-    확정된 객체만 만들며 unresolved reference는 별도 OBJECT_REFERENCE로 보존한다.
+    확정된 객체만 만들며 미해결 사용 발생은 CodeNode의 실행 장부에만 보존한다.
 
     description       = 정식 ``COMMENT ON`` / 카탈로그 (출처 = description_source).
     comment           = 테이블 위 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
@@ -77,10 +77,9 @@ class Table:
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
-    semantic_evidence_status: str = ""        # sufficient / partial / insufficient
-    semantic_missing_context: tuple[str, ...] = ()
-    semantic_frame_schema: str = ""
-    semantic_frame_json: str = ""
+    meaning_status: str = ""                 # sufficient / insufficient
+    missing_context_count: int = 0
+    missing_context_artifact_hash: str = ""
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
     view_definition: str = ""                # VIEW 의 정의 SELECT 원문 (spec 112 뷰 펼치기 재료)
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
@@ -110,23 +109,6 @@ class Table:
 
 
 @dataclass(frozen=True)
-class ObjectReference:
-    """Unresolved physical data-object identity preserved without guessed TABLE binding."""
-    id: str
-    datasource: str
-    raw_reference: str
-    name: str
-    catalog: str = ""
-    catalog_quoted: bool = False
-    schema: str = ""
-    schema_quoted: bool = False
-    name_quoted: bool = False
-    database_link: str = ""
-    database_link_components_json: str = ""
-    status: str = "unresolved"
-
-
-@dataclass(frozen=True)
 class Column:
     """DB 컬럼.
 
@@ -151,10 +133,9 @@ class Column:
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
     analyzed_description: str = ""           # 분석 LLM 합성 설명
-    semantic_evidence_status: str = ""        # sufficient / partial / insufficient
-    semantic_missing_context: tuple[str, ...] = ()
-    semantic_frame_schema: str = ""
-    semantic_frame_json: str = ""
+    meaning_status: str = ""                 # sufficient / insufficient
+    missing_context_count: int = 0
+    missing_context_artifact_hash: str = ""
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
 
@@ -179,8 +160,9 @@ class Module:
     DBMS 예: PL/SQL package · 스크립트 파일.
 
     ``start_line`` / ``end_line`` 으로 한 파일 안 여러 클래스(Java inner class 등)의
-    라인 범위 구분. 표시명·요약·역할은 ``summarize_module`` (step7) 이 채운다 —
-    헤더 주석이 아니라 멤버 분석 종합에서 도출.
+    라인 범위를 구분한다. 함수 의미 분석이 끝나면 Analyzer는 검증된 함수 요약을
+    ``summary_rollup_*`` 두 배열에 같은 순서로 복제한다. Module 자체의 새 요약이나
+    역할을 추측하지 않는다.
     """
     id: str                                  # 고유 식별자 = 이 모듈의 fqn (예: "com.example.OrderService")
     name: str
@@ -199,12 +181,9 @@ class Module:
     extends_type: str = ""
     implements_types: str = ""
 
-    # 분석 결과 ────
-    summary: str = ""                        # summarize_module 가 채움
-    stereotype: str = ""                     # summarize_module 가 채움 (CodeNode.stereotype 과 명칭 통일)
-    logical_name: Optional[str] = None       # 짧은 도메인 표시명 — summarize_module 가 채움
-    semantic_frame_schema: str = ""
-    semantic_frame_json: str = ""
+    # 결정론적 함수 요약 묶음. 같은 index의 ID와 summary가 한 쌍이다.
+    summary_rollup_function_ids: tuple[str, ...] = ()
+    summary_rollup_summaries: tuple[str, ...] = ()
 
 
 @dataclass
@@ -247,6 +226,9 @@ class CodeNode:
     # 분석 결과 (analyze_code 이 채움) ────
     summary: Optional[str] = None            # 표시·검색·callee handoff 공용 canonical 의미 계약
     stereotype: Optional[str] = None         # ontology_roles.yaml 풀에서
+    meaning_status: str = ""                 # sufficient / partial / insufficient
+    missing_context_count: int = 0            # 상세 run artifact 항목 수
+    missing_context_artifact_hash: str = ""  # count > 0일 때 canonical artifact SHA-256
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
 
     # strategy 별 확장 필드 (dict — 새 필드 추가 시 base 무변경) ────
@@ -331,12 +313,11 @@ class Rule:
     유일하다(폐기된 statement 해시 공유 개념을 사용하지 않는다).
     """
     id: str
-    rule_id: str = ""                        # "R-<anchor>"
     anchor_line: int = 0                     # 절대 파일 줄 — 채점·배칭의 단일 좌표
-    cond: str = ""                           # 파이썬 불리언 표현식 leaf ("" = 무조건)
-    then: tuple[str, ...] = ()               # 파이썬 효과 호출문 목록 — 유일한 채점 대상
-    nl: str = ""                             # 빈 호환 필드 — 사람용 의미 생산 금지
-    when: str = ""                           # 실행 가능 단위 심볼 — 코드가 채움
+    structural_condition: str = ""           # 원문에서 결정론 생성한 Python 조건
+    structural_effects: tuple[str, ...] = () # 원문에서 결정론 생성한 Python 효과
+    business_condition: str = ""             # Strategy-B 업무 의미 Python 조건
+    business_effects: tuple[str, ...] = ()   # Strategy-B 업무 의미 Python 효과
 
 
 @dataclass(frozen=True)
@@ -346,117 +327,5 @@ class Example:
     정체성 ``id`` = ``<rule id>::E<idx>``. given/then 은 파이썬 leaf 목록.
     """
     id: str
-    kind: str = ""                           # satisfy
-    given: tuple[str, ...] = ()              # 파이썬 등식 목록
-    then: tuple[str, ...] = ()               # 효과 호출문 목록
-
-
-@dataclass(frozen=True)
-class Question:
-    """코드만으로 답 안 되는 모호점 — 사람 검토 큐 (Example Mapping).
-
-    정체성 ``id`` = ``<function id>::Q<idx>``.
-    """
-    id: str
-    text: str                                # 한 줄 질문
-    reason: str = ""                         # 코드 근거 부재 사유
-
-
-# ── External-file graph nodes (spec 078) ─────────────────────────────
-
-ExternalCategory = Literal[
-    "source", "sql_xml", "config", "artifact_xml", "document", "custom", "binary", "unknown",
-]
-ProjectFileStatus = Literal["registered", "analyzed", "unanalyzed", "failed"]
-ChunkProvenance = Literal["source_span", "derived_document"]
-SemanticKind = Literal[
-    "xml_element", "yaml_entry", "json_entry", "md_section", "record", "row",
-    "agent_segment", "derived_document",
-]
-
-
-def _require_non_negative_integer(value: int, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{name} must be a non-negative integer")
-
-
-def _require_lines(start_line: int, end_line: int) -> None:
-    _require_non_negative_integer(start_line, "start_line")
-    _require_non_negative_integer(end_line, "end_line")
-    if (start_line == 0) != (end_line == 0) or (start_line and end_line < start_line):
-        raise ValueError("line coordinates must both be zero or form an ordered 1-based range")
-
-
-def _require_sha256(value: str, name: str) -> None:
-    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value.lower()):
-        raise ValueError(f"{name} must be a SHA-256 hex digest")
-
-
-@dataclass(frozen=True)
-class ProjectFile:
-    id: str
-    name: str
-    project: str
-    relpath: str
-    ext: str
-    category: ExternalCategory
-    status: ProjectFileStatus
-    reason: str = ""
-    label: str = field(default="PROJECT_FILE", init=False)
-
-    def __post_init__(self) -> None:
-        if self.category not in ExternalCategory.__args__:
-            raise ValueError(f"unsupported external file category: {self.category!r}")
-        if self.status not in ProjectFileStatus.__args__:
-            raise ValueError(f"unsupported project file status: {self.status!r}")
-        if self.status in ("unanalyzed", "failed") and not self.reason.strip():
-            raise ValueError(f"status {self.status!r} requires a reason")
-
-
-@dataclass(frozen=True)
-class ExternalChunk:
-    """One complete semantic unit of an external file (spec 078).
-
-    ``source_span`` chunks satisfy ``text == decoded_source[char_start:char_end]``
-    and carry the decoded source's hash so the invariant stays re-checkable.
-    ``derived_document`` chunks come from binary conversions, have no source
-    span (both offsets 0) and are never direct ``REFER_TO`` targets.
-    """
-    id: str
-    name: str
-    keys: tuple[str, ...]
-    semantic_kind: SemanticKind
-    text: str
-    file_path: str
-    char_start: int
-    char_end: int
-    start_line: int
-    end_line: int
-    provenance: ChunkProvenance
-    source_hash: str
-    content_hash: str
-    # ``keys`` 중 "코드가 이 키로 내용을 가져올 수 있는 주소"인 것들 (spec 081).
-    # 스키마 필드명처럼 이름만 겹치는 키는 제외된다 — 링킹은 이 목록만 대상으로 한다.
-    addressable_keys: tuple[str, ...] = ()
-    label: str = field(default="EXTERNAL_CHUNK", init=False)
-
-    def __post_init__(self) -> None:
-        if self.semantic_kind not in SemanticKind.__args__:
-            raise ValueError(f"unsupported semantic kind: {self.semantic_kind!r}")
-        if self.provenance not in ChunkProvenance.__args__:
-            raise ValueError(f"unsupported chunk provenance: {self.provenance!r}")
-        if not self.text:
-            raise ValueError("external chunk text must be non-empty")
-        _require_lines(self.start_line, self.end_line)
-        _require_non_negative_integer(self.char_start, "char_start")
-        _require_non_negative_integer(self.char_end, "char_end")
-        _require_sha256(self.content_hash, "content_hash")
-        if self.provenance == "source_span":
-            if self.char_end - self.char_start != len(self.text):
-                raise ValueError("source_span chunk length must equal its span width")
-            _require_sha256(self.source_hash, "source_hash")
-        else:
-            if self.char_start or self.char_end:
-                raise ValueError("derived_document chunks cannot claim a source span")
-        if sorted(set(self.keys)) != list(self.keys):
-            raise ValueError("chunk keys must be sorted and unique")
+    given_conditions: tuple[str, ...] = ()   # 참이어야 하는 업무 조건 목록
+    expected_effects: tuple[str, ...] = ()   # 조건이 참일 때 발생할 업무 효과 목록

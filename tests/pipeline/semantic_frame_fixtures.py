@@ -19,7 +19,6 @@ def semantic_frame_for_node(
     *,
     meaning: str = "검증된 의미",
     status: str = "sufficient",
-    missing_context: list[str] | None = None,
 ) -> SemanticFrame:
     code = node if isinstance(node, CodeNode) else CodeNode(
         id=node.id,
@@ -40,16 +39,18 @@ def semantic_frame_for_node(
     )
     profile, specs = build_code_semantic_plan(code, context)
     wire_model = semantic_frame_response_model(specs)
-    missing = list(missing_context or ([] if status == "sufficient" else ["추가 근거"]))
     parsed = wire_model.model_validate({"slots": {
-        wire_id: {
-            "meaning": "" if status == "insufficient" else meaning,
-            "status": status,
-            "missing_context": missing,
-        }
+        wire_id: "" if status == "insufficient" else meaning
         for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
     }})
-    return normalize_semantic_frame_response(parsed, profile, specs)
+    frame = normalize_semantic_frame_response(parsed, profile, specs)
+    if status == "partial":
+        first_id = next(iter(frame.slots))
+        frame.slots[first_id] = frame.slots[first_id].model_copy(update={
+            "status": "partial",
+            "missing_context": ("test fixture dependency unavailable",),
+        })
+    return frame
 
 
 def frame_wire_for_response_model(
@@ -57,17 +58,11 @@ def frame_wire_for_response_model(
     *,
     meaning: str,
     status: str = "sufficient",
-    missing_context: list[str] | None = None,
     stereotype: str | None = None,
 ):
     slots_model = model.model_fields["slots"].annotation
-    missing = list(missing_context or ([] if status == "sufficient" else ["추가 근거"]))
     payload = {"slots": {
-        name: {
-            "meaning": "" if status == "insufficient" else meaning,
-            "status": status,
-            "missing_context": missing,
-        }
+        name: "" if status == "insufficient" else meaning
         for name in slots_model.model_fields
     }}
     if stereotype is not None:

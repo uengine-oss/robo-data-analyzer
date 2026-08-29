@@ -1,52 +1,38 @@
 # spec 131 — Analyzer 의미 무손실 작업 진입점
 
 **Status**: Active
-**Updated**: 2026-08-23
-**Role**: 이 작업의 정본 문서·역사·증거·로컬 실행물 위치만 안내한다.
+**Updated**: 2026-08-29
+**Role**: 현재 Analyzer SDD와 작업 상태의 단일 진입점
 
-Analyzer 의미 무손실 작업 자료는 이 spec 아래에 모은다. 워크스페이스 `docs/핸드오프`에는 이
-파일을 가리키는 짧은 링크만 두며, 정본 복사본·Junction·실행 폴더를 다시 만들지 않는다.
+이 디렉터리에는 현재 실행 가능한 Analyzer spec만 둔다. 과거 보고서·실험·실행 결과를 다시
+복사하지 않는다.
 
-## 반드시 읽는 순서
+## 읽는 순서
 
-1. `D:\work\robo\AGENTS.md`
-2. `C:\Users\roede\.codex\memories\principles.md`
-3. `C:\Users\roede\.codex\memories\manual.md`
-4. `C:\Users\roede\.codex\memories\speckit.md`
-5. `D:\work\robo\docs\robo-작업세트\ROBO-계약.md`
-6. Analyzer `.specify/memory/constitution.md`
-7. 이 폴더의 `ABSOLUTE_RULES.md`
-8. 이 폴더의 `CURRENT_STATUS.md`
-9. `history/handovers/04-검증방법.md`
+1. `D:\work\robo\AGENTS.md`와 공통 memory 세 파일
+2. Analyzer `.specify/memory/constitution.md`
+3. 이 폴더의 `spec.md`
+4. 이 폴더의 `CURRENT_STATUS.md`
+5. 현재 작업에 필요한 `plan.md`, `tasks.md`, `contracts/`의 해당 절
 
-자동 컨텍스트 요약, 새 세션, 작업 재개, 목표 변경 때 위 원문을 다시 읽는다. 요약문은 길찾기
-용도일 뿐 사실 정본이 아니다.
+## 현재 정본
 
-다음 세션은 비대해진 과거 상태를 반복해서 읽지 않는다. 현재 재개 사실은 짧은
-`CURRENT_STATUS.md`가 소유하며, 2026-08-21 상세 원장이 필요한 경우에만
-`history/handovers/12-20260821-current-status-snapshot-pointer.md`로 원문을 찾아 읽는다.
+| 파일 | 소유하는 내용 |
+|---|---|
+| `spec.md` | 불변식·책임 경계·제품 요구·합격 기준 |
+| `plan.md` | 현재 spec을 구현하는 순서와 검증 확대 방식 |
+| `tasks.md` | 남은 작업과 완료 증거 |
+| `contracts/parser-structural-facts-v2.md` | Parser 구조 사실 wire |
+| `contracts/analyzer-meaning-and-publication-v2.md` | Analyzer 의미·공개 wire |
+| `CURRENT_STATUS.md` | 현재 HEAD·완료·미검증·다음 행동 |
 
-## 위치와 소유권
+## spec 밖 자료
 
-| 위치 | 역할 | Git |
-|---|---|---|
-| `ABSOLUTE_RULES.md` | 영구 불변식·금지 | 추적 |
-| `CURRENT_STATUS.md` | 현재 HEAD·환경·발견·미해결·다음 행동 | 추적 |
-| `spec.md`·`plan.md`·`tasks.md`·`contracts/` | 요구·설계·완료 게이트·wire 계약 | 추적 |
-| `history/handovers/` | 2026-08-03 이후 상세 인계·실패 교훈의 역사 원문 | 추적 |
-| `evidence/` | 현재 작업의 공유 가능한 판정·계약 증거 | 추적 |
-| `context/` | 문서 지도와 파일/hash 원장 | 추적 |
-| `_artifacts/history-experiments/` | 기존 2026-08-03~04 raw 실험 원자료 | 로컬 보존·Git 제외 |
-| `_runs/framework|dbms/` | 재생성 가능한 실제 분석 실행물 | 로컬·Git 제외 |
+| 위치 | 역할 |
+|---|---|
+| `_runs/framework|dbms/` | 로컬 분석 실행물; Git 제외 |
+| `D:\work\robo\docs\작업보고내용\2026-08-26-Analyzer-최종-구조-고해성사.html` | 현재 Analyzer를 사람이 읽는 최종 보고서 |
 
-로컬 자료가 없다고 역사 결론을 현재 합격으로 승격하지 않는다. 필요한 원자료가 없으면
-`context/EVIDENCE_INVENTORY.tsv`의 hash와 evidence 문서를 기준으로 `미검증` 처리한다.
-
-## 실행물 승격 규칙
-
-전체 run을 evidence로 복사하지 않는다. 재현과 판정에 필요한 manifest, source/prompt/schema hash,
-actual prompt, raw/parsed 응답, finding, 정답지, 직접 판정표만 민감정보를 검사한 뒤 `evidence/`로
-승격한다. 나머지 재생성 가능 로그는 `_runs/`에만 두고 작업 종료 시 정리한다.
-
-상세 문서 계보는 [문서·증거 지도](context/DOCUMENT_MAP.md), 현재 작업 제한은
-[현재상태](CURRENT_STATUS.md)를 따른다.
+`_runs`의 과거 수치는 현재 제품 합격 근거가 아니다. 재분석 없이 원인을 추적하거나 마지막 봉인
+검증을 수행할 때만 필요한 파일을 선택해서 읽는다. 소비처가 없던 과거 실험 `_artifacts`는 제거했다.
+Architect와 goal-verify는 이 spec의 범위 밖이다.

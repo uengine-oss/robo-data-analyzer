@@ -40,7 +40,7 @@ def coverage_residue(inventory: BranchInventory) -> dict:
         covered.add(inventory.entry_line)
     for fact in inventory.ast_statements:
         covered.update(range(fact.start, fact.end + 1))
-    covered.update(line for line, _ in inventory.ast_call_lines)
+    covered.update(line for line, _ in inventory.effect_call_positions)
 
     # 루틴 머리(시그니처)는 사실이 아니라 정의부다 — 첫 여는 중괄호 줄까지 머리로 본다.
     header_end = 1

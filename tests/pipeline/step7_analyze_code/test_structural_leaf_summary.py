@@ -48,7 +48,6 @@ class StructuralLeafSummaryTest(unittest.IsolatedAsyncioTestCase):
                     stereotype="Helper",
                     evidence_status="sufficient",
                     missing_context=[],
-                    questions=[],
                     semantic_frame=semantic_frame_for_node(
                         code_by_id[node_id], meaning=f"{node_id}의 직접 동작을 수행한다",
                     ),

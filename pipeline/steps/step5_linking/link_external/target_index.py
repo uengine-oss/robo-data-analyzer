@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Iterable
+from typing import Iterable, Literal
 
-from graph.schema.graph_nodes import ExternalChunk, ProjectFile
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 from pipeline.steps.step3_load_external.parsers.span_common import is_reference_key
 
 
@@ -25,6 +25,7 @@ class TargetHit:
     """조회 결과 — 확정된 대상 노드 하나. 확정하지 못하면 조회는 None 을 낸다."""
     target_id: str
     matched_key: str
+    target_kind: Literal["external_source_record", "external_file"]
 
 
 def suffix_candidates(value: str) -> list[str]:
@@ -59,18 +60,22 @@ def _normalized_path(value: str) -> str:
 class TargetIndex:
     """조각 이름표·파일 이름·경로 접미의 통합 조회 사전."""
 
-    def __init__(self, chunks: Iterable[ExternalChunk], files: Iterable[ProjectFile]) -> None:
-        self._chunks_by_key: dict[str, list[ExternalChunk]] = {}
-        self._files_by_name: dict[str, list[ProjectFile]] = {}
-        self._files_by_path: dict[str, list[ProjectFile]] = {}
-        for chunk in chunks:
-            if chunk.provenance != "source_span":
+    def __init__(
+        self,
+        records: Iterable[ExternalSourceRecord],
+        files: Iterable[ExternalSourceFile],
+    ) -> None:
+        self._records_by_key: dict[str, list[ExternalSourceRecord]] = {}
+        self._files_by_name: dict[str, list[ExternalSourceFile]] = {}
+        self._files_by_path: dict[str, list[ExternalSourceFile]] = {}
+        for record in records:
+            if record.provenance != "source_span":
                 continue                      # derived 청크는 대상이 아니다 (078 계약)
             # 조회 주소인 키만 대상이다. 스키마 필드명처럼 이름만 겹치는 키는 제외 (spec 081).
-            for key in chunk.addressable_keys:
-                self._chunks_by_key.setdefault(key, []).append(chunk)
+            for key in record.addressable_keys:
+                self._records_by_key.setdefault(key, []).append(record)
         for file in files:
-            path = _normalized_path(file.relpath)
+            path = _normalized_path(file.project_relative_path)
             if not path:
                 continue
             segments = path.split("/")
@@ -96,12 +101,20 @@ class TargetIndex:
             if hit is not None:
                 return [hit]
         for candidate in suffix_candidates(raw):
-            chunks = self._chunks_by_key.get(candidate)
-            if chunks:
+            records = self._records_by_key.get(candidate)
+            if records:
                 # 후보가 하나라도 잡히면 여기서 끝낸다. 더 짧은 후보로 내려가면 우연히
                 # 겹치는 흔한 토막을 집게 되어 오연결이 된다.
-                return [TargetHit(chunk.id, candidate)
-                        for chunk in {chunk.id: chunk for chunk in chunks}.values()]
+                return [
+                    TargetHit(
+                        record.source_record_id,
+                        candidate,
+                        "external_source_record",
+                    )
+                    for record in {
+                        record.source_record_id: record for record in records
+                    }.values()
+                ]
             files = self._files_by_name.get(candidate)
             if files:
                 hit = self._single_file(candidate, files, source_file)
@@ -116,9 +129,15 @@ class TargetIndex:
 
     @staticmethod
     def _single_file(
-        matched_key: str, files: list[ProjectFile], source_file: str,
+        matched_key: str,
+        files: list[ExternalSourceFile],
+        source_file: str,
     ) -> TargetHit | None:
-        targets = {file.id for file in files if _normalized_path(file.relpath) != source_file}
+        targets = {
+            file.source_file_id
+            for file in files
+            if _normalized_path(file.project_relative_path) != source_file
+        }
         if len(targets) != 1:
             return None
-        return TargetHit(targets.pop(), matched_key)
+        return TargetHit(targets.pop(), matched_key, "external_file")

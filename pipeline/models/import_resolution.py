@@ -19,12 +19,6 @@ ImportEvidenceVersion = Literal["1.0.0", "1.1.0", "1.2.0", "2.0.0"]
 _STRUCTURED_IMPORT_EVIDENCE_VERSIONS = frozenset({"1.1.0", "1.2.0", "2.0.0"})
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    )
-
-
 class ImportEvidenceRange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,10 +45,6 @@ def import_occurrence_id(import_id: str, entry_ordinal: int) -> str:
     return f"{fact_id}:{entry_ordinal}"
 
 
-def import_occurrence_node_id(import_id: str, entry_ordinal: int) -> str:
-    return f"import-occurrence:{import_occurrence_id(import_id, entry_ordinal)}"
-
-
 class ImportResolutionOccurrence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -64,14 +54,12 @@ class ImportResolutionOccurrence(BaseModel):
     entry_ordinal: int = Field(..., ge=0)
     evidence_version: ImportEvidenceVersion
     source_id: str = Field(..., min_length=1)
-    file: str = Field(..., min_length=1)
     line: int = Field(..., ge=1)
     end_line: int = Field(..., ge=1)
     range: ImportEvidenceRange
     directive_kind: Literal["include", "import"]
     grammar_rule: str = Field(..., min_length=1)
     presence_status: Literal["active", "inactive", "conditional", "unknown"]
-    presence: dict[str, Any]
     evidence_status: Literal["complete", "partial"]
     import_kind: Literal[
         "source_file", "computed", "type", "namespace", "static_member",
@@ -133,8 +121,6 @@ class ImportResolutionOccurrence(BaseModel):
                 or value_range.end > self.range.end
             ):
                 raise ValueError(f"{name} range must be a nonempty statement subrange")
-        if self.presence.get("status") != self.presence_status:
-            raise ValueError("presence table value differs from presence_status")
         if self.evidence_version == "1.0.0" and self.outcome == "resolved":
             raise ValueError("legacy import evidence cannot authorize resolution")
         if self.presence_status != "active" and self.outcome == "resolved":
@@ -211,14 +197,12 @@ def build_import_resolution_ledger(
                 "entry_ordinal": expected_entry_ordinal,
                 "evidence_version": ref.get("evidence_version"),
                 "source_id": ref.get("source_id"),
-                "file": ref.get("file"),
                 "line": ref.get("line"),
                 "end_line": ref.get("end_line"),
                 "range": ref.get("range"),
                 "directive_kind": ref.get("directive_kind"),
                 "grammar_rule": ref.get("grammar_rule"),
                 "presence_status": ref.get("presence_status"),
-                "presence": dict(ref.get("presence") or {}),
                 "evidence_status": ref.get("evidence_status"),
                 "import_kind": entry.get("import_kind"),
                 "target_kind": entry.get("target_kind"),
@@ -352,100 +336,3 @@ def validate_import_resolution_summary(value: Any) -> dict[str, Any]:
         "by_reason": dict(sorted(by_reason.items())),
         "sha256": digest,
     }
-
-
-def import_resolution_storage_item(row: Mapping[str, Any]) -> dict[str, Any]:
-    occurrence = ImportResolutionOccurrence.model_validate(row)
-    value = occurrence.as_dict()
-    return {
-        "id": import_occurrence_node_id(
-            occurrence.import_id, occurrence.entry_ordinal,
-        ),
-        "occurrence_id": occurrence.occurrence_id,
-        "import_id": occurrence.import_id,
-        "ordinal": occurrence.ordinal,
-        "entry_ordinal": occurrence.entry_ordinal,
-        "evidence_version": occurrence.evidence_version,
-        "source_id": occurrence.source_id,
-        "file": occurrence.file,
-        "line": occurrence.line,
-        "end_line": occurrence.end_line,
-        "range_char_offset": occurrence.range.char_offset,
-        "range_char_length": occurrence.range.char_length,
-        "directive_kind": occurrence.directive_kind,
-        "grammar_rule": occurrence.grammar_rule,
-        "presence_status": occurrence.presence_status,
-        "presence_json": _canonical_json(occurrence.presence),
-        "evidence_status": occurrence.evidence_status,
-        "import_kind": occurrence.import_kind,
-        "target_kind": occurrence.target_kind,
-        "target": occurrence.target,
-        "target_range_char_offset": occurrence.target_range.char_offset,
-        "target_range_char_length": occurrence.target_range.char_length,
-        "path_components": list(occurrence.path_components),
-        "path_component_ranges_json": _canonical_json(
-            value["path_component_ranges"]
-        ),
-        "member": occurrence.member or "",
-        "member_range_json": _canonical_json(value["member_range"]),
-        "alias": occurrence.alias or "",
-        "alias_range_json": _canonical_json(value["alias_range"]),
-        "relative_level": occurrence.relative_level,
-        "wildcard": occurrence.wildcard,
-        "locality": occurrence.locality,
-        "outcome": occurrence.outcome,
-        "reason": occurrence.reason,
-        "resolved_module_ids": list(occurrence.resolved_module_ids),
-    }
-
-
-def import_resolution_from_storage(properties: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        presence = json.loads(str(properties.get("presence_json") or "{}"))
-        component_ranges = json.loads(
-            str(properties.get("path_component_ranges_json") or "[]")
-        )
-        member_range = json.loads(str(properties.get("member_range_json") or "null"))
-        alias_range = json.loads(str(properties.get("alias_range_json") or "null"))
-    except json.JSONDecodeError as error:
-        raise ValueError("invalid persisted import occurrence JSON") from error
-    row = {
-        "occurrence_id": properties.get("occurrence_id"),
-        "import_id": properties.get("import_id"),
-        "ordinal": properties.get("ordinal"),
-        "entry_ordinal": properties.get("entry_ordinal"),
-        "evidence_version": properties.get("evidence_version"),
-        "source_id": properties.get("source_id"),
-        "file": properties.get("file"),
-        "line": properties.get("line"),
-        "end_line": properties.get("end_line"),
-        "range": {
-            "char_offset": properties.get("range_char_offset"),
-            "char_length": properties.get("range_char_length"),
-        },
-        "directive_kind": properties.get("directive_kind"),
-        "grammar_rule": properties.get("grammar_rule"),
-        "presence_status": properties.get("presence_status"),
-        "presence": presence,
-        "evidence_status": properties.get("evidence_status"),
-        "import_kind": properties.get("import_kind"),
-        "target_kind": properties.get("target_kind"),
-        "target": properties.get("target"),
-        "target_range": {
-            "char_offset": properties.get("target_range_char_offset"),
-            "char_length": properties.get("target_range_char_length"),
-        },
-        "path_components": list(properties.get("path_components") or []),
-        "path_component_ranges": component_ranges,
-        "member": properties.get("member") or None,
-        "member_range": member_range,
-        "alias": properties.get("alias") or None,
-        "alias_range": alias_range,
-        "relative_level": properties.get("relative_level"),
-        "wildcard": properties.get("wildcard"),
-        "locality": properties.get("locality"),
-        "outcome": properties.get("outcome"),
-        "reason": properties.get("reason") or "",
-        "resolved_module_ids": list(properties.get("resolved_module_ids") or []),
-    }
-    return ImportResolutionOccurrence.model_validate(row).as_dict()

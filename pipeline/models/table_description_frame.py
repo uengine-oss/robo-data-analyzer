@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, Union
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from pipeline.models.code_analysis_output import GroundedColumnDescription, TableDescription
 from pipeline.models.semantic_frame import (
@@ -16,8 +16,10 @@ from pipeline.models.semantic_frame import (
     StructuralTarget,
     evidence_id,
     normalize_semantic_frame_response,
+    profile_prompt_json,
     semantic_frame_response_model,
     slot_id,
+    slot_specs_json,
 )
 
 
@@ -39,12 +41,14 @@ def build_table_description_plans(
             "schema": str(table.get("schema") or ""),
             "name": str(table.get("name") or ""),
             "source_description": _source_description(table),
-            "sample_refs": [],
-            "direct_operations": list(evidence.get("direct_operations") or ()),
-            "usage_refs": [
-                str(item.get("source_id") or "")
+            "observed_operations": _observed_operations(evidence),
+            "usage_meanings": [
+                {
+                    "access": str(item.get("access_mode") or ""),
+                    "meaning": str(item.get("usage_summary") or "").strip(),
+                }
                 for item in evidence.get("table_usages") or ()
-                if item.get("source_id")
+                if str(item.get("usage_summary") or "").strip()
             ],
         },
     )
@@ -61,20 +65,78 @@ def build_table_description_plans(
                 "table_id": table_id,
                 "name": name,
                 "source_description": _source_description(column),
-                "usage_lines": sorted({
-                    int(line)
-                    for candidate in candidates
-                    for line in candidate.get("evidence_lines") or ()
-                    if int(line) > 0
-                }),
-                "ownership": sorted({
-                    str(candidate.get("ownership") or "")
-                    for candidate in candidates
-                    if candidate.get("ownership")
-                }),
+                "usage_evidence": _column_usage_evidence(candidates),
             },
         )
     return table_plan, column_plans
+
+
+def _observed_operations(evidence: dict) -> list[dict[str, str]]:
+    operations: list[dict[str, str]] = []
+    for item in evidence.get("direct_operations") or ():
+        operation = {
+            "access": str(item.get("relation") or ""),
+            "operation": str(item.get("dml_type") or ""),
+        }
+        if operation not in operations:
+            operations.append(operation)
+    return operations
+
+
+def _column_usage_evidence(candidates: list[dict]) -> list[dict]:
+    usages: list[dict] = []
+    for candidate in candidates:
+        item = {
+            "ownership": str(candidate.get("ownership") or ""),
+            "source": [
+                {
+                    "line": int(source.get("line") or 0),
+                    "text": str(
+                        source.get("focus_text") or source.get("text") or ""
+                    ),
+                }
+                for source in candidate.get("source_lines") or ()
+            ],
+        }
+        if item not in usages:
+            usages.append(item)
+    return usages
+
+
+def table_description_prompt_values(
+    table_id: str,
+    table_plan: tuple[StructuralProfile, tuple[SlotSpec, ...]],
+    column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
+) -> dict[str, str]:
+    """Serialize each table/column fact and slot assignment exactly once."""
+    table_profile, table_specs = table_plan
+    packet = {
+        "table": {
+            "structural_profile": json.loads(
+                profile_prompt_json(table_profile, table_specs)
+            ),
+            "applicable_slots": json.loads(slot_specs_json(table_specs)),
+        },
+        "columns": {
+            name: {
+                "structural_profile": json.loads(
+                    profile_prompt_json(profile, specs)
+                ),
+                "applicable_slots": json.loads(slot_specs_json(specs)),
+            }
+            for name, (profile, specs) in column_plans.items()
+        },
+    }
+    return {
+        # Kept outside the rendered prompt so tracing can locate this call.
+        "table_fqn": table_id,
+        "table_and_column_meaning_inputs": json.dumps(
+            packet,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
 
 
 def _source_description(item: dict) -> str:
@@ -136,47 +198,30 @@ def table_description_frame_response_model(
     table_plan: tuple[StructuralProfile, tuple[SlotSpec, ...]],
     column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> type[BaseModel]:
-    table = evidence.get("table") or {}
     fingerprint = hashlib.sha256(
         json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:12]
     table_wire = semantic_frame_response_model(table_plan[1])
-    column_models = []
-    for name, (_profile, specs) in column_plans.items():
+    column_fields = {}
+    for index, (name, (_profile, specs)) in enumerate(column_plans.items()):
         wire = semantic_frame_response_model(specs)
-        column_models.append(create_model(
-            f"ColumnFrameWire_{fingerprint}_{hashlib.sha256(name.encode()).hexdigest()[:8]}",
-            __config__=ConfigDict(extra="forbid"),
-            name=(Literal.__getitem__((name,)), Field(...)),
-            slots=(wire.model_fields["slots"].annotation, Field(...)),
-        ))
-    column_type = (
-        column_models[0] if len(column_models) == 1
-        else Union.__getitem__(tuple(column_models)) if column_models
-        else dict[str, object]
+        field_name = f"column_{index}"
+        column_fields[field_name] = (
+            wire,
+            Field(..., alias=name),
+        )
+    columns_wire = create_model(
+        f"AssignedColumnFrameMap_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        **column_fields,
     )
-    expected = frozenset(column_plans)
-
-    def _exact_columns(self):
-        names = [column.name for column in self.columns]
-        if len(names) != len(set(names)) or set(names) != expected:
-            raise ValueError(f"columns must match DDL allowlist exactly: {sorted(expected)!r}")
-        return self
-
-    validator = model_validator(mode="after")(_exact_columns)
-    return create_model(
+    model = create_model(
         f"TableFrameWire_{fingerprint}",
-        __config__=ConfigDict(populate_by_name=True, extra="forbid"),
-        db=(Literal.__getitem__((str(table.get("db") or ""),)), Field(...)),
-        schema_=(Literal.__getitem__((str(table.get("schema") or ""),)), Field(..., alias="schema")),
-        name=(Literal.__getitem__((str(table.get("name") or ""),)), Field(...)),
+        __config__=ConfigDict(extra="forbid"),
         slots=(table_wire.model_fields["slots"].annotation, Field(...)),
-        columns=(
-            list[column_type],
-            Field(..., min_length=len(expected), max_length=len(expected)),
-        ),
-        __validators__={"_exact_columns": validator},
+        columns=(columns_wire, Field(...)),
     )
+    return model
 
 
 def normalize_table_description_frame_response(
@@ -185,12 +230,22 @@ def normalize_table_description_frame_response(
     column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> TableDescription:
     table_frame = normalize_semantic_frame_response(output, *table_plan)
-    column_frames = {
-        column.name: normalize_semantic_frame_response(
-            column, *column_plans[column.name],
-        )
-        for column in output.columns
+    column_bindings = {
+        name: f"column_{index}"
+        for index, name in enumerate(column_plans)
     }
+    column_frames = {
+        name: normalize_semantic_frame_response(
+            getattr(output.columns, column_bindings[name]), *column_plans[name],
+        )
+        for name in column_plans
+    }
+    table_facts = tuple(
+        fact for fact in table_plan[0].evidence.values() if fact.kind == "TABLE"
+    )
+    if len(table_facts) != 1:
+        raise ValueError("table semantic plan must contain exactly one TABLE fact")
+    table_identity = table_facts[0].attributes
     table_values = _project_entity(table_frame)
     columns = []
     for name in column_plans:
@@ -201,9 +256,9 @@ def normalize_table_description_frame_response(
             semantic_frame=column_frames[name],
         ))
     return TableDescription(
-        db=output.db,
-        schema=output.schema_,
-        name=output.name,
+        db=str(table_identity.get("db") or ""),
+        schema=str(table_identity.get("schema") or ""),
+        name=str(table_identity.get("name") or ""),
         **table_values,
         columns=columns,
         semantic_frame=table_frame,
@@ -221,15 +276,34 @@ def _project_entity(frame: SemanticFrame) -> dict:
     ))
     if all(slot.status == "sufficient" for slot in slots):
         status = "sufficient"
-    elif all(slot.status == "insufficient" for slot in slots):
-        status = "insufficient"
+        logical_name = _sufficient_slot_meaning(
+            display,
+            expected_role="DISPLAY_NAME",
+        )
+        analyzed_description = _sufficient_slot_meaning(
+            description,
+            expected_role="DESCRIPTION",
+        )
     else:
-        status = "partial"
+        status = "insufficient"
+        logical_name = ""
+        analyzed_description = ""
         if not missing:
-            missing = ["one or more semantic slots are incomplete"]
+            raise ValueError("incomplete table meaning slots lack missing context")
     return {
-        "logical_name": display.meaning,
-        "description": description.meaning,
+        "logical_name": logical_name,
+        "description": analyzed_description,
         "evidence_status": status,
         "missing_context": missing,
     }
+
+
+def _sufficient_slot_meaning(slot, *, expected_role: str) -> str:
+    """Project one named semantic obligation without borrowing a sibling field."""
+    if slot.role != expected_role or slot.status != "sufficient":
+        raise ValueError(
+            f"cannot project {expected_role} from {slot.role}/{slot.status}"
+        )
+    if not isinstance(slot.meaning, str) or not slot.meaning.strip():
+        raise ValueError(f"sufficient {expected_role} slot has no meaning")
+    return slot.meaning

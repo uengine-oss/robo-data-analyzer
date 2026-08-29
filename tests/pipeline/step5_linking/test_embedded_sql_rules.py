@@ -79,8 +79,8 @@ class EmbeddedSqlLinkTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(outcome.edges, [])
 
-    async def test_dictionary_miss_counts_contradiction(self):
-        """블록 SQL 이 단어장 밖 이름이면 엣지 대신 모순 계수 (spec 114 공유)."""
+    async def test_unknown_table_counts_as_unresolved_table_name(self):
+        """현재 업로드 DDL에 없는 이름은 로컬 미해소로 계수한다."""
         outcome = await self._link(
             "prog.pc",
             "EXEC SQL SELECT A FROM NOT_A_TABLE;\n",
@@ -88,7 +88,7 @@ class EmbeddedSqlLinkTest(unittest.IsolatedAsyncioTestCase):
             EmbeddedSqlRule(id="proc", delimiter_start="EXEC SQL", delimiter_end=";"),
         )
         self.assertEqual(outcome.edges, [])
-        self.assertEqual(outcome.dict_misses, 1)
+        self.assertEqual(outcome.unresolved_table_names, 1)
 
     async def test_cobol_commented_exec_sql_is_not_linked(self):
         """고정형 7열·인라인 주석의 SQL은 실행 근거가 아니다."""

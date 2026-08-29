@@ -1,11 +1,13 @@
 """Step4 unknown-format learning and deterministic custom chunk application (spec 078).
 
 The Agent only proposes span-producing skills; a deterministic verifier gate
-decides.  A freshly proposed skill is promoted only when it also holds on
-held-out evidence the Agent never observed — another file of the group, or
-the hidden tail of a lone file — and every skill must reject negative decoys.
-Format groups are built from dominant line shapes, not filename extensions.
-Files that cannot be verified stay honestly ``unanalyzed`` — no partial chunks.
+decides.  A freshly proposed skill is persisted for later runs only when it
+also holds on a whole file the Agent never observed.  A lone file is still
+analyzed from its complete source for the current run, but its rule is not
+persisted without independent evidence.  Every skill must reject every known
+negative decoy.  Format groups are built from dominant line shapes, not
+filename extensions.  Files that cannot be verified stay honestly
+``unanalyzed`` — no partial records.
 """
 from __future__ import annotations
 
@@ -17,19 +19,16 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from graph.edges.external_links import upsert_external_edges
-from graph.nodes.external import upsert_external_nodes
-from graph.schema.graph_edges import HasChunk
-from graph.schema.graph_nodes import ExternalChunk, ProjectFile
 from shared.files.paths import resolve_within
 from agents.external import ExternalAgentRejected, run_external_agent
 from agents.runtime import AgentModelOutputError
 from agents.skills.catalog import EXTERNAL_SKILLS_DIR
-from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.graph_delta_stream import emit_message
 from pipeline.execution.quality_finding_log import record_analysis_findings
 from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 from pipeline.execution.step_config import step_config
-from pipeline.steps.step3_load_external.chunk_builder import build_source_chunks
+from pipeline.steps.step3_load_external.chunk_builder import build_source_records
 from pipeline.steps.step3_load_external.encoding_reader import TextDecodeError, read_text
 from pipeline.steps.step3_load_external.parsers.span_common import SemanticSpan, is_reference_key
 from pipeline.steps.step3_load_external.span_verifier import (
@@ -43,7 +42,6 @@ from pipeline.steps.step4_scan_project.external_skills import (
     apply_validated_external_skill,
     load_external_skills,
     persist_external_skill,
-    skill_matches_file,
     validate_external_skill,
 )
 from pipeline.steps.step4_scan_project.structure_miner import line_shape_profile
@@ -62,27 +60,19 @@ _BUILTIN_NEGATIVE_SAMPLES = (
 )
 
 
-# 파일 내 held-out 분할 기준: 검증 증거의 단위는 파일이 아니라 반복 레코드다.
-# 최소 반복 증거(비공백 20줄)와 유의미한 미관측 구간(비공백 5줄)이 있어야 하며,
-# 라인 경계로만 자른다. 기준 미달이면 분할하지 않는다(정직한 미분석 유지).
-_INTRA_MIN_LINES = 20
-_INTRA_MIN_HELD_OUT_LINES = 5
-_INTRA_TRAIN_RATIO = 0.7
-
-
 def _shape_groups(
-    files: list[ProjectFile], profiles: dict[str, frozenset],
-) -> list[tuple[set, list[ProjectFile]]]:
+    files: list[ExternalSourceFile], profiles: dict[str, frozenset],
+) -> list[tuple[set, list[ExternalSourceFile]]]:
     """같은 확장자 안에서 내용 모양이 겹치는 파일끼리 묶는다.
 
     "같은 확장자 = 같은 형식" 은 이름 기반 짐작이라 혼합 확장자에서 오분할을
     낳는다 — 지배적 줄 모양이 하나라도 겹칠 때만 같은 형식으로 본다. 겹침이
-    전무한 파일(자유서식 포함)은 단독 그룹이 되어 파일 내 held-out 경로를 탄다.
+    전무한 파일(자유서식 포함)은 단독 그룹이 되어 현재 실행 전용 검증 경로를 탄다.
     """
-    groups: list[tuple[set, list[ProjectFile]]] = []
+    groups: list[tuple[set, list[ExternalSourceFile]]] = []
     for file in files:
-        profile = set(profiles[file.id])
-        merged: tuple[set, list[ProjectFile]] | None = None
+        profile = set(profiles[file.source_file_id])
+        merged: tuple[set, list[ExternalSourceFile]] | None = None
         for group in groups:
             if profile & group[0]:
                 group[0].update(profile)
@@ -109,36 +99,53 @@ def _shape_groups(
     return groups
 
 
-def _intra_file_held_out(text: str) -> tuple[str, str] | None:
-    lines = text.splitlines(keepends=True)
-    if sum(1 for line in lines if line.strip()) < _INTRA_MIN_LINES:
-        return None
-    cut = int(len(lines) * _INTRA_TRAIN_RATIO)
-    train, held_out = "".join(lines[:cut]), "".join(lines[cut:])
-    if sum(1 for line in held_out.splitlines() if line.strip()) < _INTRA_MIN_HELD_OUT_LINES:
-        return None
-    return train, held_out
+def _shape_safe_negative_samples(
+    *,
+    unknown_files: list[ExternalSourceFile],
+    decoded: dict[str, str],
+    profiles: dict[str, frozenset],
+    member_ids: set[str],
+    group_profile: set,
+) -> list[str]:
+    """Return every complete, structurally disjoint file as a negative example."""
+    return [
+        decoded[other.source_file_id]
+        for other in unknown_files
+        if other.source_file_id in decoded
+        and other.source_file_id not in member_ids
+        and not (set(profiles[other.source_file_id]) & group_profile)
+    ]
 
 
-def _skill_chunks(
-    validated: ValidatedExternalSkill, file: ProjectFile, source: str,
-) -> tuple[list[ExternalChunk], list[HasChunk]]:
+def _skill_records(
+    validated: ValidatedExternalSkill,
+    source_file: ExternalSourceFile,
+    source: str,
+) -> list[ExternalSourceRecord]:
     """Re-slice proposed spans from the source and verify the invariants."""
-    spans = [
-        SemanticSpan(
+    spans: list[SemanticSpan] = []
+    for match in apply_validated_external_skill(validated, source):
+        # 검증된 custom key 는 이 포맷에서 코드가 레코드를 찾는 실제 주소다.
+        # 식별자 형태 게이트를 통과하지 못하면 원문 레코드는 보존하되 연결 후보로는
+        # 내보내지 않는다.
+        addressable_keys = (match.key,) if is_reference_key(match.key) else ()
+        spans.append(SemanticSpan(
             char_start=match.start,
             char_end=match.end,
-            # 어댑터 경로와 같은 식별자 형태 게이트 — 형태 미달 key 는 링킹 대상에서
-            # 제외한다 (청크는 유지). custom key 가 REFER_TO 오연결을 만들지 않게.
-            keys=(match.key,) if is_reference_key(match.key) else (),
+            keys=addressable_keys,
             semantic_kind="agent_segment",
             name=match.key,
-        )
-        for match in apply_validated_external_skill(validated, source)
-    ]
+            addressable_keys=addressable_keys,
+        ))
     verified = verify_spans(source, spans)
-    return build_source_chunks(
-        file_id=file.id, relpath=file.relpath, source=source, verified=verified)
+    return build_source_records(
+        file_id=source_file.source_file_id,
+        relpath=source_file.project_relative_path,
+        source=source,
+        verified=verified,
+        external_adapter_id=f"analyzer.external.skill.{validated.skill.name}",
+        external_adapter_version=validated.fingerprint,
+    )
 
 
 async def _learn_group_skill(
@@ -152,10 +159,11 @@ async def _learn_group_skill(
     skills_root: Path,
     loaded_skills: list[ExternalSkill],
 ) -> tuple[ValidatedExternalSkill | None, tuple[str, str] | None]:
-    """한 형식 그룹의 새 skill 학습 — Agent 제안 → held-out 게이트 → 저장.
+    """한 형식 그룹의 새 skill 학습 — Agent 제안 → 검증 → 조건부 저장.
 
     성공 시 (validated, None), 실패 시 (None, (reason, detail)) 로 호출부가 reject 한다.
-    승인 권한은 끝까지 결정론 게이트(held-out)에 있다.
+    승인 권한은 끝까지 결정론 게이트에 있다. 독립 파일이 있을 때만 재사용 skill로
+    저장하고, 단일 파일 제안은 그 파일 전문을 다시 검증한 현재 run에서만 사용한다.
     """
     run = cfg.get("run")
     cost_budget = cfg.get("cost_budget")
@@ -164,19 +172,16 @@ async def _learn_group_skill(
         raise RuntimeError(
             "unknown external format requires run/cost_budget/llm_semaphore/pause configurable"
         )
-    if len(samples) >= 2:
+    has_independent_held_out = len(samples) >= 2
+    if has_independent_held_out:
         # train 은 큰 파일부터 — 구조 증거가 많은 쪽을 관찰시키고 작은 쪽을 held-out 으로.
         ordered = sorted(samples, key=len, reverse=True)
         train_samples, held_out_samples = ordered[:-1], ordered[-1:]
     else:
-        # 파일이 1개뿐이면 파일 내부 반복으로 미관측 증거를 만든다: 앞부분만
-        # 관찰시키고 뒷부분(held-out)은 Agent 가 보지 못한다. 반복이 빈약해
-        # 분할이 성립하지 않으면 종전대로 정직하게 미분석.
-        split = _intra_file_held_out(samples[0])
-        if split is None:
-            return None, ("no_held_out_evidence",
-                          f"single {extension} file lacks enough repetition for intra-file held-out")
-        train_samples, held_out_samples = [split[0]], [split[1]]
+        # 한 파일을 임의 줄 수나 비율로 자르면 레코드 경계를 깨고 짧은 유효 파일을
+        # 건너뛴다. 전문을 제안·검증에 사용하되 독립 증거가 없으므로 저장하지 않는다.
+        train_samples = list(samples)
+        held_out_samples = list(samples)
 
     try:
         proposed = await run_external_agent(
@@ -192,13 +197,21 @@ async def _learn_group_skill(
         validated = validate_external_skill(
             proposed.skill, held_out_samples, negative_samples=negative_samples
         )
-        if extension:
+        if extension and has_independent_held_out:
             persist_external_skill(validated.skill, skills_root)
             loaded_skills.append(validated.skill)
         else:
-            # 확장자 없는 파일용 skill 은 재사용 근거(확장자)가 없어 저장하지
-            # 않는다 — 와일드카드 재사용은 형식 납치 위험이 더 크다. run 내에서만 사용.
-            log_info(_STEP, "extensionless_skill_in_run_only", skill=validated.skill.name)
+            reason = (
+                "extensionless"
+                if not extension
+                else "no_independent_held_out_file"
+            )
+            log_info(
+                _STEP,
+                "external_skill_in_run_only",
+                skill=validated.skill.name,
+                reason=reason,
+            )
         return validated, None
     except (ExternalAgentRejected, ExternalSkillValidationError, AgentModelOutputError) as error:
         status = "unavailable" if isinstance(error, AgentModelOutputError) else "rejected"
@@ -214,7 +227,7 @@ async def _learn_group_skill(
 
 async def scan_external_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     unknown_files = [
-        file for file in (state.get("project_files") or [])
+        file for file in (state.get("external_source_files") or [])
         if file.category == "unknown" and file.status == "unanalyzed"
     ]
     if not unknown_files:
@@ -227,7 +240,6 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
     root = Path(codebase.root).resolve()
     stream = cfg.get("stream")
     pause = cfg.get("pause")
-    neo = cfg.get("neo_client")
     skills_root: Path = EXTERNAL_SKILLS_DIR
     started = time.monotonic()
 
@@ -236,27 +248,38 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
             await pause.gate()
 
     decoded: dict[str, str] = {}
-    grouped: dict[str, list[ProjectFile]] = defaultdict(list)
-    undecodable: list[tuple[ProjectFile, str]] = []
+    grouped: dict[str, list[ExternalSourceFile]] = defaultdict(list)
+    undecodable: list[tuple[ExternalSourceFile, str]] = []
     for file in unknown_files:
-        path = resolve_within(root, file.relpath)
+        path = resolve_within(root, file.project_relative_path)
         try:
-            decoded[file.id] = read_text(path, source_cache).text
+            decoded[file.source_file_id] = read_text(path, source_cache).text
         except TextDecodeError as error:
             # 해독 불가 파일 하나가 run 전체를 죽이면 안 된다 — 그 파일만 정직 미분석.
             undecodable.append((file, str(error)))
             continue
-        grouped[file.ext or Path(file.relpath).suffix.lower()].append(file)
+        grouped[
+            file.extension or Path(file.project_relative_path).suffix.lower()
+        ].append(file)
 
     loaded_skills = load_external_skills(skills_root)
-    updated = {file.id: file for file in state.get("project_files") or []}
-    new_chunks: list[ExternalChunk] = []
-    new_edges: list[HasChunk] = []
+    updated = {
+        file.source_file_id: file
+        for file in state.get("external_source_files") or []
+    }
+    new_records: list[ExternalSourceRecord] = []
 
-    def reject(files: list[ProjectFile], reason: str, detail: str) -> None:
-        log_warning(_STEP, reason, detail, files=[file.relpath for file in files])
+    def reject(files: list[ExternalSourceFile], reason: str, detail: str) -> None:
+        log_warning(
+            _STEP,
+            reason,
+            detail,
+            files=[file.project_relative_path for file in files],
+        )
         for file in files:
-            updated[file.id] = replace(file, status="unanalyzed", reason=reason)
+            updated[file.source_file_id] = replace(
+                file, status="unanalyzed", disposition_reason=reason,
+            )
 
     profiles = {file_id: line_shape_profile(text) for file_id, text in decoded.items()}
     format_groups = [
@@ -270,36 +293,43 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
             reject([file], "undecodable_text", detail)
         for extension, group_profile, files in format_groups:
             await gate()
-            samples = [decoded[file.id] for file in files]
-            member_ids = {file.id for file in files}
+            samples = [decoded[file.source_file_id] for file in files]
+            member_ids = {file.source_file_id for file in files}
             # 미끼는 "다른 그룹" 파일 중 모양이 겹치지 않는 것만 — 같은 형식이 두
             # 확장자로 존재할 때 서로를 실격시키던 가정("다른 확장자=다른 형식")을
             # 내용 증거로 대체한다. 같은 확장자의 다른 모양 그룹은
             # 이제 정당한 미끼가 된다.
-            shape_safe_decoys = [
-                decoded[other.id][:20000]
-                for other in unknown_files
-                if other.id in decoded and other.id not in member_ids
-                and not (set(profiles[other.id]) & group_profile)
-            ][:6]
+            shape_safe_decoys = _shape_safe_negative_samples(
+                unknown_files=unknown_files,
+                decoded=decoded,
+                profiles=profiles,
+                member_ids=member_ids,
+                group_profile=group_profile,
+            )
             negative_samples = [*_BUILTIN_NEGATIVE_SAMPLES, *shape_safe_decoys]
-            matches = [
+            stored_candidates = [
                 skill for skill in loaded_skills
-                if any(skill_matches_file(skill, extension, decoded[file.id]) for file in files)
+                if extension.lower() in skill.extensions
             ]
-            if len(matches) > 1:
+            validated_candidates: list[ValidatedExternalSkill] = []
+            for skill in stored_candidates:
+                try:
+                    validated_candidates.append(validate_external_skill(
+                        skill, samples, negative_samples=negative_samples,
+                    ))
+                except ExternalSkillValidationError as error:
+                    log_warning(
+                        _STEP, "stored_skill_rejected", str(error), skill=skill.name,
+                    )
+            if len(validated_candidates) > 1:
                 reject(files, "pattern_rejected",
-                       f"multiple external skills match {extension}: {[s.name for s in matches]}")
+                       "multiple external skills validate for "
+                       f"{extension}: {[item.skill.name for item in validated_candidates]}")
                 continue
 
-            validated = None
-            if matches:
-                # 저장된 skill 은 이 파일들을 본 적이 없다 — 현재 파일 전체가 held-out 증거.
-                try:
-                    validated = validate_external_skill(
-                        matches[0], samples, negative_samples=negative_samples)
-                except ExternalSkillValidationError as error:
-                    log_warning(_STEP, "stored_skill_rejected", str(error), skill=matches[0].name)
+            validated = (
+                validated_candidates[0] if validated_candidates else None
+            )
 
             if validated is None:
                 validated, failure = await _learn_group_skill(
@@ -317,47 +347,68 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     continue
 
             for file in files:
-                async with track_processing("ProjectFile", file.relpath, sub_action="custom_format"):
+                async with track_processing(
+                    "ExternalSourceFile",
+                    file.project_relative_path,
+                    sub_action="custom_format",
+                ):
                     try:
-                        chunks, edges = _skill_chunks(validated, file, decoded[file.id])
+                        records = _skill_records(
+                            validated, file, decoded[file.source_file_id],
+                        )
                     except (ExternalSkillValidationError, SpanVerificationError) as error:
-                        updated[file.id] = replace(file, reason="pattern_rejected")
-                        log_warning(_STEP, "pattern_rejected", str(error), file_path=file.relpath)
+                        updated[file.source_file_id] = replace(
+                            file, disposition_reason="pattern_rejected",
+                        )
+                        log_warning(
+                            _STEP,
+                            "pattern_rejected",
+                            str(error),
+                            file_path=file.project_relative_path,
+                        )
                         continue
-                    if not chunks:
-                        updated[file.id] = replace(file, reason="pattern_rejected")
+                    if not records:
+                        updated[file.source_file_id] = replace(
+                            file, disposition_reason="pattern_rejected",
+                        )
                         continue
-                    new_chunks.extend(chunks)
-                    new_edges.extend(edges)
-                    updated[file.id] = replace(file, category="custom", status="analyzed", reason="")
+                    new_records.extend(records)
+                    updated[file.source_file_id] = replace(
+                        file,
+                        category="custom",
+                        status="analyzed",
+                        disposition_reason="",
+                    )
 
     await gate()
-    project_files = [updated[file.id] for file in state.get("project_files") or []]
-    if neo is not None:
-        await upsert_external_nodes(neo, [*project_files, *new_chunks])
-        await upsert_external_edges(neo, new_edges)
-    await emit_nodes(stream, project_files)
-    await emit_nodes(stream, new_chunks)
-    await emit_edges(stream, new_edges)
+    source_files = [
+        updated[file.source_file_id]
+        for file in state.get("external_source_files") or []
+    ]
     await gate()
     analyzed_count = sum(
-        1 for file in unknown_files if updated[file.id].status == "analyzed")
+        1
+        for file in unknown_files
+        if updated[file.source_file_id].status == "analyzed"
+    )
     unanalyzed_count = len(unknown_files) - analyzed_count
     # 전건 거부여도 성공처럼 읽히지 않게 분석/미분석을 그대로 표기한다.
     emit_message(
         stream,
         f"외부 포맷 스캔 — 분석 {analyzed_count} · 미분석 {unanalyzed_count} · "
-        f"custom 청크 {len(new_chunks)}",
+        f"검증 레코드 {len(new_records)}",
     )
     log_info(
         _STEP,
         "done",
         unknown_files=len(unknown_files),
-        custom_chunks=len(new_chunks),
+        custom_source_records=len(new_records),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
     return {
-        "project_files": project_files,
-        "external_chunks": [*(state.get("external_chunks") or []), *new_chunks],
-        "external_edges": new_edges,
+        "external_source_files": source_files,
+        "external_source_records": [
+            *(state.get("external_source_records") or []),
+            *new_records,
+        ],
     }

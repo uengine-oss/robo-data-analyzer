@@ -104,6 +104,7 @@ class SourceAstClosureTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(("sample.c",), tuple(item.source_id for item in closure.artifacts))
+        self.assertEqual(_ast("sample.c"), closure.artifacts[0].ast_document)
         manifest = closure.as_dict()
         self.assertEqual(
             (1, 1, 1),
@@ -135,6 +136,50 @@ class SourceAstClosureTest(unittest.IsolatedAsyncioTestCase):
                 ast_root=analysis,
                 source_root=source,
                 source_cache=SourceFileCache(),
+            )
+
+    def test_explicit_partial_upload_closes_only_selected_source_ids(self) -> None:
+        temporary, source, analysis, diagnostics, _project = self._corpus()
+        self.addCleanup(temporary.cleanup)
+        for name in ("selected.c", "outside.c"):
+            payload = f"int {Path(name).stem}(void) {{ return 0; }}\n".encode()
+            (source / name).write_bytes(payload)
+            (analysis / f"{Path(name).stem}.json").write_text(
+                json.dumps(_ast(name)), encoding="utf-8",
+            )
+            (diagnostics / f"{name}.parse.json").write_text(
+                json.dumps(_diagnostic(name, payload)), encoding="utf-8",
+            )
+
+        closure = verify_source_ast_closure(
+            project_root=source,
+            ast_root=analysis,
+            source_root=source,
+            source_cache=SourceFileCache(),
+            selected_source_ids=("selected.c",),
+        )
+
+        self.assertEqual(
+            ("selected.c",),
+            tuple(item.source_id for item in closure.artifacts),
+        )
+        self.assertEqual(1, closure.as_dict()["expected_sources"])
+
+    def test_missing_selected_source_fails_instead_of_falling_back_to_all(self) -> None:
+        temporary, source, analysis, _diagnostics, _project = self._corpus()
+        self.addCleanup(temporary.cleanup)
+        (source / "outside.c").write_text("int outside;\n", encoding="utf-8")
+        (analysis / "outside.json").write_text(
+            json.dumps(_ast("outside.c")), encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "selected source file not found"):
+            verify_source_ast_closure(
+                project_root=source,
+                ast_root=analysis,
+                source_root=source,
+                source_cache=SourceFileCache(),
+                selected_source_ids=("missing.c",),
             )
 
     def test_invalid_utf8_source_is_not_silently_shortened(self) -> None:

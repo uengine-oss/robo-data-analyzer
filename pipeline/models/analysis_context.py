@@ -24,10 +24,14 @@
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
-from shared.files.source_excerpt import number_text
+from typing import TYPE_CHECKING, Any, Literal, Optional
+
+if TYPE_CHECKING:
+    from pipeline.models.data_object_usage import (
+        DataObjectUsageEvidence,
+        UnqualifiedIdentifierUsage,
+    )
 
 
 SymbolKind = Literal["global", "field", "local", "parameter", "constant"]
@@ -45,19 +49,6 @@ class ReferencedSymbolContext:
     value_semantics: str = ""
     initialization_sources: tuple[str, ...] = ()
 
-    def as_prompt_dict(self) -> dict:
-        return {
-            "relation": "TARGET_REFERENCES_DEFINITION",
-            "id": self.id,
-            "name": self.name,
-            "kind": self.kind,
-            "data_type": self.data_type,
-            "declared_value": self.declared_value,
-            "value_semantics": self.value_semantics,
-            "initialization_sources": list(self.initialization_sources),
-        }
-
-
 @dataclass(frozen=True)
 class ExternalEvidenceContext:
     """One REFER_TO-linked external chunk, included whole or not at all (spec 078)."""
@@ -71,40 +62,6 @@ class ExternalEvidenceContext:
     start_line: int
     end_line: int
     content_hash: str
-
-    def as_exact_prompt_dict(self) -> dict:
-        """Return the reversible external source packet used by semantic calls."""
-        return {
-            "relation": "TARGET_REFER_TO_EXTERNAL_CHUNK",
-            "id": self.id,
-            "file_path": self.file_path,
-            "matched_key": self.matched_key,
-            "semantic_kind": self.semantic_kind,
-            "provenance": self.provenance,
-            "text": self.text,
-            "start_line": self.start_line,
-            "end_line": self.end_line,
-            "coordinate_system": "absolute-file-line",
-            "evidence_scope": "linked-external-context",
-            "content_hash": self.content_hash,
-        }
-
-    def as_prompt_dict(self) -> dict:
-        return {
-            "relation": "TARGET_REFER_TO_EXTERNAL_CHUNK",
-            "id": self.id,
-            "file_path": self.file_path,
-            "matched_key": self.matched_key,
-            "semantic_kind": self.semantic_kind,
-            "provenance": self.provenance,
-            "numbered_text": number_text(self.text, self.start_line),
-            "start_line": self.start_line,
-            "end_line": self.end_line,
-            "coordinate_system": "absolute-file-line",
-            "evidence_scope": "linked-external-context",
-            "content_hash": self.content_hash,
-        }
-
 
 @dataclass
 class ControlSubtreeNode:
@@ -164,7 +121,7 @@ class CallOccurrenceFact:
     grammar_rule: str = ""
     callee_source: str = ""
     callee_kind: Literal["named", "constructor", "expression"] = "named"
-    context_role: Literal["condition", "effect", "non_active"] = "effect"
+    structural_role: Literal["condition", "effect"] = "effect"
     condition_fact_id: str | None = None
     presence_status: Literal["active", "inactive", "conditional", "unknown"] = (
         "active"
@@ -175,24 +132,6 @@ class CallOccurrenceFact:
     resolution_reason: str = ""
     callee_id: str = ""
     external_identity_key: str = ""
-
-
-def dump_referenced_symbols(symbols: tuple[ReferencedSymbolContext, ...]) -> str:
-    """Serialize the single prompt-input contract without delimiter parsing."""
-    return json.dumps(
-        [symbol.as_prompt_dict() for symbol in symbols],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-
-def dump_external_evidence(evidence: tuple[ExternalEvidenceContext, ...]) -> str:
-    """Serialize linked external facts without delimiter parsing or inferred labels."""
-    return json.dumps(
-        [item.as_prompt_dict() for item in evidence],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
 
 
 @dataclass
@@ -223,6 +162,10 @@ class AnalysisContext:
     writes: tuple[str, ...] = ()             # effective Table fqn 들
     direct_reads: tuple[str, ...] = ()       # exact-source READS Table fqn 들
     direct_writes: tuple[str, ...] = ()      # exact-source WRITES Table fqn 들
+    data_object_usages: tuple["DataObjectUsageEvidence", ...] = ()
+    unqualified_identifier_references: (
+        tuple["UnqualifiedIdentifierUsage", ...] | None
+    ) = None
     callers: tuple[str, ...] = ()            # caller id 들
     callees: tuple[str, ...] = ()            # callee id 들
 

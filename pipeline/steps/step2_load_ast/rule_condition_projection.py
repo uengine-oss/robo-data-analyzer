@@ -92,7 +92,11 @@ def build_routine_rule_condition_bundles(
         expressions = bundle["expressions"]
         if not isinstance(conditions, dict) or not isinstance(expressions, dict):
             raise RuleConditionOwnershipError("invalid internal condition bundle")
-        condition_ref = f"C{int(fact.get('start_line') or 0)}"
+        # Rule rows are anchored to the control node (``if``, ``switch``,
+        # ``case``), while a structural expression may start on a later line
+        # after whitespace or comments.  Use the shared control-node anchor so
+        # both projections identify the same condition without reparsing text.
+        condition_ref = f"C{int(node.start_line or 0)}"
         if condition_ref == "C0" or condition_ref in conditions:
             raise RuleConditionOwnershipError(
                 f"Rule condition coordinate is not unique: {condition_ref}"

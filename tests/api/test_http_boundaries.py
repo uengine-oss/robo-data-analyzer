@@ -1,10 +1,9 @@
 import json
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.requests import Request
 
 import api.analyze_router as analyze_router
@@ -41,47 +40,19 @@ class AnalyzerHttpBoundaryTest(unittest.IsolatedAsyncioTestCase):
             analyze_router.SETTINGS = original_settings
         self.assertEqual(raised.exception.status_code, 400)
 
-    async def test_analyze_ignores_legacy_input_paths(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            data_dir = Path(temporary_directory)
-            (data_dir / "source").mkdir()
-            (data_dir / "ddl").mkdir()
-            captured = {}
-
-            async def execute_run(*, strategy, codebase, stream):
-                captured["codebase"] = codebase
-                await stream.close()
-
-            original = (
-                analyze_router.SETTINGS,
-                analyze_router.get_pipeline,
-                analyze_router.execute_run,
+    async def test_analyze_rejects_removed_input_path_fields(self):
+        with self.assertRaises(ValidationError) as raised:
+            analyze_router.AnalyzeRequest(
+                strategy="framework",
+                project_root="C:/untrusted/source",
+                ddl_dir="C:/untrusted/ddl",
             )
-            analyze_router.SETTINGS = SimpleNamespace(
-                analysis_llm=SimpleNamespace(api_key="configured"),
-                analysis_data=SimpleNamespace(dir=data_dir),
-            )
-            analyze_router.get_pipeline = lambda name: SimpleNamespace(name=name)
-            analyze_router.execute_run = execute_run
-            try:
-                response = await analyze_router.analyze(
-                    analyze_router.AnalyzeRequest(
-                        strategy="framework",
-                        project_root="C:/untrusted/source",
-                        ddl_dir="C:/untrusted/ddl",
-                    ),
-                    _request(),
-                )
-                await _response_events(response)
-            finally:
-                (
-                    analyze_router.SETTINGS,
-                    analyze_router.get_pipeline,
-                    analyze_router.execute_run,
-                ) = original
-
-            self.assertEqual(captured["codebase"].root, data_dir / "source")
-            self.assertEqual(captured["codebase"].ddl_dir, data_dir / "ddl")
+        extra_fields = {
+            tuple(error["loc"])[-1]
+            for error in raised.exception.errors()
+            if error["type"] == "extra_forbidden"
+        }
+        self.assertEqual({"project_root", "ddl_dir"}, extra_fields)
 
     async def test_search_hides_unexpected_exception_details(self):
         def fail_search(*args, **kwargs):

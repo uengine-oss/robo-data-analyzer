@@ -21,7 +21,6 @@ PUBLIC_MODULES = (
     "graph.neo4j_client",
     "search.service",
     "search.query.rewrite",
-    "search.query.judge",
     "llm.client",
 )
 

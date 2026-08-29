@@ -52,10 +52,11 @@ def merge_query(label: str) -> str:
     """
     return f"""
 UNWIND $items AS item
-MERGE (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
+MERGE (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}', analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}})
 SET n:{label},
     n += item,
     n.graph_owner = '{ANALYZER_GRAPH_OWNER}',
+    n.analysis_scope_id = $analysis_scope_id,
     n.generation_id = $generation_id
 RETURN count(n) AS created
 """

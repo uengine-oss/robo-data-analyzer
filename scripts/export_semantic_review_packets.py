@@ -99,23 +99,17 @@ async def _export(args: argparse.Namespace) -> None:
             OPTIONAL MATCH (r)-[he:HAS_EXAMPLE]->(e:EXAMPLE {{generation_id: $generation_id}})
             RETURN n.id AS id, r.id AS occurrence_id,
                    coalesce(hr.ordinal, 0) AS rule_ordinal,
-                   r.anchor_line AS anchor_line, r.cond AS cond, r.then AS effects,
-                   r.nl AS nl, e.id AS example_id,
+                   r.anchor_line AS anchor_line,
+                   r.structural_condition AS structural_condition,
+                   r.structural_effects AS structural_effects,
+                   r.business_condition AS business_condition,
+                   r.business_effects AS business_effects,
+                   e.id AS example_id,
                    coalesce(he.ordinal, 0) AS example_ordinal,
-                   e.kind AS kind, e.given AS given, e.then AS example_effects
+                   e.kind AS kind,
+                   e.given_conditions AS given_conditions,
+                   e.expected_effects AS expected_effects
             ORDER BY id, rule_ordinal, occurrence_id, example_ordinal, example_id
-            """,
-            {"ids": function_ids},
-        )
-        question_records = await client.run_read_query(
-            f"""
-            MATCH (n:ANALYZER_OWNED)-[:HAS_QUESTION]->(q:QUESTION)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-              AND n.generation_id = $generation_id AND n.id IN $ids
-              AND q.generation_id = $generation_id
-            RETURN n.id AS id, q.id AS question_id, q.text AS text,
-                   q.reason AS reason
-            ORDER BY id, question_id
             """,
             {"ids": function_ids},
         )
@@ -141,11 +135,8 @@ async def _export(args: argparse.Namespace) -> None:
 
     code_by_id = {str(row["id"]): row for row in code_records}
     rules_by_id: dict[str, list[dict[str, Any]]] = {}
-    questions_by_id: dict[str, list[dict[str, Any]]] = {}
     for record in rule_records:
         rules_by_id.setdefault(str(record["id"]), []).append(record)
-    for record in question_records:
-        questions_by_id.setdefault(str(record["id"]), []).append(record)
     schema_by_id = {
         str(row["id"]): dict(row.get("props") or {}) for row in schema_records
     }
@@ -161,7 +152,6 @@ async def _export(args: argparse.Namespace) -> None:
             "summary(함수)": [],
             "RULE": [],
             "EXAMPLE": [],
-            "QUESTION": [],
         }
         for key, prop in (
             ("summary(함수)", "summary"),
@@ -174,37 +164,39 @@ async def _export(args: argparse.Namespace) -> None:
         for record in rules_by_id.get(func_id, []):
             occurrence_id = str(record["occurrence_id"])
             if occurrence_id not in seen_rules:
-                # 파이썬 leaf 계약: cond → then 이 규칙의 기계형 본문이다 (nl 은 표시 보조).
-                effects = ", ".join(str(s) for s in (record.get("effects") or []))
-                cond = str(record.get("cond") or "").strip() or "항상"
-                text = f"{cond} → {effects}"
-                nl = str(record.get("nl") or "").strip()
-                if nl:
-                    text += f" ({nl})"
+                structural_effects = ", ".join(
+                    str(s) for s in (record.get("structural_effects") or [])
+                )
+                structural_condition = (
+                    str(record.get("structural_condition") or "").strip() or "항상"
+                )
+                business_effects = ", ".join(
+                    str(s) for s in (record.get("business_effects") or [])
+                )
+                business_condition = (
+                    str(record.get("business_condition") or "").strip() or "미분석"
+                )
+                text = (
+                    f"구조: {structural_condition} → {structural_effects}; "
+                    f"업무 의미: {business_condition} → {business_effects}"
+                )
                 fields["RULE"].append(_text_item(f"RULE:{occurrence_id}", text))
                 seen_rules.add(occurrence_id)
             example_id = record.get("example_id")
             if example_id:
-                given = ", ".join(str(s) for s in (record.get("given") or []))
-                example_effects = ", ".join(
-                    str(s) for s in (record.get("example_effects") or [])
+                given_conditions = ", ".join(
+                    str(s) for s in (record.get("given_conditions") or [])
+                )
+                expected_effects = ", ".join(
+                    str(s) for s in (record.get("expected_effects") or [])
                 )
                 text = (
                     f"{str(record.get('kind') or '').strip()}: "
-                    f"given [{given}] then [{example_effects}]"
+                    f"조건 [{given_conditions}] 결과 [{expected_effects}]"
                 )
                 fields["EXAMPLE"].append(
                     _text_item(f"EXAMPLE:{example_id}", text)
                 )
-
-        for record in questions_by_id.get(func_id, []):
-            text = (
-                f"{str(record.get('text') or '').strip()} / "
-                f"{str(record.get('reason') or '').strip()}"
-            )
-            fields["QUESTION"].append(
-                _text_item(f"QUESTION:{record['question_id']}", text)
-            )
 
         actual_stereotype = str(current.get("stereotype") or "")
         output_hash = _canonical_hash(

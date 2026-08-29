@@ -1,7 +1,8 @@
-"""응답 캐시 계약 — 키는 보낸 것 전부, 실패는 미적중으로 강등 (spec 091)."""
+"""영속 응답 캐시 계약 — 봉인된 같은 실행환경과 같은 요청만 재사용한다."""
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import unittest
@@ -9,38 +10,117 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from llm import response_cache
+from llm.model_runtime_capabilities import load_model_runtime_capabilities
 
 
 class _Out(BaseModel):
     text: str = ""
 
 
-def _settings(root: Path, enabled: bool = True, max_mb: int = 512):
+def _runtime_document() -> dict:
+    return {
+        "sealed_model_runtime_capabilities": {
+            "runtime_kind": "self_hosted",
+            "provider_id": "internal",
+            "model_id": "test-model",
+            "model_revision": "weights-1",
+            "tokenizer_id": "test-tokenizer",
+            "tokenizer_revision": "vocab-1",
+            "quantization": "bf16",
+            "serving_runtime": {
+                "runtime_id": "test-serving",
+                "runtime_version": "1.0.0",
+                "runtime_config_sha256": "c" * 64,
+            },
+            "provider_hard_limits": {
+                "context_tokens": 32768,
+                "max_output_tokens": 8192,
+            },
+            "gpu_runtime_profile": {
+                "gpu_model": "test-gpu",
+                "gpu_count": 1,
+                "memory_bytes_per_gpu": 24 * 1024 * 1024 * 1024,
+                "driver_runtime_version": "driver-1",
+                "profile_version": "profile-1",
+            },
+        }
+    }
+
+
+def _settings(
+    root: Path,
+    enabled: bool = True,
+    max_mb: int = 512,
+    runtime_sha256: str | None = None,
+    runtime_ref: str | None = None,
+):
+    if runtime_sha256 is None:
+        runtime_path = root / "sealed-model-runtime.json"
+        runtime_path.write_text(
+            json.dumps(_runtime_document(), ensure_ascii=False), encoding="utf-8",
+        )
+        runtime_sha256 = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+        runtime_ref = str(runtime_path)
+    elif runtime_ref is None:
+        runtime_ref = ""
+    response_cache._runtime_ref_is_valid.cache_clear()
+    load_model_runtime_capabilities.cache_clear()
     return mock.patch.object(
         response_cache,
         "SETTINGS",
         SimpleNamespace(
-            analysis_llm=SimpleNamespace(response_cache=enabled, response_cache_max_mb=max_mb),
+            analysis_llm=SimpleNamespace(
+                response_cache=enabled,
+                response_cache_max_mb=max_mb,
+                model_runtime_capabilities_sha256=runtime_sha256,
+                model_runtime_capabilities_ref=runtime_ref,
+            ),
             analysis_data=SimpleNamespace(dir=root),
         ),
     )
 
 
-_BASE = dict(rule_name="code_summary", system_prompt="sys", user_content="본문",
-             model="m", max_tokens=100, structured_output_method="json_schema",
-             response_model=_Out)
+_BASE = dict(
+    rule_name="code_summary",
+    system_prompt="sys",
+    user_content="본문",
+    runtime_sha256="a" * 64,
+    provider="sglang",
+    api_base="https://llm.example/v1",
+    model="m",
+    max_tokens=100,
+    temperature=0.1,
+    top_p=0.9,
+    reasoning_effort="none",
+    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    repetition_guard=True,
+    structured_output_method="json_schema",
+    response_model=_Out,
+)
 
 
 class KeyTest(unittest.TestCase):
     def test_every_sent_field_changes_the_key(self):
         base = response_cache.make_key(**_BASE)
-        for field, other in (("system_prompt", "다름"), ("user_content", "다름"),
-                             ("model", "m2"), ("max_tokens", 200),
-                             ("structured_output_method", "function_calling"),
-                             ("rule_name", "other")):
+        for field, other in (
+            ("system_prompt", "다름"),
+            ("user_content", "다름"),
+            ("runtime_sha256", "b" * 64),
+            ("provider", "openai"),
+            ("api_base", "https://other.example/v1"),
+            ("model", "m2"),
+            ("max_tokens", 200),
+            ("temperature", 0.2),
+            ("top_p", 0.8),
+            ("reasoning_effort", "high"),
+            ("extra_body", {"top_k": 20}),
+            ("repetition_guard", False),
+            ("structured_output_method", "function_calling"),
+            ("rule_name", "other"),
+        ):
             self.assertNotEqual(base, response_cache.make_key(**{**_BASE, field: other}),
                                 f"{field} 가 바뀌었는데 키가 같다 — 낡은 답이 살아남는다")
 
@@ -54,6 +134,50 @@ class KeyTest(unittest.TestCase):
             response_cache.make_key(**{**_BASE, "response_model": first}),
             response_cache.make_key(**{**_BASE, "response_model": second}),
         )
+
+    def test_runtime_identity_must_be_a_sha256(self) -> None:
+        with self.assertRaisesRegex(ValueError, "runtime_sha256"):
+            response_cache.make_key(**{**_BASE, "runtime_sha256": "unsealed"})
+
+    def test_requested_cache_without_runtime_seal_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(
+            Path(tmp), enabled=True, runtime_sha256="",
+        ), mock.patch.object(
+            response_cache, "_UNSEALED_WARNING_EMITTED", False,
+        ), mock.patch.object(response_cache, "log_warning") as warning:
+            self.assertFalse(response_cache.is_enabled())
+            self.assertIsNone(response_cache.cache_root())
+            self.assertTrue(any(
+                call.args[1] == "cache_disabled_unsealed_runtime"
+                for call in warning.call_args_list
+            ))
+
+    def test_runtime_ref_hash_mismatch_disables_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_ref = Path(tmp) / "runtime.json"
+            runtime_ref.write_text('{"revision":"one"}', encoding="utf-8")
+            with _settings(
+                Path(tmp),
+                runtime_sha256="b" * 64,
+                runtime_ref=str(runtime_ref),
+            ), mock.patch.object(response_cache, "log_warning") as warning:
+                self.assertFalse(response_cache.is_enabled())
+            self.assertTrue(any(
+                call.args[1] == "cache_disabled_invalid_runtime_capabilities"
+                for call in warning.call_args_list
+            ))
+
+    def test_runtime_ref_is_read_once_per_process_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            runtime_ref = Path(
+                response_cache.SETTINGS.analysis_llm.model_runtime_capabilities_ref
+            )
+            self.assertTrue(response_cache.is_enabled())
+            runtime_ref.unlink()
+            self.assertTrue(
+                response_cache.is_enabled(),
+                "같은 ref/hash를 호출마다 다시 읽었다",
+            )
 
 
 class RoundTripTest(unittest.TestCase):
@@ -72,7 +196,27 @@ class RoundTripTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp), enabled=False):
             response_cache.store("k" * 64, _Out(text="x"))
             self.assertIsNone(response_cache.load("k" * 64, _Out))
-            self.assertEqual(list(Path(tmp).rglob("*.json")), [])
+            self.assertEqual(list((Path(tmp) / ".llm-cache").rglob("*.json")), [])
+
+
+    def test_model_with_validation_alias_round_trips(self):
+        aliased = create_model(
+            "AliasedOutput",
+            __config__=ConfigDict(extra="forbid"),
+            column_0=(str, Field(..., alias="comm_cd_id")),
+        )
+        with tempfile.TemporaryDirectory() as tmp, _settings(Path(tmp)):
+            key = "f" * 64
+            expected = aliased.model_validate({"comm_cd_id": "customer identifier"})
+            response_cache.store(key, expected)
+
+            self.assertEqual(response_cache.load(key, aliased), expected)
+            stored = json.loads(
+                (Path(tmp) / ".llm-cache" / key[:2] / f"{key}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(stored["value"], {"comm_cd_id": "customer identifier"})
 
 
 class DegradationTest(unittest.TestCase):

@@ -53,7 +53,7 @@ roles:
   internal:                  # Neo4j 노드 X — 분석 흐름 단서 (호출/import/파일컨테이너)
     java:    [FILE, FUNCTION_CALL, NEW_INSTANCE, IMPORT]
     c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
-    python:  [FUNCTION_CALL, NEW_INSTANCE, IMPORT]
+    python:  [FUNCTION_CALL, IMPORT]
   control_structure:         # 제어 흐름 의미 AST 뼈대 (spec 007, parser 007 emit).
                              # 그래프에 CodeNode 로 보존(기본 숨김)하되 routine 이 아니므로
                              # LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 폴백 분할용.
@@ -105,7 +105,8 @@ statement_effect_ops:
 # (spec 119).
 # rule 증거의 **호출 좌표**를 제공하는 CodeNode 라벨 (언어별).
 # framework 는 parser 가 FUNCTION_CALL 을 노드가 아닌 call_site 로 내보내 reader 가 좌표를
-# 싣지만, DBMS 는 `CALL` 이 실제 CodeNode 이고 CALLS 엣지는 CallLinker 가 그 노드에서 만든다
+# 싣지만, DBMS `CALL` CodeNode는 구조 표시용이다. CALLS는 Parser call fact를 언어 adapter와
+# 공통 resolution core가 분류한 결과에서만 만든다.
 # — 생산자를 둘로 만들지 않기 위해 reader 에 call_site 를 추가하지 않고 여기서 선언한다.
 # 이 표가 비면 그 언어는 이 경로를 쓰지 않는다는 뜻이다(framework 동작 불변).
 # 근거: rwis 의 CALL 59개가 효과 축에 없어 handler 20행·decision 일부가 `then` 을 만들 사실이
@@ -378,34 +379,6 @@ external_file_categories:
     suffixes: [md, markdown]
     exact_names: []
 
-# DBMS 플랫폼의 내장 패키지. 호출 텍스트의 식별자 한 세그먼트와 정확히
-# 일치할 때만 builtin 으로 분류한다. prefix 패턴은 application package 를
-# 조용히 버리므로 금지한다. dialect key 는 parser 지원 확장 시 독립 확장점이다.
-dbms_builtin_packages:
-  oracle:
-    - DBMS_APPLICATION_INFO
-    - DBMS_ASSERT
-    - DBMS_CRYPTO
-    - DBMS_LOB
-    - DBMS_LOCK
-    - DBMS_METADATA
-    - DBMS_OUTPUT
-    - DBMS_RANDOM
-    - DBMS_SCHEDULER
-    - DBMS_SESSION
-    - DBMS_SQL
-    - DBMS_STATS
-    - DBMS_UTILITY
-    - HTF
-    - HTP
-    - OWA_UTIL
-    - STANDARD
-    - UTL_FILE
-    - UTL_HTTP
-    - UTL_RAW
-    - UTL_SMTP
-    - UTL_TCP
-
 # ───────────────────────────────────────────────
 # 3. stereotype 풀 — analyze_function 의 SummaryOutput.stereotype 검증.
 #    LLM 이 자유롭게 작성 X. 이 풀에서만 선택. 풀에 없으면 빈 문자열로 강제.
@@ -415,7 +388,7 @@ dbms_builtin_packages:
 #   priority       : 복수 정의가 동시에 성립할 때의 동점 해소 순서(상위 우선) —
 #                    프롬프트에 데이터로 주입된다({stereotype_priority}).
 #   write_forbidden: 결정론 쓰기(writes) 근거가 있는 함수에 붙을 수 없는 값 —
-#                    위반은 빈 값으로 강제하고 표면화한다(사람 검토).
+#                    위반은 Unclassified로 닫고 finding으로 표면화한다.
 stereotype_rules:
   priority: [Command, Adapter, Query, Validator, Translator, Helper]
   write_forbidden: [Query, DataQuery, MetadataLookup]
@@ -439,6 +412,7 @@ framework:
   Util: 도메인 정책과 외부 I/O 없이 여러 곳에서 재사용 가능한 저수준 원시 연산을 수행한다.
   Controller: HTTP·RPC·API 같은 외부 요청의 진입점에서 입력과 응답 흐름을 조정한다.
   Initializer: 시작·로딩 시점에 한 번 수행되는 설정이나 상태 구성을 책임진다.
+  Unclassified: 현재 근거로 위 역할 중 하나를 모순 없이 확정할 수 없다.
 
 dbms:
   # PL/SQL 전용
@@ -454,6 +428,7 @@ dbms:
   CursorLooper: 커서나 결과 집합을 순회하며 행별 처리를 수행한다.
   PackageInitializer: 패키지 로딩 시 한 번 수행되는 상태나 설정 구성을 책임진다.
   Helper: 상위 프로시저 흐름에 종속된 좁은 보조 단계를 수행한다.
+  Unclassified: 현재 근거로 위 역할 중 하나를 모순 없이 확정할 수 없다.
 
 # 모듈·파일·클래스 종합 역할. 함수 역할과 의미 축이 다르므로 별도 폐쇄 목록이지만,
 # prompt와 parser가 이 파일 하나를 함께 읽는다.

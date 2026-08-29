@@ -10,13 +10,10 @@ from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_audit_artifact import build_rule_audit_record
 from scripts.judge_run import (
-    VAGUE,
     _ast_facts,
     _ddl_table_names,
     _ddl_axes,
-    _delivered_nl_quality,
     _graph_rule_structure_delta,
-    _reference_leak_count,
     _source_return_lines,
     load_gold_axes,
     load_rule_findings,
@@ -24,6 +21,7 @@ from scripts.judge_run import (
     load_rule_rows,
     trusted_rule_rows,
 )
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
 def _record(node_key: str, target_id: str, row_key: str) -> dict:
@@ -59,17 +57,25 @@ def _record(node_key: str, target_id: str, row_key: str) -> dict:
 class JudgeRunDbmsIdentityTest(unittest.TestCase):
     def test_graph_rule_structure_delta_detects_missing_extra_and_changed_values(self) -> None:
         expected = {
-            ("code:a", "R1"): {"cond": 'F("ready")', "then": ['call("go")'], "nl": ""},
-            ("code:a", "R2"): {"cond": None, "then": [], "nl": ""},
+            ("code:a", "R1"): {
+                "structural_condition": 'F("ready")',
+                "structural_effects": ['call("go", None, [])'],
+            },
+            ("code:a", "R2"): {
+                "structural_condition": None,
+                "structural_effects": [],
+            },
         }
         graph = [
             {
                 "target_id": "code:a", "anchor_line": 1,
-                "cond": 'F("wrong")', "effects": ['call("go")'], "nl": "",
+                "structural_condition": 'F("wrong")',
+                "structural_effects": ['call("go", None, [])'],
             },
             {
                 "target_id": "code:a", "anchor_line": 3,
-                "cond": None, "effects": [], "nl": "",
+                "structural_condition": None,
+                "structural_effects": [],
             },
         ]
 
@@ -101,7 +107,7 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
                 ),),
                 "c",
                 statements=(),
-                call_lines=((1, "approve"),),
+                call_occurrences=parser_call_occurrences(((1, "approve"),)),
             )
             record = build_rule_audit_record(routine, inventory)
             (artifact_dir / "validate.json").write_text(
@@ -110,9 +116,14 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
 
             self.assertEqual({(target_id, "R1")}, load_rule_obligations(run_dir))
             rows = load_rule_rows(run_dir)
-            self.assertEqual('F("amount > 0")', rows[(target_id, "R1")]["cond"])
-            self.assertEqual(['call("approve")'], rows[(target_id, "R1")]["then"])
-            self.assertEqual("", rows[(target_id, "R1")]["nl"])
+            self.assertEqual(
+                'F("amount > 0")',
+                rows[(target_id, "R1")]["structural_condition"],
+            )
+            self.assertEqual(
+                ['call("approve", None, [])'],
+                rows[(target_id, "R1")]["structural_effects"],
+            )
 
     def test_dbms_row_owner_and_scoped_finding_drive_trusted_graph_expectation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -166,7 +177,8 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
             inventory = build_inventory(
                 "if (ready) { approve(); }",
                 (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
-                "sql", call_lines=((1, "approve"),), statements=(),
+                "sql", call_occurrences=parser_call_occurrences(((1, "approve"),)),
+                statements=(),
             )
             record = build_rule_audit_record(routine, inventory)
             record.pop("row_owners")
@@ -197,53 +209,6 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
                 ({"orders", "order_item"}, {("orders", "id"), ("order_item", "id")}),
                 _ddl_axes(Path(temp)),
             )
-
-    def test_delivered_graph_narrative_uses_matching_row_evidence(self) -> None:
-        evidence = {(
-            "code:payment:update_order_paid", "R538",
-        ): {
-            "when": ["!C471", "!C527"], "direct": ["E1", "E2"],
-            "nl": "raw C471 C527 E1 E2",
-        }}
-        quality = _delivered_nl_quality([{
-            "target_id": "code:payment:update_order_paid",
-            "anchor_line": 538,
-            "nl": "두 결제 조건이 모두 성립하지 않으면 감사 로그를 기록한다.",
-        }], evidence)
-        self.assertEqual(1, quality["n"])
-        self.assertEqual(0, quality["leak"])
-        self.assertEqual(0, quality["unmatched"])
-
-    def test_complete_frame_projection_beyond_legacy_wire_limit_is_not_truncation(self) -> None:
-        evidence = {("code:payment:update_order_paid", "R538"): {
-            "when": [], "direct": [], "nl": "",
-        }}
-        quality = _delivered_nl_quality([{
-            "target_id": "code:payment:update_order_paid",
-            "anchor_line": 538,
-            "nl": "A" * 618,
-        }], evidence)
-        self.assertEqual(0, quality["at_limit"])
-
-    def test_concrete_condition_and_effect_narrative_is_not_vague(self) -> None:
-        narrative = "안전 재고 근접 조건이 성립하면 경고 로그와 감사 로그를 기록한다."
-        self.assertIsNone(VAGUE.search(narrative))
-
-    def test_business_codes_are_not_misclassified_as_prompt_reference_leaks(self) -> None:
-        row = {
-            "nl": "현재 상태가 송장(C3)이거나 완료(E5)이면 상태를 확인한다.",
-            "when": ["!C140", "C159"],
-            "direct": ["E2"],
-        }
-        self.assertEqual(0, _reference_leak_count(row))
-
-    def test_actual_exposed_reference_ids_are_counted(self) -> None:
-        row = {
-            "nl": "C159이면 E2를 실행한다.",
-            "when": ["!C140", "C159"],
-            "direct": ["E2"],
-        }
-        self.assertEqual(2, _reference_leak_count(row))
 
     def test_uppercase_sql_return_is_counted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -294,39 +259,6 @@ class JudgeRunDbmsIdentityTest(unittest.TestCase):
 
             self.assertEqual(2, len(load_rule_obligations(Path(temp))))
             self.assertEqual(2, len(load_rule_rows(Path(temp))))
-
-    def test_frame_only_response_keeps_prompt_evidence_for_graph_nl_judging(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            prompt_dir = Path(temp) / "llm-prompts"
-            prompt_dir.mkdir()
-            target_id = "code:order.c:validate"
-            evidence = {
-                "conditions": {"C10": "amount > 0"},
-                "effects": {"E1": {"op": "ret", "value": "RC_NRM"}},
-                "rows": {"R10": {"when": ["C10"], "direct": ["E1"]}},
-            }
-            record = {
-                "target_id": target_id,
-                "user_content": "rule_evidence_json:\n" + json.dumps(
-                    evidence, separators=(",", ":"),
-                ),
-                "response": {"parsed": {"slots": {
-                    "S0": {"meaning": "positive amount", "status": "sufficient",
-                           "missing_context": []},
-                }}},
-            }
-            (prompt_dir / "code_rules_examples.jsonl").write_text(
-                json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8",
-            )
-
-            rows = load_rule_rows(Path(temp))
-            self.assertEqual(["C10"], rows[(target_id, "R10")]["when"])
-            quality = _delivered_nl_quality([{
-                "target_id": target_id, "anchor_line": 10,
-                "nl": "amount가 0보다 크면 RC_NRM을 반환한다.",
-            }], rows)
-            self.assertEqual(1, quality["n"])
-            self.assertEqual(0, quality["unmatched"])
 
     def test_strict_function_rw_overrides_consolidated_relationships(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

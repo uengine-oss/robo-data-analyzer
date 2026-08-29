@@ -1,7 +1,8 @@
-"""분석 실행 프로필 로드·우선순위 해석·preflight 단일 진실.
+"""Load and validate one reusable Analyzer CLI input profile.
 
-프로필은 데이터 자체가 아니라 경로 참조다. 이 모듈은 환경변수를 쓰지 않고, 호출자가 넘긴
-명시 인자 > 프로필 > 기본값 순서만 적용한다. CLI와 CI가 같은 함수를 직접 사용한다.
+The profile contains paths and run inputs, never source contents. Explicit CLI
+arguments take precedence over the profile; the profile takes precedence over
+process defaults. Validation completes before a model call or graph write begins.
 """
 from __future__ import annotations
 
@@ -12,15 +13,26 @@ from typing import Any, Mapping
 
 import yaml
 
+from pipeline.models.analysis_meta import normalize_selected_source_ids
+
 
 _ALLOWED_KEYS = {
-    "name", "data_dir", "strategy", "neo4j_database", "locale", "run_output",
+    "name",
+    "data_dir",
+    "strategy",
+    "neo4j_database",
+    "locale",
+    "run_output",
+    "selected_source_ids",
+    "validation_baseline_ref",
+    "validation_baseline_sha256",
+    "validation_answer_key_ref",
+    "validation_answer_key_sha256",
 }
-_REQUIRED_KEYS = {
-    "data_dir", "strategy", "neo4j_database", "locale",
-}
+_REQUIRED_KEYS = {"data_dir", "strategy", "neo4j_database", "locale"}
 _STRATEGIES = {"framework", "dbms"}
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 @dataclass(frozen=True)
@@ -32,6 +44,11 @@ class AnalysisProfile:
     locale: str
     run_output: Path | None = None
     name: str | None = None
+    selected_source_ids: tuple[str, ...] = ()
+    validation_baseline_ref: Path | None = None
+    validation_baseline_sha256: str | None = None
+    validation_answer_key_ref: Path | None = None
+    validation_answer_key_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,11 @@ class ResolvedAnalysisInputs:
     locale: str
     run_output: Path
     profile_path: Path | None = None
+    selected_source_ids: tuple[str, ...] = ()
+    validation_baseline_ref: Path | None = None
+    validation_baseline_sha256: str | None = None
+    validation_answer_key_ref: Path | None = None
+    validation_answer_key_sha256: str | None = None
 
 
 def _nonblank_string(values: Mapping[str, Any], key: str) -> str:
@@ -74,7 +96,9 @@ def _validate_database(value: str) -> str:
 def _validate_locale(value: str) -> str:
     value = value.strip()
     if not _LOCALE.fullmatch(value):
-        raise ValueError(f"locale must be a language tag such as 'ko' or 'en-US'; got {value!r}")
+        raise ValueError(
+            f"locale must be a language tag such as 'ko' or 'en-US'; got {value!r}"
+        )
     return value
 
 
@@ -87,6 +111,27 @@ def _validate_output_path(path: Path) -> Path:
     if resolved.exists() and not resolved.is_dir():
         raise ValueError(f"run_output is not a directory: {resolved}")
     return resolved
+
+
+def _optional_validation_reference(
+    values: Mapping[str, Any], base: Path, stem: str,
+) -> tuple[Path | None, str | None]:
+    ref_key = f"{stem}_ref"
+    hash_key = f"{stem}_sha256"
+    raw_ref = values.get(ref_key)
+    raw_hash = values.get(hash_key)
+    if (raw_ref is None) != (raw_hash is None):
+        raise ValueError(f"{ref_key} and {hash_key} must be supplied together")
+    if raw_ref is None:
+        return None, None
+    if not isinstance(raw_ref, str) or not raw_ref.strip():
+        raise ValueError(f"analysis profile {ref_key!r} must be a non-blank string")
+    if not isinstance(raw_hash, str) or not _SHA256.fullmatch(raw_hash.strip()):
+        raise ValueError(f"analysis profile {hash_key!r} must be a SHA-256 hex digest")
+    path = _profile_path(base, raw_ref.strip())
+    if not path.is_file():
+        raise ValueError(f"validation reference file not found: {path}")
+    return path, raw_hash.strip().lower()
 
 
 def load_analysis_profile(path: Path) -> AnalysisProfile:
@@ -109,8 +154,16 @@ def load_analysis_profile(path: Path) -> AnalysisProfile:
 
     base = source_path.parent
     name_value = loaded.get("name")
-    if name_value is not None and (not isinstance(name_value, str) or not name_value.strip()):
+    if name_value is not None and (
+        not isinstance(name_value, str) or not name_value.strip()
+    ):
         raise ValueError("analysis profile 'name' must be a non-blank string when supplied")
+    baseline_ref, baseline_hash = _optional_validation_reference(
+        loaded, base, "validation_baseline",
+    )
+    answer_ref, answer_hash = _optional_validation_reference(
+        loaded, base, "validation_answer_key",
+    )
     return AnalysisProfile(
         source_path=source_path,
         name=name_value.strip() if isinstance(name_value, str) else None,
@@ -125,6 +178,13 @@ def load_analysis_profile(path: Path) -> AnalysisProfile:
             if "run_output" in loaded
             else None
         ),
+        selected_source_ids=normalize_selected_source_ids(
+            loaded.get("selected_source_ids") or ()
+        ),
+        validation_baseline_ref=baseline_ref,
+        validation_baseline_sha256=baseline_hash,
+        validation_answer_key_ref=answer_ref,
+        validation_answer_key_sha256=answer_hash,
     )
 
 
@@ -142,7 +202,7 @@ def resolve_analysis_inputs(
     default_run_output: Path,
     detected_strategy: str | None = None,
 ) -> ResolvedAnalysisInputs:
-    """명시 CLI > 프로필 > 기본값 순으로 해석하고, 외부 변경 전에 전부 검증한다."""
+    """Resolve explicit CLI > profile > defaults before any external mutation."""
     data_dir = (
         explicit_data_dir
         or (profile.data_dir if profile else None)
@@ -156,16 +216,13 @@ def resolve_analysis_inputs(
     if strategy is None:
         raise ValueError("strategy is unresolved; supply it or provide a detectable source tree")
     strategy = _validate_strategy(strategy)
-
     database = _validate_database(
         explicit_database
         or (profile.neo4j_database if profile else None)
         or default_database
     )
     locale = _validate_locale(
-        explicit_locale
-        or (profile.locale if profile else None)
-        or default_locale
+        explicit_locale or (profile.locale if profile else None) or default_locale
     )
     run_output = _validate_output_path(
         (
@@ -189,11 +246,22 @@ def resolve_analysis_inputs(
         locale=locale,
         run_output=run_output,
         profile_path=profile.source_path if profile else None,
+        selected_source_ids=profile.selected_source_ids if profile else (),
+        validation_baseline_ref=profile.validation_baseline_ref if profile else None,
+        validation_baseline_sha256=(
+            profile.validation_baseline_sha256 if profile else None
+        ),
+        validation_answer_key_ref=(
+            profile.validation_answer_key_ref if profile else None
+        ),
+        validation_answer_key_sha256=(
+            profile.validation_answer_key_sha256 if profile else None
+        ),
     )
 
 
 def preflight_lines(inputs: ResolvedAnalysisInputs) -> tuple[str, ...]:
-    """CLI와 CI가 동일한 resolved 계약을 사람이 읽을 수 있게 표시한다."""
+    """Render the resolved run contract used by both CLI output and tests."""
     return (
         f"profile: {inputs.profile_path or '(none)'}",
         f"data_dir: {inputs.data_dir}",
@@ -202,5 +270,8 @@ def preflight_lines(inputs: ResolvedAnalysisInputs) -> tuple[str, ...]:
         f"strategy: {inputs.strategy}",
         f"neo4j_database: {inputs.neo4j_database}",
         f"locale: {inputs.locale}",
+        f"selected_source_ids: {list(inputs.selected_source_ids)}",
+        f"validation_baseline: {inputs.validation_baseline_ref or '(none)'}",
+        f"validation_answer_key: {inputs.validation_answer_key_ref or '(none)'}",
         f"run_output: {inputs.run_output}",
     )

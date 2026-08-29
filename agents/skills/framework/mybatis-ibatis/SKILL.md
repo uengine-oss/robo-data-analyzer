@@ -50,7 +50,7 @@ ddl_transform:
   fallback_prefixes: []
 ```
 
-## codebase_notes 예시
+## 접근 의미
 
 > MyBatis XML mapper 기반. Mapper 인터페이스 메서드 ↔ XML statement 1:1.
 > namespace 가 Mapper FQN, id 가 메서드명.

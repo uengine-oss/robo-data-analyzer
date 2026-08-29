@@ -18,6 +18,8 @@ from typing import Any
 
 import yaml
 
+from shared.files.run_cache_context import read_run_text
+
 
 # llm/configs/ 위치 — loader와 configuration assets가 같은 책임 루트에 있다.
 _CONFIGS_DIR = Path(__file__).resolve().parent
@@ -134,7 +136,7 @@ def load_llm_config(name: str) -> LLMConfig:
         )
 
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(read_run_text(path, encoding="utf-8"))
     except yaml.YAMLError as e:
         raise RuntimeError(f"LLM config yaml 파싱 실패: {path}: {e}") from e
 

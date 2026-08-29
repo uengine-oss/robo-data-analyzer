@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from graph.node_upsert import merge_query
+from graph.publication_schema import PRODUCT_NODE_TYPES
 from graph.schema import constraints
 from pipeline.execution import run_executor
 from search.corpus import corpus, node_detail
@@ -16,15 +17,22 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
 
     def test_node_identity_is_generation_scoped(self) -> None:
         query = merge_query("FUNCTION")
+        self.assertIn("analysis_scope_id: $analysis_scope_id", query)
         self.assertIn("generation_id: $generation_id", query)
 
     def test_schema_uniqueness_is_generation_scoped(self) -> None:
         analyzer_constraints = "\n".join(constraints.CONSTRAINTS)
         self.assertIn(
-            "(n.graph_owner, n.generation_id, n.id) IS UNIQUE",
+            "(n.graph_owner, n.analysis_scope_id, n.generation_id, n.id) IS UNIQUE",
             analyzer_constraints,
         )
         self.assertNotIn("REQUIRE n.id IS UNIQUE", analyzer_constraints)
+        for label in PRODUCT_NODE_TYPES:
+            self.assertIn(
+                f"FOR (n:{label}) REQUIRE "
+                "(n.analysis_scope_id, n.generation_id, n.stable_id) IS UNIQUE",
+                analyzer_constraints,
+            )
 
     def test_legacy_schema_constraint_cannot_collapse_catalog_siblings(self) -> None:
         self.assertIn("schema_db_name", constraints.LEGACY_ID_CONSTRAINT_NAMES)
@@ -85,17 +93,23 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
                 if (
                     ("MATCH (" in line or "MERGE (" in line)
                     and "graph_owner" in line
-                    and "generation_id" not in line
+                    and (
+                        "analysis_scope_id" not in line
+                        or "generation_id" not in line
+                    )
                 ):
                     violations.append(f"{path.relative_to(self._ROOT)}:{line_number}")
         self.assertEqual([], violations)
 
-    def test_every_relationship_writer_records_generation(self) -> None:
+    def test_every_relationship_writer_records_scope_and_generation(self) -> None:
         violations: list[str] = []
         for path in sorted((self._ROOT / "graph" / "edges").glob("*.py")):
             source = path.read_text(encoding="utf-8")
             if "MERGE (" in source and "]->" in source:
-                if "generation_id = $generation_id" not in source:
+                if (
+                    "analysis_scope_id = $analysis_scope_id" not in source
+                    or "generation_id = $generation_id" not in source
+                ):
                     violations.append(str(path.relative_to(self._ROOT)))
         self.assertEqual([], violations)
 

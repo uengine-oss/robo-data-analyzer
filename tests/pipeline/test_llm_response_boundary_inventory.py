@@ -5,21 +5,34 @@ import unittest
 
 from pydantic import ValidationError
 
-from agents.contracts import ResidualPatternResult, ScanResult
+from agents.contracts import ResidualPatternResult, ScanProposal
+from graph.schema.graph_nodes import CodeNode
+from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import RuleItem
+from pipeline.models.data_object_usage import DataObjectUsageEvidence
+from pipeline.models.rule_meaning_frame import (
+    batch_rule_meaning_response_model,
+    rule_meaning_response_model,
+)
 from pipeline.models.summary_response_schema import (
-    batch_summary_response_model,
-    summary_response_model,
+    frame_summary_response_model,
+)
+from pipeline.models.semantic_frame import (
+    SlotSpec,
 )
 from pipeline.models.table_description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
-from pipeline.models.table_insight_response_schema import (
-    batch_table_insights_response_model,
-    table_insights_response_model,
+from pipeline.models.function_table_usage_response_schema import (
+    batch_function_table_usages_response_model,
+    function_table_usages_response_model,
 )
-from pipeline.steps.step4_scan_project.external_skills import ExternalSkill
+from pipeline.steps.step4_scan_project.external_skills import ExternalSkillProposal
+from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+    build_code_semantic_plan,
+    semantic_concern_slots,
+)
 
 
 def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) -> None:
@@ -33,15 +46,41 @@ def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) 
         case.assertFalse(variant.get("additionalProperties", True))
 
 
+def _table_usage_plan():
+    node = CodeNode(
+        id="code:orders", name="select_orders", signature="select_orders",
+        file_path="orders.sql", start_line=1, end_line=1, label="SELECT",
+    )
+    context = AnalysisContext(
+        id=node.id, signature=node.signature, file_path=node.file_path,
+        start_line=1, end_line=1,
+        reads=["db:orders"], direct_reads=["db:orders"],
+        data_object_usages=(DataObjectUsageEvidence(
+            source_id=node.id,
+            raw_reference="orders",
+            name="orders",
+            access="READ",
+            evidence_file=node.file_path,
+            evidence_line=1,
+            table_id="db:orders",
+            resolution="exact",
+        ),),
+        extra={
+            "ast_statements": (),
+        },
+    )
+    profile, specs = build_code_semantic_plan(node, context)
+    return profile, semantic_concern_slots(specs)["table_usage_meanings"]
+
+
 class LlmResponseBoundaryInventoryTest(unittest.TestCase):
     def test_non_semantic_simple_outputs_require_every_prompt_owned_key(self) -> None:
         boundaries = (
             (ResidualPatternResult, {
-                "table_access_patterns", "ddl_transform_override", "no_pattern_reason",
+                "table_access_patterns", "ddl_transform_override",
             }),
-            (ExternalSkill, {
-                "name", "extensions", "content_signatures", "rules",
-                "explanation", "provenance",
+            (ExternalSkillProposal, {
+                "name", "rules",
             }),
         )
         for model, required in boundaries:
@@ -56,36 +95,75 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         table_plan, column_plans = build_table_description_plans(
             "db:public.orders", table_evidence,
         )
+        summary_slots = (SlotSpec(
+            slot_id="SL:0123456789ab:FUNCTION:RESPONSIBILITY:root",
+            family="FUNCTION",
+            role="RESPONSIBILITY",
+            target_ref="EV:target",
+            evidence_refs=("EV:target",),
+        ),)
+        usage_profile, usage_slots = _table_usage_plan()
         boundaries = (
-            (summary_response_model("framework"), {"result"}),
-            (batch_summary_response_model(("1-2",), "dbms"), {"nodes"}),
-            (table_insights_response_model(("db:orders",), ()), {"table_insights"}),
-            (batch_table_insights_response_model({
-                "1-2": {"reads": ("db:orders",), "writes": (),
-                        "table_ops": {"db:orders": "SELECT"}},
+            (frame_summary_response_model("framework", summary_slots), {
+                "slots", "summary", "stereotype",
+            }),
+            (frame_summary_response_model("dbms", summary_slots), {
+                "slots", "summary", "stereotype",
+            }),
+            (function_table_usages_response_model(
+                usage_profile, usage_slots, ("db:orders",), (),
+            ), {"FT1"}),
+            (batch_function_table_usages_response_model({
+                "1-2": {
+                    "profile": usage_profile,
+                    "slot_specs": usage_slots,
+                    "reads": ("db:orders",),
+                    "writes": (),
+                },
             }), {"nodes"}),
             (table_description_frame_response_model(
                 table_evidence, table_plan, column_plans,
-            ), {"db", "schema", "name", "slots", "columns"}),
+            ), {"slots", "columns"}),
+            (rule_meaning_response_model(("C1",), ("E1",), ("R1",)), {
+                "conditions", "effects", "rows",
+            }),
+            (batch_rule_meaning_response_model({
+                "1-2": {
+                    "conditions": {"C1": "ready"},
+                    "effects": {"E1": {
+                        "op": "ret", "target": None, "value": "OK",
+                        "from_source": True,
+                    }},
+                    "rows": {"R1": {"when": ["C1"], "direct": ["E1"]}},
+                },
+            }), {"nodes"}),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
 
-    def test_rule_is_a_closed_deterministic_projection_not_an_llm_boundary(self) -> None:
-        valid = {"anchor_line": 7, "cond": 'F("ready")', "then": [], "nl": ""}
+    def test_final_rule_is_closed_and_not_a_direct_llm_response(self) -> None:
+        valid = {
+            "anchor_line": 7,
+            "structural_condition": 'F("ready")',
+            "structural_effects": [],
+        }
         RuleItem.model_validate(valid)
         with self.assertRaises(ValidationError):
-            RuleItem.model_validate({**valid, "nl": "근거 행의 업무 의미"})
+            RuleItem.model_validate({**valid, "retired_narrative": "근거 행의 업무 의미"})
         with self.assertRaises(ValidationError):
             RuleItem.model_validate({**valid, "business_meaning": "invented"})
 
     def test_matched_scan_omissions_are_explicit_deterministic_hydration(self) -> None:
-        schema = ScanResult.model_json_schema()
+        schema = ScanProposal.model_json_schema()
         self.assertFalse(schema["additionalProperties"])
-        self.assertTrue({"confidence", "evidence"}.issubset(schema["required"]))
+        self.assertEqual(["matched_skill"], schema["required"])
         self.assertNotIn("table_access_rules", schema["required"])
-        self.assertNotIn("codebase_notes", schema["required"])
+        self.assertNotIn("evidence", schema["properties"])
+        self.assertNotIn("evidence_locations", schema["properties"])
+        self.assertNotIn("confidence", schema["properties"])
+        self.assertNotIn("analysis_status", schema["properties"])
+        self.assertNotIn("no_match_reason", schema["properties"])
 
 
 if __name__ == "__main__":

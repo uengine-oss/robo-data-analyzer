@@ -28,9 +28,10 @@ class PromptSemanticInventoryTest(unittest.TestCase):
                 },
                 "rules": [{
                     "anchor_line": 1,
-                    "cond": 'F("ready")',
-                    "then": [],
-                    "nl": "",
+                    "structural_condition": 'F("ready")',
+                    "structural_effects": [],
+                    "business_condition": None,
+                    "business_effects": [],
                 }],
             }
             (directory / "validate.json").write_text(
@@ -41,7 +42,11 @@ class PromptSemanticInventoryTest(unittest.TestCase):
             evidence = _rule_evidence(run_dir)
 
         self.assertEqual(1, inventory["rule"]["outputs"])
-        self.assertEqual(1, inventory["rule"]["empty_nl"])
+        self.assertEqual(1, inventory["rule"]["empty_structural_effects"])
+        self.assertEqual(
+            1,
+            inventory["rule"]["structural_condition_without_business_condition"],
+        )
         self.assertEqual(
             {"code:order.c:validate::R-1"},
             set(evidence),
@@ -57,7 +62,6 @@ class PromptSemanticInventoryTest(unittest.TestCase):
                 "response": {"parsed": {"result": {
                     "summary": "전체 흐름", "stereotype": "Util",
                     "evidence_status": "sufficient", "missing_context": [],
-                    "questions": [],
                 }}},
             }
             table = {

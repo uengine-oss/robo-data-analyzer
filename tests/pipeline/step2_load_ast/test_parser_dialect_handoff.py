@@ -6,12 +6,11 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
-from pipeline.steps.step2_load_ast.evidence_ir import CommonEvidenceContractError
 from tests.pipeline.step2_load_ast.evidence_fixture import add_common_evidence
 
 
 class ParserDialectHandoffTest(unittest.TestCase):
-    def test_dbms_call_facts_fail_until_effective_code_node_consumer_exists(self) -> None:
+    def test_dbms_call_without_routine_scope_is_preserved_for_exact_once_accounting(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             source_text = "BEGIN work(); END;\n"
@@ -25,10 +24,15 @@ class ParserDialectHandoffTest(unittest.TestCase):
             artifact = root / "sample.json"
             artifact.write_text(json.dumps(raw), encoding="utf-8")
 
-            with self.assertRaisesRegex(
-                CommonEvidenceContractError, "DBMS call consumer is not implemented",
-            ):
-                read_antlr_json(artifact, root)
+            result = read_antlr_json(artifact, root)
+
+            self.assertEqual(1, len(result.call_sites))
+            self.assertEqual("", result.call_sites[0]["caller_id"])
+            self.assertEqual(
+                "unresolved_no_routine", result.call_sites[0]["owner_status"],
+            )
+            self.assertEqual("work", result.call_sites[0]["call_text"])
+            self.assertEqual("work()", result.call_sites[0]["call_source"])
 
     def test_dbms_nodes_receive_parser_owned_language_from_diagnostic(self) -> None:
         with TemporaryDirectory() as temp:

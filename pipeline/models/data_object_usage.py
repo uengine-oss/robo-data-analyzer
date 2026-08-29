@@ -2,18 +2,17 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from dataclasses import dataclass, replace
-from typing import Iterable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Iterable, Literal, Mapping, Sequence
 
-from pipeline.models.sql_identifier import sql_identifier_key
+if TYPE_CHECKING:
+    from pipeline.models.analysis_context import AnalysisContext
 
 
 Access = Literal["READ", "WRITE"]
 Resolution = Literal["unresolved", "exact"]
 Producer = Literal["parser_ast", "linked_edges"]
 DatabaseLinkRole = Literal["database", "domain", "connection_qualifier"]
-OBJECT_REFERENCE_ID_PREFIX = "object-ref:"
 
 
 @dataclass(frozen=True)
@@ -118,45 +117,6 @@ class DataObjectUsageEvidence:
         }
 
 
-def object_reference_id(datasource: str, usage: DataObjectUsageEvidence) -> str:
-    link_identity = tuple(
-        (component.role, sql_identifier_key(component.name, component.name_quoted))
-        for component in usage.database_link_components
-    )
-    if usage.database_link and not link_identity:
-        raise ValueError(
-            "database-link identity requires parser databaseLinkComponents"
-        )
-    object_identity = (
-        (
-            "v4",
-            datasource.strip().upper(),
-            sql_identifier_key(usage.catalog, usage.catalog_quoted),
-            sql_identifier_key(usage.schema, usage.schema_quoted),
-            sql_identifier_key(usage.name, usage.name_quoted),
-            link_identity,
-        )
-        if usage.catalog
-        else (
-            "v3",
-            datasource.strip().upper(),
-            sql_identifier_key(usage.schema, usage.schema_quoted),
-            sql_identifier_key(usage.name, usage.name_quoted),
-            link_identity,
-        )
-    )
-    identity = json.dumps(
-        object_identity,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return f"{OBJECT_REFERENCE_ID_PREFIX}{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
-
-
-def is_object_reference_id(value: str) -> bool:
-    return str(value).startswith(OBJECT_REFERENCE_ID_PREFIX)
-
-
 def usages_from_parser_ast(
     *,
     source_id: str,
@@ -238,16 +198,6 @@ def usages_from_parser_ast(
         ))
     unresolved = tuple(column for index, column in enumerate(columns) if index not in matched)
     return tuple(usages), unresolved
-
-
-def database_link_components_json(usage: DataObjectUsageEvidence) -> str:
-    if not usage.database_link_components:
-        return ""
-    return json.dumps(
-        [component.as_prompt_dict() for component in usage.database_link_components],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
 
 
 def _database_link_components(raw: object) -> tuple[DatabaseLinkComponentEvidence, ...]:
@@ -342,24 +292,19 @@ def usages_from_linked_tables(
     return tuple(result)
 
 
-def exact_direct_table_ids(context: object, access: Access) -> tuple[str, ...]:
-    """Return direct TABLE ids, excluding unresolved OBJECT_REFERENCE targets.
-
-    Production contexts always carry ``data_object_usages``. The narrow fallback preserves
-    older isolated tests and callers that construct AnalysisContext directly without running
-    build_context_step.
-    """
-    extra = getattr(context, "extra", {}) or {}
+def exact_direct_table_ids(
+    context: "AnalysisContext",
+    access: Access,
+) -> tuple[str, ...]:
+    """Return direct physical Table IDs confirmed by Analyzer resolution."""
     direct = (
-        tuple(getattr(context, "direct_reads", ()) or ())
+        context.direct_reads
         if access == "READ"
-        else tuple(getattr(context, "direct_writes", ()) or ())
+        else context.direct_writes
     )
-    if "data_object_usages" not in extra:
-        return direct
     confirmed = {
         usage.table_id
-        for usage in extra.get("data_object_usages") or ()
+        for usage in context.data_object_usages
         if usage.access == access and usage.resolution == "exact" and usage.table_id
     }
     return tuple(table_id for table_id in direct if table_id in confirmed)

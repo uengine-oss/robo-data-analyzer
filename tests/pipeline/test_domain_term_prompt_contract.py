@@ -8,7 +8,7 @@ from llm.runners.yaml_llm_runner import _load_rule
 ROOT = Path(__file__).resolve().parents[2]
 SUMMARY_CASES = (
     ("framework", "code_summary"),
-    ("dbms", "code_summary_batch"),
+    ("dbms", "code_summary_node"),
 )
 
 
@@ -30,13 +30,13 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 self.assertEqual(shared, rule["static_values"]["semantic_frame_contract"])
                 self.assertEqual(1, rule["user_template"].count("{semantic_frame_contract}"))
 
-    def test_summary_wire_is_slots_plus_stereotype_only(self) -> None:
+    def test_summary_wire_has_one_detail_map_and_one_whole_summary(self) -> None:
         for strategy, rule_name in SUMMARY_CASES:
             text = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)["user_template"]
             with self.subTest(strategy=strategy):
                 self.assertIn("`slots`", text)
                 self.assertIn("`stereotype`", text)
-                self.assertNotIn("`summary`", text)
+                self.assertIn("`summary`", text)
                 self.assertNotIn("`questions`", text)
                 self.assertNotIn("`domain_terms`", text)
 
@@ -51,15 +51,17 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(path.exists())
 
-    def test_frame_contract_forbids_identifier_and_ownership_invention(self) -> None:
+    def test_frame_contract_forbids_internal_identity_and_model_self_status(self) -> None:
         shared = (ROOT / "llm/prompts/common/semantic_frame_contract.md").read_text(
             encoding="utf-8",
         )
         for marker in (
-            "APPLICABLE_SLOTS", "evidence_refs", "missing_context",
-            "물리 식별자", "callee 내부", "조건 반전", "형제", "다른 table",
+            "applicable_slots_json", "evidence",
+            "식별자", "조건 극성", "형제", "소유 범위",
+            "의미 충분성은 모델이 판정하지 않는다",
         ):
             self.assertIn(marker, shared)
+        self.assertNotIn("`status`", shared)
 
     def test_function_summary_contract_closes_noop_and_complete_flow_roles(self) -> None:
         shared = (ROOT / "llm/prompts/common/function_summary_contract.md").read_text(
@@ -72,7 +74,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             "사용되지 않는 파라미터",
             "output-only",
             "즉시 상수 반환",
-            "호출자 문맥을 missing_context로 요구하지 않는다",
+            "호출자 문맥 부재를 이유로 낮추지 않는다",
         ):
             self.assertIn(marker, shared)
         for strategy, rule_name in SUMMARY_CASES:
@@ -93,15 +95,9 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 ROOT / "llm/prompts" / strategy, rule_name,
             ))
             with self.subTest(strategy=strategy):
-                if strategy == "framework":
-                    self.assertIn("source-closure/v1", text)
-                    self.assertIn("target_sha256", text)
-                    self.assertIn("JSON escape는 역변환 가능", text)
-                    self.assertNotIn("QUOTED_LITERAL value=", text)
-                else:
-                    self.assertIn("QUOTED_LITERAL value=", text)
-                    self.assertIn("결정론 투영", text)
-                    self.assertIn("절대 줄 좌표", text)
+                self.assertIn("절대 파일 줄번호 | 원문", text)
+                self.assertNotIn("target_sha256", text)
+                self.assertNotIn("QUOTED_LITERAL value=", text)
 
     def test_framework_stereotype_keeps_low_level_string_work_as_util(self) -> None:
         text = _load_rule(
@@ -116,9 +112,9 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
 
     def test_verified_transport_overrides_are_preserved(self) -> None:
         framework = _load_rule(ROOT / "llm/prompts/framework", "code_summary")
-        dbms = _load_rule(ROOT / "llm/prompts/dbms", "code_summary_batch")
+        dbms = _load_rule(ROOT / "llm/prompts/dbms", "code_summary_node")
         dbms_table = _load_rule(
-            ROOT / "llm/prompts/dbms", "code_table_insights_batch",
+            ROOT / "llm/prompts/dbms", "code_table_usage_meanings_batch",
         )
         self.assertEqual("function_calling", framework["structured_output_method"])
         self.assertIsNone(dbms["structured_output_method"])
@@ -127,9 +123,9 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
     def test_semantic_prompts_keep_task_contract_decision_and_input_order(self) -> None:
         cases = (
             ("framework", "code_summary"),
-            ("dbms", "code_summary_batch"),
-            ("framework", "code_table_insights"),
-            ("dbms", "code_table_insights_batch"),
+            ("dbms", "code_summary_node"),
+            ("framework", "code_table_usage_meanings"),
+            ("dbms", "code_table_usage_meanings_batch"),
             ("framework", "table_description"),
             ("dbms", "table_description"),
         )
@@ -161,19 +157,19 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ROOT / "llm/prompts/framework", "code_summary",
         ))
         table = self._expanded(_load_rule(
-            ROOT / "llm/prompts/framework", "code_table_insights",
+            ROOT / "llm/prompts/framework", "code_table_usage_meanings",
         ))
-        self.assertIn("effective_reads_json", summary)
-        self.assertIn("ASSIGNED CALL FACTS", summary)
-        self.assertIn("direct_reads_json", table)
-        self.assertIn("direct_data_object_usages_json", table)
-        self.assertNotIn("effective_reads_json", table)
-        self.assertNotIn("ASSIGNED CALL FACTS", table)
+        self.assertIn("linked_callee_outcomes_json", summary)
+        self.assertIn("linked_external_source_json", summary)
+        self.assertIn("linked_table_context_json", table)
+        self.assertNotIn("linked_table_context_json", summary)
+        self.assertNotIn("linked_callee_outcomes_json", table)
+        self.assertNotIn("linked_external_source_json", table)
 
     def test_column_meaning_is_deferred_to_final_table_frame(self) -> None:
         for strategy, name in (
-            ("framework", "code_table_insights"),
-            ("dbms", "code_table_insights_batch"),
+            ("framework", "code_table_usage_meanings"),
+            ("dbms", "code_table_usage_meanings_batch"),
         ):
             text = self._expanded(_load_rule(ROOT / "llm/prompts" / strategy, name))
             with self.subTest(strategy=strategy):
@@ -183,6 +179,27 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ROOT / "llm/prompts/framework", "table_description",
         ))
         self.assertIn("TABLE/COLUMN dynamic semantic slots", final_table)
+
+    def test_table_usage_prompts_match_the_meaning_only_response_schema(self) -> None:
+        cases = (
+            ("framework", "code_table_usage_meanings"),
+            ("dbms", "code_table_usage_meanings_batch"),
+        )
+        retired_response_wrappers = (
+            "`results`",
+            "mapped.function_table_usage_summary",
+            "insufficient.disposition_reason_code",
+            "semantic_not_derivable",
+        )
+        for strategy, name in cases:
+            text = self._expanded(_load_rule(
+                ROOT / "llm/prompts" / strategy, name,
+            ))
+            with self.subTest(strategy=strategy):
+                self.assertIn("FT key exact required map", text)
+                self.assertIn("빈 문자열", text)
+                for marker in retired_response_wrappers:
+                    self.assertNotIn(marker, text)
 
 
 if __name__ == "__main__":

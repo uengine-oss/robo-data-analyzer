@@ -4,11 +4,9 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from graph.schema.graph_edges import (
-    Calls, HasChunk, HasExample, HasRule, ReadsWrites, ReferTo, StatementNext,
+    Calls, HasExample, HasRule, ReadsWrites, StatementNext,
 )
-from graph.schema.graph_nodes import (
-    Example, ExternalChunk, ProjectFile, Question, Rule,
-)
+from graph.schema.graph_nodes import Example, Rule
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.execution.graph_delta_stream import emit_edges, emit_nodes
 
@@ -31,43 +29,6 @@ class _UnsupportedEdge:
 
 
 class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_external_nodes_have_exact_labels_and_display_properties(self) -> None:
-        stream = _CaptureStream()
-        nodes = [
-            ProjectFile("file:shop/a.dat", "a.dat", "shop", "a.dat", ".dat", "custom", "analyzed"),
-            ExternalChunk(
-                id="file:shop/a.yaml:chunk:0-23", name="first", keys=("first", "first.enabled"),
-                semantic_kind="yaml_entry", text="first:\n  enabled: true\n", file_path="a.yaml",
-                char_start=0, char_end=23, start_line=1, end_line=2,
-                provenance="source_span", source_hash="b" * 64, content_hash="a" * 64,
-            ),
-        ]
-        await emit_nodes(stream, nodes)
-        self.assertEqual([event["label"] for event in stream.events], [
-            "PROJECT_FILE", "EXTERNAL_CHUNK",
-        ])
-        self.assertEqual(stream.events[0]["props"]["status"], "analyzed")
-        self.assertEqual(stream.events[1]["props"]["semantic_kind"], "yaml_entry")
-        self.assertEqual(stream.events[1]["props"]["provenance"], "source_span")
-        self.assertEqual(stream.events[1]["props"]["text"], "first:\n  enabled: true\n")
-
-    async def test_external_edges_have_exact_wire_shapes(self) -> None:
-        stream = _CaptureStream()
-        edges = [
-            ReferTo("code:f", "file:chunk", matched_key="first.enabled",
-                    evidence_file="A.java", evidence_line=5, via_symbol="KEY"),
-            HasChunk("file:root", "file:chunk"),
-        ]
-        await emit_edges(stream, edges)
-        self.assertEqual([event["rel_type"] for event in stream.events], [
-            "REFER_TO", "HAS_CHUNK",
-        ])
-        self.assertEqual(stream.events[0]["props"], {
-            "matched_key": "first.enabled", "evidence_file": "A.java",
-            "evidence_line": 5, "via_symbol": "KEY",
-        })
-        self.assertEqual(stream.events[1]["props"], {})
-
     async def test_removed_coupled_domains_llm_field_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             RuleItem.model_validate({
@@ -98,34 +59,31 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
 
         await emit_nodes(stream, [
             Rule(
-                id="fn:1::R-19", rule_id="R-19", anchor_line=19,
-                cond='F("stock") == 0', then=('call("reject")',),
-                nl="", when="order(itf)",
+                id="fn:1::R-19", anchor_line=19,
+                structural_condition='F("stock") == 0',
+                structural_effects=('call("reject", None, [])',),
+                business_condition='meaning_when("stock == 0", "재고가 없다")',
+                business_effects=('meaning_call("reject", None, [], "주문을 거절한다")',),
             ),
             Example(
-                id="fn:1::R-19::E1", kind="satisfy",
-                given=('F("stock") == 0',), then=('call("reject")',),
+                id="fn:1::R-19::E1",
+                given_conditions=('F("stock") == 0',),
+                expected_effects=('call("reject", None, [])',),
             ),
-            Question(id="question:1", text="재입고 예정인가?", reason="판단 근거"),
         ])
         await emit_edges(stream, [HasRule("function:1", "fn:1::R-19")])
 
-        self.assertEqual([event["label"] for event in stream.events[:3]], [
-            "RULE", "EXAMPLE", "QUESTION",
+        self.assertEqual([event["label"] for event in stream.events[:2]], [
+            "RULE", "EXAMPLE",
         ])
-        # Rule prose is retired.  Neo4j keeps the empty compatibility property,
-        # while the live display delta intentionally omits empty properties.
         self.assertNotIn("nl", stream.events[0]["props"])
         self.assertEqual(stream.events[0]["props"]["anchor_line"], 19)
-        self.assertEqual(list(stream.events[0]["props"]["then"]), ['call("reject")'])
-        self.assertEqual(stream.events[1]["props"]["kind"], "satisfy")
-        self.assertEqual(stream.events[2]["props"]["reason"], "판단 근거")
-        self.assertEqual(stream.events[3]["props"], {})
-
-    async def test_rule_prose_never_enters_live_graph_delta(self) -> None:
-        stream = _CaptureStream()
-        await emit_nodes(stream, [Rule(id="rule:1", nl="retired narrative")])
-        self.assertNotIn("nl", stream.events[0]["props"])
+        self.assertEqual(
+            list(stream.events[0]["props"]["structural_effects"]),
+            ['call("reject", None, [])'],
+        )
+        self.assertNotIn("kind", stream.events[1]["props"])
+        self.assertEqual(stream.events[2]["props"], {"ordinal": 0})
 
     async def test_reads_properties_match_persisted_graph(self) -> None:
         stream = _CaptureStream()
@@ -147,7 +105,7 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
             "evidence_lines": [42],
         })
 
-    async def test_has_rule_occurrence_identity_is_streamed(self) -> None:
+    async def test_has_rule_streams_only_independent_ordinal(self) -> None:
         stream = _CaptureStream()
         await emit_edges(
             stream,
@@ -155,22 +113,16 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
                 HasRule(
                     "function:1",
                     "rule:1",
-                    occurrence_id="function:1::R0002",
                     ordinal=2,
-                    anchor_line=19,
                 )
             ],
         )
         self.assertEqual(
             stream.events[0]["props"],
-            {
-                "occurrence_id": "function:1::R0002",
-                "ordinal": 2,
-                "anchor_line": 19,
-            },
+            {"ordinal": 2},
         )
 
-    async def test_has_example_occurrence_identity_is_streamed(self) -> None:
+    async def test_has_example_streams_only_independent_ordinal(self) -> None:
         stream = _CaptureStream()
         await emit_edges(
             stream,
@@ -178,17 +130,13 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
                 HasExample(
                     source_id="rule:shared",
                     target_id="function:1::R0002::example:1",
-                    occurrence_id="function:1::R0002",
                     ordinal=1,
                 )
             ],
         )
         self.assertEqual(
             stream.events[-1]["props"],
-            {
-                "occurrence_id": "function:1::R0002",
-                "ordinal": 1,
-            },
+            {"ordinal": 1},
         )
 
     async def test_unsupported_and_blank_endpoint_edges_fail_closed(self) -> None:

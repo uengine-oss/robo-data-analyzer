@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import fnmatch
 from typing import Any, Iterable
 
 from graph.schema.graph_edges import Calls
@@ -26,7 +27,7 @@ class CallClassifyResult:
     preserved_inactive: int = 0
     unresolved_presence: int = 0
     unresolved_expression: int = 0
-    unresolved_owner: int = 0
+    missing_routine_owner_count: int = 0
     unresolved_preprocessing: int = 0
     unresolved_macro: int = 0
     wrapper_unresolved: int = 0
@@ -49,16 +50,22 @@ def classify_call_sites(
     preprocessing_contexts: Iterable[dict] = (),
     *,
     callable_facts: Iterable[dict] = (),
+    parameter_facts: Iterable[dict] = (),
+    binding_target_facts: Iterable[dict] = (),
+    scope_directive_facts: Iterable[dict] = (),
+    import_refs: Iterable[dict] = (),
     evidence_sources: Iterable[dict] = (),
     evidence_completeness: Iterable[dict] = (),
 ) -> CallClassifyResult:
     """Resolve every canonical call exactly once without name-only fallback.
 
-    ``code_nodes`` and ``framework_names`` remain accepted at the workflow boundary,
-    but neither is searched by spelling.  Definition targets come only from structural
-    callable facts already projected to exact CodeNode IDs.
+    Definition targets come only from structural callable facts already projected to
+    exact CodeNode IDs. Verified framework contract patterns may only exclude names
+    that do not collide with a workspace routine definition.
     """
-    del code_nodes, framework_names
+    framework_patterns = _validated_framework_patterns(
+        framework_names, code_nodes,
+    )
     wrapper_names = frozenset(
         str(item.get("wrapper") if isinstance(item, dict) else getattr(item, "wrapper", ""))
         for item in wrappers
@@ -71,9 +78,15 @@ def classify_call_sites(
         resolved = resolve_call_sites(
             sites,
             list(callable_facts),
+            list(parameter_facts),
+            list(binding_target_facts),
+            list(scope_directive_facts),
+            list(import_refs),
+            code_nodes,
             evidence_sources=evidence_sources,
             evidence_completeness=evidence_completeness,
             wrapper_names=wrapper_names,
+            framework_function_patterns=framework_patterns,
         )
         ledger = build_call_resolution_ledger(sites, resolved.outcomes)
     except (ResolutionInvariantError, ValueError) as error:
@@ -90,9 +103,11 @@ def classify_call_sites(
             for row in ledger if row["outcome"] == "unresolved"
         ],
         preserved_inactive=counts["inactive"],
+        dropped_stdlib=counts["standard_library"],
+        dropped_framework=counts["framework_provided"],
         unresolved_presence=reasons["insufficient_conditional_presence"],
         unresolved_expression=reasons["c_runtime_callable_expression"],
-        unresolved_owner=reasons["insufficient_framework_routine_owner"],
+        missing_routine_owner_count=reasons["insufficient_routine_owner"],
         unresolved_preprocessing=sum(
             count for reason, count in reasons.items()
             if "preprocessing" in reason or "configuration" in reason
@@ -106,6 +121,32 @@ def classify_call_sites(
             "call occurrence result ledger must preserve every canonical ID exactly once"
         )
     return result
+
+
+def _validated_framework_patterns(
+    patterns: Iterable[str], code_nodes: Iterable[CodeNode],
+) -> tuple[str, ...]:
+    normalized = tuple(sorted({str(pattern).strip() for pattern in patterns if str(pattern).strip()}))
+    routine_names = sorted({
+        str(getattr(node, "name", "") or "").strip()
+        for node in code_nodes
+        if str(getattr(node, "label", "") or "")
+        in {"FUNCTION", "METHOD", "PROCEDURE", "CONSTRUCTOR"}
+        and str(getattr(node, "name", "") or "").strip()
+    })
+    conflicts = [
+        (pattern, name)
+        for pattern in normalized
+        for name in routine_names
+        if fnmatch.fnmatchcase(name, pattern)
+    ]
+    if conflicts:
+        pattern, name = conflicts[0]
+        raise CallClassificationInvariantError(
+            "framework runtime contract conflicts with workspace routine: "
+            f"{pattern!r}->{name!r}"
+        )
+    return normalized
 
 
 def _mark_macro_affected_calls(

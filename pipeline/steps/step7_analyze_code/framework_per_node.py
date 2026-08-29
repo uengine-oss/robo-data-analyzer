@@ -1,15 +1,14 @@
-"""step7_analyze_code — 모듈 사전분석 + Bottom-up DAG + 관심사 fan-out.
+"""step7_analyze_code — Bottom-up DAG + 코드노드 관심사 fan-out.
 
 순서:
-0. 모듈 사전분석 (Framework 전용) — 모듈마다 LLM 1회로 헤더 주석 → 모듈 의도.
-   결과 ``module_intent`` 는 아래 코드노드 분석의 3분할 공통 context 에 주입.
 1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
 2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 (spec 079, 라운드 배리어 제거):
-   의존이 풀린 코드노드부터 즉시 분석, 끝나는 순서대로 즉시 Neo4j 영속화 + NDJSON emit.
+   의존이 풀린 코드노드부터 즉시 분석하고 상태와 NDJSON 진행 이벤트를 만든다.
    CALLS와 PARENT_OF 모두 하위 summary 확정 신호로 조기 해제한다. Rule/table 완료는
    상위 입력 계약이 아니다. 투입 순서는 critical-path
    rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
-3. 각 코드노드 = summary/table LLM concern + 결정론 Rule 물질화.
+3. 각 코드노드 = summary/rule-atom/table-usage LLM concern. Rule 구조는 결정론으로 만들고
+   Example은 검증 Rule에서 투영하므로 추가 모델 호출이 없다.
 
 결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """
@@ -30,23 +29,19 @@ from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step7_analyze_code.analysis_order import plan_summary_dependencies
 from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
     analyze_code_three_split,
-    run_summary,
 )
 from shared.config.settings import SETTINGS
 from pipeline.steps.step7_analyze_code.example_mapping_builder import ExampleMappingResult
 from llm.usage.cost_budget import BudgetExceededError
-from pipeline.models.code_analysis_output import SummaryOutput
-from llm.runners.model_output_error import ModelOutputError
 from pipeline.languages import ROUTINE_LABELS
-from shared.events.runtime_logger import log_error, log_info, log_warning
+from shared.events.runtime_logger import log_error, log_info
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.processing_events import track_processing
-from graph.neo4j_client import Neo4jClient
 
 _STEP = "step7.analyze_code"
 
 
-from pipeline.steps.step7_analyze_code.result_sink import _persist_and_emit_code
+from pipeline.steps.step7_analyze_code.result_sink import finalize_and_emit_code_result
 
 
 def framework_analysis_targets(code_nodes: list) -> set[str]:
@@ -65,7 +60,6 @@ async def run_framework_per_node_analysis(
     code_by_id: dict,
     strategy,
     cost_budget,
-    neo: Neo4jClient | None,
     stream: Optional[NDJSONStream],
     table_descriptions: dict[str, dict],
     pause: PauseController,
@@ -115,10 +109,10 @@ async def run_framework_per_node_analysis(
         concurrency=SETTINGS.analysis_pipeline.max_concurrency,
     )
 
-    # 3. Dataflow 병렬 분석 — 의존 완료 즉시 투입. 결과는 코드노드 단위 즉시 영속화 + emit.
-    # Example Mapping 9 종 (Rule/Example/Question + 6 엣지) 은 코드노드 단위로 만들어져
-    # round 끝까지 누적 → step 마지막에 state 로 반영. Neo4j MERGE 가 정체성 키
-    # (rule/example/question id) 로 자동 dedup — state list 는 raw 그대로.
+    # 3. Dataflow 병렬 분석 — 의존 완료 즉시 투입. 결과는 state에 누적하고 진행 이벤트로 emit.
+    # Example Mapping Rule/Example 결과와 관계는 코드노드 단위로 만들어져
+    # step 마지막에 state로 반영한다. Rule/Example 정체성과 exact-once 검증은
+    # 최종 제품 계획이 소유하므로 여기서 중복을 숨기지 않는다.
     # run 공유 슬롯 — 후처리와 **같은 세마포어**를 쓴다(spec 096). step7 은 우선순위 0
     # 이라 후처리보다 항상 먼저 슬롯을 잡는다. 총량은 종전과 같다(값 = max_concurrency).
     semaphore = handoff.slots
@@ -126,24 +120,22 @@ async def run_framework_per_node_analysis(
     # source_cache 는 caller(analyze_code_step)가 주입 — run 스코프 공유 (FR-008).
     em_acc = ExampleMappingResult()
 
-    async def _run_dataflow() -> tuple[int, int, int]:
+    async def _run_dataflow() -> int:
         """의존 완료 즉시 투입하는 dataflow 스케줄 — 라운드 배리어의 꼬리 유휴 제거.
 
         CALLS/PARENT_OF 의존은 하위 summary 확정 신호(``on_summary_ready``)로 조기 해제한다.
         투입 순서는 ``ranks`` 내림차순 —
         긴 의존 사슬·큰 노드를 먼저 넣어 종반 꼬리 유휴를 줄인다(산출물 불변).
-        취소된 노드만 재투입, ``analyzed+failed+skipped = code_nodes`` 등식 유지(FR-008).
+        취소된 노드만 재투입하며 모든 대상이 완료되지 않으면 caller가 실패한다(FR-008).
         """
         analyzed_count = 0
-        failed_count = 0
-        skipped_count = 0
         done: set[str] = set()
         summary_done: set[str] = set()
         scheduled: set[str] = set()
         pending: dict[asyncio.Task, str] = {}
         summary_event = asyncio.Event()
+        summary_warm_event = asyncio.Event()
         warm_id: Optional[str] = None
-        first_summary: Optional[SummaryOutput | ModelOutputError] = None
 
         def _mark_summary_ready(fid: str) -> None:
             summary_done.add(fid)
@@ -171,17 +163,9 @@ async def run_framework_per_node_analysis(
 
                 ready = _ready()
                 if warm_id is None and ready:
-                    # 워밍 1회 — 공통 prefix 를 서버 캐시에 올린 뒤 fan-out.
+                    # 첫 Summary만 cache prefix를 만든다. 다른 Summary는 이 완료 신호를
+                    # 기다리지만, 모든 노드의 Rule/Table concern은 즉시 시작한다.
                     warm_id = ready[0]
-                    first_summary = await pause.run_restartable_during_pause(
-                        lambda: run_summary(
-                            warm_id, contexts, code_by_id, strategy,
-                            cost_budget=cost_budget,
-                            table_descriptions=table_descriptions,
-                            source_cache=source_cache,
-                            llm_slots=semaphore,
-                        )
-                    )
 
                 for fn_id in ready:
                     task = asyncio.ensure_future(
@@ -191,8 +175,8 @@ async def run_framework_per_node_analysis(
                                 fn_id, contexts, code_by_id, strategy, cost_budget,
                                 semaphore, table_descriptions,
                                 source_cache,
-                                precomputed_summary=(first_summary if fn_id == warm_id else None),
-                                precomputed_summary_supplied=(fn_id == warm_id),
+                                summary_warm_event=summary_warm_event,
+                                is_summary_warmup=(fn_id == warm_id),
                                 on_summary_ready=_mark_summary_ready,
                             ),
                         )
@@ -239,46 +223,40 @@ async def run_framework_per_node_analysis(
                     done.add(fn_id)
                     summary_done.add(fn_id)
                     handoff.resolve(fn_id)
-                    em = await _persist_and_emit_code(r, neo, stream)
+                    em = await finalize_and_emit_code_result(r, stream)
                     _accumulate_em(em_acc, em)
                     analyzed_count += 1
         finally:
             # pause/stop/예산 차단/상위 취소 모두 coroutine finally 까지 수거한 뒤 진행.
             await pause.cancel_and_wait(list(pending))
-        return analyzed_count, failed_count, skipped_count
+        return analyzed_count
 
     # step_processing_scope는 caller(analyze_code_step) 책임 —
     # dbms 엔진과 대칭(둘 다 caller 가 감싼다). 여기서 또 진입하면 중첩된다.
-    total_analyzed, total_failed, total_skipped = await _run_dataflow()
+    total_analyzed = await _run_dataflow()
 
-    # 불변식: analyzed + failed + skipped = 대상 코드노드 수 (FR-008). 안 맞으면 조용한 유실.
-    _accounted = total_analyzed + total_failed + total_skipped
-    if _accounted != len(contexts):
-        log_warning(
-            _STEP, "node_accounting_mismatch",
-            f"집계 불일치 — 대상 {len(contexts)} ≠ analyzed {total_analyzed} + "
-            f"failed {total_failed} + skipped {total_skipped} ({_accounted}). 조용한 유실 신호.",
-            expected=len(contexts), accounted=_accounted,
+    # 불변식: Framework routine은 전부 성공해야 한다. 실패와 취소는 위에서 전파되므로
+    # 여기서 일부 결과를 정상 완료로 승격할 수 없다.
+    if total_analyzed != len(contexts):
+        raise RuntimeError(
+            f"Framework 분석 불변식 위반: targets={len(contexts)}, "
+            f"analyzed={total_analyzed}, missing={len(contexts) - total_analyzed}"
         )
     log_info(
         _STEP, "done",
         code_nodes=len(contexts), analyzed=total_analyzed,
-        failed=total_failed or None, skipped=total_skipped or None,
         in_cycle=len(dependency_plan.cycle_nodes),
-        rules=len(em_acc.rules), examples=len(em_acc.examples), questions=len(em_acc.questions),
+        rules=len(em_acc.rules), examples=len(em_acc.examples),
         elapsed_sec=f"{time.monotonic() - started:.2f}",
     )
-    # code_nodes 는 _persist_and_emit_code 가 in-place 갱신 (frozen=False)
-    # → state["code_nodes"] 리스트 안의 같은 객체 참조라 자동 반영.
-    # Example Mapping 9 종은 누적 결과를 state 키 9 개로 반환.
     return {
+        # 체크포인트는 반환한 필드만 갱신하므로 분석된 노드도 명시적으로 반환한다.
+        "code_nodes": list(code_by_id.values()),
         "analysis_contexts": contexts,
         "rules": em_acc.rules,
         "examples": em_acc.examples,
-        "questions": em_acc.questions,
         "has_rule_edges": em_acc.has_rule,
         "has_example_edges": em_acc.has_example,
-        "has_question_edges": em_acc.has_question,
         "affects_table_edges": em_acc.affects_table,
     }
 
@@ -344,7 +322,7 @@ def _dispatch_ranks(
 def _accumulate_em(acc: ExampleMappingResult, em: ExampleMappingResult) -> None:
     """코드노드 단위 ``ExampleMappingResult`` 를 round 누적 결과에 합친다.
 
-    중복 제거는 Neo4j MERGE 가 정체성 키(각 노드 id)로 자동 처리 — state 는 단순 extend.
+    state는 발생 결과를 그대로 누적하고 최종 제품 계획이 중복을 검증한다.
     Rule 노드 id 는 ``<function id>::R<anchor>`` (anchor 좌표 정체성, spec 116).
 
     새 필드 추가 시 ``ExampleMappingResult`` 의 list 필드면 자동 누적 — dataclass 의
@@ -378,8 +356,8 @@ async def _analyze_one(
     semaphore: PrioritySemaphore,
     table_descriptions: dict[str, dict],
     source_cache: SourceFileCache,
-    precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
-    precomputed_summary_supplied: bool = False,
+    summary_warm_event: asyncio.Event | None = None,
+    is_summary_warmup: bool = False,
     on_summary_ready=None,
 ):
     """코드노드 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
@@ -389,12 +367,12 @@ async def _analyze_one(
             cost_budget=cost_budget,
             table_descriptions=table_descriptions,
             source_cache=source_cache,
-            precomputed_summary=precomputed_summary,
-            precomputed_summary_supplied=precomputed_summary_supplied,
+            summary_warm_event=summary_warm_event,
+            is_summary_warmup=is_summary_warmup,
             on_summary_ready=on_summary_ready,
             llm_slots=semaphore,
         )
 
 
-# ─── 코드노드 분석 결과 영속화 + 스트림 ────────────────────────────
+# ─── 코드노드 분석 결과 누적 + 진행 스트림 ─────────────────────────
 # 코드노드 1건 분석 끝나면 즉시 호출 (batch 누적 X). 메모리 누적 0 + 그래프 실시간.

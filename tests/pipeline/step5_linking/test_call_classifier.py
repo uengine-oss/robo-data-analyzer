@@ -9,11 +9,12 @@ from tests.pipeline.step5_linking.test_call_binding_classifier import (
 )
 
 
-def _classify(calls, nodes, callables=(), *, wrappers=()):
+def _classify(calls, nodes, callables=(), *, wrappers=(), framework_names=frozenset()):
     source_ids = sorted({call["source_id"] for call in calls})
     sources, completeness = _context(*source_ids)
     return classify_call_sites(
-        calls, nodes, wrappers=wrappers, callable_facts=callables,
+        calls, nodes, wrappers=wrappers, framework_names=framework_names,
+        callable_facts=callables,
         evidence_sources=sources, evidence_completeness=completeness,
     )
 
@@ -55,7 +56,7 @@ def test_non_active_expression_and_missing_owner_are_explicitly_accounted() -> N
     assert result.preserved_inactive == 1
     assert result.unresolved_presence == 1
     assert result.unresolved_expression == 1
-    assert result.unresolved_owner == 1
+    assert result.missing_routine_owner_count == 1
 
 
 def test_wrapper_target_is_dynamic_without_argument_reparse() -> None:
@@ -80,3 +81,30 @@ def test_missing_ir2_identity_never_reenters_name_resolution() -> None:
     assert result.edges == []
     assert result.ledger[0]["resolution_status"] == "unsupported"
     assert result.ledger[0]["reason"] == "missing_evidence_source_identity"
+
+
+def test_verified_framework_contract_excludes_runtime_call_without_graph_edge() -> None:
+    caller = _node("code:a.c:run", "run", "a.c")
+    result = _classify(
+        [_call("framework", caller, "PFM_MSGE")], [caller],
+        framework_names=frozenset({"PFM_*"}),
+    )
+
+    assert result.edges == []
+    assert result.dropped_framework == 1
+    assert result.ledger[0]["resolution_status"] == "framework_provided"
+    assert result.ledger[0]["outcome"] == "excluded"
+
+
+def test_framework_contract_cannot_exclude_workspace_routine() -> None:
+    caller = _node("code:a.c:PFM_LOCAL", "PFM_LOCAL", "a.c")
+
+    try:
+        _classify(
+            [_call("local", caller, "PFM_LOCAL")], [caller],
+            framework_names=frozenset({"PFM_*"}),
+        )
+    except Exception as error:
+        assert "conflicts with workspace routine" in str(error)
+    else:
+        raise AssertionError("workspace routine conflict must fail closed")

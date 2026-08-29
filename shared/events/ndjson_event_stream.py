@@ -8,7 +8,6 @@
 
 - ``phase_event``         — step 시작 / 완료 / 종료
 - ``tool_event``          — Agent 도구 호출 친화 메시지
-- ``todo_update``         — Agent todo 진행
 - ``processing_event``    — step 내부 처리 단위 진행
 - ``message``             — 단계별 사용자 친화 완료 메시지
 - ``progress`` / ``result`` — 검색 진행과 최종 결과
@@ -43,7 +42,6 @@ ASYNC_EVENT_HIGH_WATER_MARK = 1024
 _EVENT_LOGGER: dict[str, str] = {
     "phase_event":         "stream.phase",
     "tool_event":          "stream.tool",
-    "todo_update":         "stream.todo",
     "processing_event":    "stream.processing",    # step 안 처리 단위 진행 (코드노드/모듈/테이블/split)
     "progress":            "stream.search",         # 검색 진행 (rewrite/recall/rerank/expand/judge)
     "result":              "stream.search",         # 검색 결과 뭉치
@@ -88,7 +86,6 @@ _TOOL_LABELS: dict[str, str] = {
     "list_skills":          "SKILL 목록 조회",
     "read_skill":           "SKILL 읽기",
     "verify_table_regex":   "정규식 검증",
-    "write_todos":          "작업목록 갱신",
 }
 
 # 도구별 핵심 인자 — start ↔ done 양쪽에 박힘 (대상 식별 / 대칭).
@@ -104,7 +101,6 @@ _TOOL_PRIMARY_ARGS: dict[str, tuple[str, ...]] = {
     "list_skills":          (),
     "read_skill":           ("name",),
     "verify_table_regex":   ("call_regex",),
-    "write_todos":          (),
 }
 
 # path / base / file 류 — 자동 단축 적용 (project_root 이하 상대 경로).
@@ -164,7 +160,6 @@ def _mirror_event_to_logger(event: dict) -> None:
     - ``stream_end`` 는 mirror X (close 신호일 뿐).
     - 빈 값 / None 키는 ``log_info`` 의 ``_format_kv`` 가 자동 생략.
     - event 의 ``type`` 키는 component 결정에 쓰고 본문에선 제거 (중복 방지).
-    - ``todos`` (todo_update) 는 full list 박지 X → in_progress 1 개 + counts 만 추출.
     - ``tool_event`` 는 전용 분기 — 도구명을 op 라벨로, args 단축.
     """
     etype = event.get("type")
@@ -186,19 +181,6 @@ def _mirror_event_to_logger(event: dict) -> None:
         # ``log_info(component, ...)``의 위치 인자와 wire payload의 원발생 component가
         # 충돌하지 않게 이름을 분리한다. error/warning의 출처 정보는 그대로 보존한다.
         body["origin_component"] = origin_component
-
-    # todo_update 의 todos full list → 요약 (in_progress / counts).
-    todos = body.pop("todos", None)
-    if isinstance(todos, list) and todos:
-        in_progress = next(
-            (t.get("content") for t in todos
-             if isinstance(t, dict) and t.get("status") == "in_progress"),
-            None,
-        )
-        done = sum(1 for t in todos if isinstance(t, dict) and t.get("status") == "completed")
-        body["in_progress"] = in_progress
-        body["done"] = done
-        body["total"] = len(todos)
 
     log_info(component, str(operation), **body)
 

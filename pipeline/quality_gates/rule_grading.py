@@ -584,14 +584,14 @@ def grade_rules(
                 and owner is not None
                 and owner.condition_timing == "post"
             )
-            if role in ("decision", "complement") and not rule.cond and not is_post_test:
+            if role in ("decision", "complement") and not rule.structural_condition and not is_post_test:
                 verdict.reasons.append(f"{role} 행은 cond가 null일 수 없음")
             # A handler marker identifies entry into an exception block; the marker
             # itself is not necessarily an executable effect.  Requiring ``then``
             # here rejected correct model output such as "예외 처리 블록 진입".
             # Entry/exit rows, unlike handler markers, are created from direct
             # executable statements and still require their direct effect.
-            if role in ("entry", "continuation", "exit") and not rule.then:
+            if role in ("entry", "continuation", "exit") and not rule.structural_effects:
                 verdict.reasons.append(f"{role} 행은 직접 효과 then이 비어 있을 수 없음")
             if role == "continuation" and source_row.get("unresolved_reachability"):
                 verdict.findings.append(
@@ -609,17 +609,17 @@ def grade_rules(
                     else expected_rule_condition(inventory, anchor)
                 )
                 if expected_cond is None:
-                    if rule.cond is not None:
+                    if rule.structural_condition is not None:
                         verdict.reasons.append(
                             "cond가 분기표의 무조건 경로와 다름"
                         )
-                elif not rule.cond:
+                elif not rule.structural_condition:
                     verdict.reasons.append(
                         "cond가 분기표의 정확한 구조 경로와 다름"
                     )
                 else:
                     try:
-                        matches = conditions_equal(rule.cond, expected_cond)
+                        matches = conditions_equal(rule.structural_condition, expected_cond)
                     except LeafSyntaxError:
                         matches = False
                     if not matches:
@@ -678,7 +678,7 @@ def _compare_then_with_branch_callees(
     if row is None:
         return
     callees = {str(name).lower() for name in (row.get("callees") or ())}
-    for statement in rule.then:
+    for statement in rule.structural_effects:
         try:
             call = parse_effect(statement)
         except (LeafSyntaxError, LeafVocabularyError):
@@ -775,7 +775,7 @@ def _compare_then_with_direct_effects(
         for op, target in inventory.direct_statement_effects(rule.anchor_line)
     )
     parsed: list[ast.Call] = []
-    for statement in rule.then:
+    for statement in rule.structural_effects:
         try:
             parsed.append(parse_effect(statement))
         except (LeafSyntaxError, LeafVocabularyError):
@@ -854,13 +854,13 @@ def _grade_rule_content(
     return_values: set[str],
     inventory_fragments: set[str],
 ) -> None:
-    if rule.cond is not None and "\n" in rule.cond:
+    if rule.structural_condition is not None and "\n" in rule.structural_condition:
         verdict.reasons.append("cond는 한 줄 Python 표현식이어야 함")
-    if any("\n" in statement for statement in rule.then):
+    if any("\n" in statement for statement in rule.structural_effects):
         verdict.reasons.append("then 효과는 각각 한 줄 Python 표현식이어야 함")
-    if rule.cond:
+    if rule.structural_condition:
         try:
-            tree = parse_condition(rule.cond)
+            tree = parse_condition(rule.structural_condition)
             if isinstance(tree.body, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
                 verdict.reasons.append(
                     "cond는 collection이 아니라 단일 Python boolean 표현식이어야 함"
@@ -882,7 +882,7 @@ def _grade_rule_content(
             )
         except LeafSyntaxError as error:
             verdict.reasons.append(str(error))
-    for statement in rule.then:
+    for statement in rule.structural_effects:
         try:
             call = parse_effect(statement)
             _check_leaf_tree(

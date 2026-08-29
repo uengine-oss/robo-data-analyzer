@@ -4,7 +4,7 @@
 여기 남은 것은 분기표와 lexing 이 소유한 계약뿐이다.
 
 spec 016 전환: 조건·종료문·대입·호출의 생산자는 parser AST 다. fixture 는
-``ControlSubtreeNode.expression``·``StatementFact``·``call_lines`` 로 그 계약을
+``ControlSubtreeNode.expression``·``StatementFact``·정확한 호출 발생으로 그 계약을
 그대로 제공하며, analyzer 는 source 를 재탐색하지 않는다.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import unittest
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.lexing import literal_values, split_source
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
 class LexingContract(unittest.TestCase):
@@ -526,13 +527,30 @@ class TerminationRows(unittest.TestCase):
         self.assertTrue(exit_row.startswith("5:"), exit_row)
         self.assertIn("return rc", exit_row)
 
+    def test_exit_row_preserves_the_complete_parser_expression(self):
+        expression = " + ".join(f"result_{index}" for index in range(40))
+        body = f"return {expression};\n"
+        inv = build_inventory(
+            body, [], "c",
+            statements=(StatementFact(
+                "r1", "RETURN", 1, 1, expression=expression,
+            ),),
+        )
+
+        exit_row = inv.branch_index().strip()
+
+        self.assertGreater(len(exit_row), 160)
+        self.assertIn("result_39", exit_row)
+
     def test_handler_marker_becomes_handler_row(self):
         # 핸들러 마커는 언어 표가 아니라 프레임워크 SKILL 계약이 주입한다(오염 금지).
         body = "do_work();\nPFM_CATCH();\nreturn RC_ERR;\n"
         inv = build_inventory(
             body, [], "c", handler_markers=("PFM_CATCH",),
             statements=(StatementFact("r3", "RETURN", 3, 3, expression="RC_ERR"),),
-            call_lines=((1, "do_work"), (2, "PFM_CATCH")),
+            call_occurrences=parser_call_occurrences(
+                ((1, "do_work"), (2, "PFM_CATCH"))
+            ),
         )
         rows = inv.branch_index().splitlines()
         self.assertTrue(any(row.startswith("2: [handler] PFM_CATCH") for row in rows), rows)
@@ -544,7 +562,9 @@ class TerminationRows(unittest.TestCase):
         inv = build_inventory(
             body, [], "c",
             statements=(StatementFact("r3", "RETURN", 3, 3, expression="RC_ERR"),),
-            call_lines=((1, "do_work"), (2, "PFM_CATCH")),
+            call_occurrences=parser_call_occurrences(
+                ((1, "do_work"), (2, "PFM_CATCH"))
+            ),
         )
         rows = inv.branch_index().splitlines()
         self.assertFalse(any("[handler]" in row for row in rows), rows)
@@ -586,7 +606,9 @@ class EntryRow(unittest.TestCase):
         inv = build_inventory(
             'strncpy(dst, src, LEN);\nsprintf(msg, "x");\n', [], "c",
             statements=(),
-            call_lines=((1, "strncpy"), (2, "sprintf")),
+            call_occurrences=parser_call_occurrences(
+                ((1, "strncpy"), (2, "sprintf"))
+            ),
         )
         entries = [row for row in inv.table_rows() if row["role"] == "entry"]
         self.assertEqual([{"line": 1, "role": "entry"}], entries)

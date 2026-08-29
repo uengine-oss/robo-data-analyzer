@@ -10,16 +10,14 @@
 - skill 은 식별 단서와 ``ScanResult contract``를 가진 문서다. 에이전트는 실제 코드와
   맞는 skill 이름만 선택하고, 코드는 원문 contract를 직접 hydrate한 뒤 실제 소스 검증으로
   부분 추출·미해소를 거부한다. 결정론 계약을 LLM이 다시 받아쓰지 않는다.
-- 출력 후 코드가 마무리(``_finalize``): 에이전트가 채운 정규식을 ``verify_table_patterns``
-  로 결정론 검증해 confidence 산정 — 검증 안 된 정규식은 링킹에 안 넘긴다.
-- ``response_format=ScanResult`` Pydantic 강제.
-- ``max_calls`` = ``ROBO_AGENT_SCAN_MAX_CALLS``.
-- 미들웨어 ``standard_stack`` 명시 주입 (deepagents #2744 회피).
+- 출력 후 코드가 마무리(``_finalize``): 에이전트가 제안한 규칙을
+  ``verify_table_patterns``로 결정론 검증한다. 검증 안 된 규칙은 링킹에 넘기지 않는다.
+- LLM 경계는 ``ScanProposal``이고, 내부 ``ScanResult``는 Analyzer만 만든다.
+- 공통 계측·캐시 미들웨어 ``standard_stack`` 명시 주입.
 """
 from __future__ import annotations
 
 import fnmatch
-import html
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +28,7 @@ from agents.contracts import (
     ApiContract,
     CallWrapper,
     DdlTransform,
+    ScanProposal,
     ScanResult,
     TableAccessPattern,
 )
@@ -61,6 +60,7 @@ from shared.config.settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
 from agents.runtime import AgentModelOutputError, run_structured_agent
 from shared.events.runtime_logger import log_info, log_warning
+from shared.files.run_cache_context import read_run_text
 
 _STEP = "step4.scan"
 
@@ -88,18 +88,23 @@ class _VerifiedSkillCandidate:
 
 
 def _build_scan_tools(
-    project_root: Path, code_nodes: list[CodeNode], tables: list[Table],
+    project_root: Path,
+    code_nodes: list[CodeNode],
+    tables: list[Table],
+    allowed_source_paths: tuple[Path, ...] | None = None,
 ) -> list:
     """Scan Agent 도구 9 종 조립.
 
     파일시스템 5종(ls/glob_search/grep/read_file/read_file_range)은 project_root 에
     묶여 그 밖을 못 본다. list_code_nodes 는 step2 가 파싱한 코드노드 목록을 본다.
     verify_table_regex 는 에이전트가 작성한 정규식을 실제 소스에 검증한다.
-    write_todos 는 LangChain TodoListMiddleware 가 자동 제공 (여기 없음).
     """
     return [
-        *make_filesystem_tools(project_root).values(),
-        make_list_code_nodes(code_nodes),
+        *make_filesystem_tools(
+            project_root,
+            allowed_files=allowed_source_paths,
+        ).values(),
+        make_list_code_nodes(code_nodes, project_root=project_root),
         list_skills,
         read_skill,
         make_verify_table_regex_tool(project_root, code_nodes, tables),
@@ -114,12 +119,13 @@ async def run_scan_agent(
     code_nodes: list[CodeNode],
     tables: list[Table],
     stream_emit: Optional[Callable[[dict], None]] = None,
+    allowed_source_paths: tuple[Path, ...] | None = None,
 ) -> ScanResult:
     """Scan Agent 1회 invoke → 코드 finalize → ``ScanResult``.
 
     Args:
         project_root: 분석 대상 디렉토리.
-        scanner_input: 사전 수집 단서 (extensions_count / manifest_content / scanner_categories).
+        scanner_input: 전체 확장자·카테고리 건수와 매니페스트 상대경로.
         run_dir: run 로그 디렉토리 (``logs/``).
         cost_budget: run 1회의 ``CostBudget``.
         code_nodes: step2(load_ast)가 파싱한 CodeNode 목록.
@@ -134,7 +140,7 @@ async def run_scan_agent(
         return known
 
     log_info(_STEP, "known_skill_not_found", action="unknown/custom Agent 탐색")
-    draft = await _run_agent(
+    proposal = await _run_agent(
         project_root=project_root,
         scanner_input=scanner_input,
         run_dir=run_dir,
@@ -142,9 +148,10 @@ async def run_scan_agent(
         code_nodes=code_nodes,
         tables=tables,
         stream_emit=stream_emit,
+        allowed_source_paths=allowed_source_paths,
     )
     try:
-        hydrated = _hydrate_skill_contract(draft)
+        hydrated = _hydrate_skill_contract(_proposal_to_scan_result(proposal))
     except ValueError as error:
         raise ScanCandidateRejected(str(error)) from error
     return await _finalize(hydrated, project_root, code_nodes, tables)
@@ -199,8 +206,22 @@ def _skill_owned_values(contract: dict) -> dict:
         "api_contracts": [
             ApiContract(**raw) for raw in contract.get("api_contracts") or []
         ],
-        "codebase_notes": str(contract.get("codebase_notes") or "").strip(),
     }
+
+
+def _proposal_to_scan_result(proposal: ScanProposal) -> ScanResult:
+    """Convert a model proposal without inventing or copying provenance metadata."""
+    data = proposal.model_dump()
+    if (
+        proposal.matched_skill is None
+        and not proposal.table_access_rules
+        and not proposal.table_access_patterns
+    ):
+        data.update({
+            "table_access_status": "unavailable",
+            "no_match_reason": "model proposed no table access rule",
+        })
+    return ScanResult.model_validate(data)
 
 
 def _iter_skill_contracts() -> list[tuple[str, dict]]:
@@ -247,18 +268,17 @@ async def _select_verified_skill(
             tables=tables,
             embedded_rules=embedded,
             prepared_sources=prepared_sources,
+            require_each_access_rule_match=False,
+            require_each_exclusion_rule_match=False,
+            require_local_table_resolution=False,
         )
-        evidence_locations = list(dict.fromkeys(verdict.evidence_locations))
-        if not verdict.ok or len(evidence_locations) < 3:
+        if not verdict.ok:
             continue
         validate_framework_runtime_contract(
             owned["framework_runtime_functions"], code_nodes,
         )
         draft = ScanResult(
             matched_skill=skill_name,
-            confidence=0.5,
-            evidence="registered SKILL production contract verified against source and DDL",
-            evidence_locations=evidence_locations,
             **owned,
         )
         candidates.append(_VerifiedSkillCandidate(
@@ -281,7 +301,7 @@ async def _select_verified_skill(
         _STEP,
         "known_skill_selected",
         skill=selected.draft.matched_skill,
-        evidence_locations=len(selected.draft.evidence_locations),
+        resolved_ratio=selected.verdict.resolved_ratio,
         llm_calls=0,
     )
     return _complete_finalization(
@@ -305,20 +325,25 @@ async def _run_agent(
     code_nodes: list[CodeNode],
     tables: list[Table],
     stream_emit: Optional[Callable[[dict], None]],
-) -> ScanResult:
-    """단일 에이전트 invoke → ``ScanResult`` 초안 (공용 ``run_structured_agent``).
+    allowed_source_paths: tuple[Path, ...] | None = None,
+) -> ScanProposal:
+    """단일 에이전트 invoke → 검증 전 ``ScanProposal``.
 
     공용 루틴이 ``response_format`` 을 submit 도구로 wrap — agent 가 탐색 끝에
-    ``submit_scan`` 호출 시 ScanResult 인스턴스가 state 에 적재된다.
+    ``submit_scan`` 호출 시 ScanProposal 인스턴스가 state 에 적재된다.
     """
     return await run_structured_agent(
         agent_name="scan",
         invoke_id="run",
-        system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8"),
-        tools=_build_scan_tools(project_root, code_nodes, tables),
-        response_format=ScanResult,
-        user_message=_build_user_message(project_root, scanner_input, tables),
-        max_calls=SETTINGS.analysis_agents.scan_max_calls,
+        system_prompt=read_run_text(_SYSTEM_PROMPT_PATH, encoding="utf-8"),
+        tools=_build_scan_tools(
+            project_root,
+            code_nodes,
+            tables,
+            allowed_source_paths,
+        ),
+        response_format=ScanProposal,
+        user_message=_build_user_message(scanner_input, tables),
         run_dir=run_dir,
         cost_budget=cost_budget,
         stream_emit=stream_emit,
@@ -374,25 +399,55 @@ def _complete_finalization(
     embedded_rules: list | tuple = (),
 ) -> ScanResult:
     """Apply one already-produced verdict without rescanning source files."""
-    if verdict.failed_exclusion_ids:
-        raise ScanCandidateRejected(
-            "table access exclusion verification failed: " + verdict.summary
+    access_rules = [*merged_patterns, *embedded_rules]
+    if not access_rules:
+        return _isolate_table_access_failure(
+            draft,
+            draft.no_match_reason or "table_access_patterns 미산출",
         )
-    confidence, no_match_reason = _apply_verdict(
-        verdict, [*merged_patterns, *embedded_rules], draft.no_match_reason,
-    )
+    if not verdict.ok and draft.matched_skill:
+        return _isolate_table_access_failure(
+            draft,
+            "table access rule verification failed: " + verdict.summary,
+        )
+    no_match_reason = _require_verified_table_access(verdict, access_rules)
 
-    # codebase_notes는 호환·진단 metadata일 뿐 downstream LLM 입력이 아니다. 기존
-    # SKILL 계약의 표시 문자열만 정상화하며 의미 계약은 구조화 필드가 소유한다.
     # Copy the complete validated contract, then replace only fields finalized
     # here. A handwritten constructor previously dropped hydrated handler/API
     # facts whenever ScanResult gained or retained fields not listed here.
     data = draft.model_dump()
     data.update({
-        "confidence": confidence,
+        "table_access_status": "completed",
         "table_access_patterns": [pattern.model_dump() for pattern in merged_patterns],
-        "codebase_notes": html.unescape(draft.codebase_notes or ""),
         "no_match_reason": no_match_reason,
+    })
+    return ScanResult.model_validate(data)
+
+
+def _isolate_table_access_failure(draft: ScanResult, reason: str) -> ScanResult:
+    """Fail closed for R/W without erasing independent matched-SKILL facets.
+
+    Table patterns, exclusions, and DDL transforms form one validation facet.  A
+    failure there must produce no R/W edges, but it does not invalidate document-
+    owned handler, API, runtime, or call-wrapper contracts from the same selected
+    SKILL.  Unmatched custom output still fails as one untrusted candidate in
+    ``_complete_finalization``.
+    """
+    log_warning(
+        _STEP,
+        "table_access_unavailable",
+        "table access 계약만 미가용으로 격리하고 독립 SKILL 계약은 보존",
+        skill=draft.matched_skill,
+        reason=reason,
+    )
+    data = draft.model_dump()
+    data.update({
+        "table_access_status": "unavailable",
+        "table_access_rules": [],
+        "table_access_patterns": [],
+        "table_access_exclusion_rules": [],
+        "ddl_transform": DdlTransform(ddl_naming_rule="as_is").model_dump(),
+        "no_match_reason": reason,
     })
     return ScanResult.model_validate(data)
 
@@ -430,15 +485,11 @@ def validate_framework_runtime_contract(
         )
 
 
-def _apply_verdict(
+def _require_verified_table_access(
     verdict: PatternVerdict,
     access_rules: list,
-    no_match_reason: Optional[str],
-) -> tuple[float, Optional[str]]:
-    """검증 결과 → (confidence, no_match_reason). 제안 내용 실패는 즉시 거절한다.
-
-    confidence 는 추측이 아니라 측정값 — 검증 통과 시 테이블 해소율 기반.
-    """
+) -> Optional[str]:
+    """검증된 접근 규칙만 받아들이고 실패한 제안은 즉시 거절한다."""
     if not access_rules:
         # 명시적 무패턴은 허용하지만 사유는 ScanResult schema가 강제한다.
         log_warning(
@@ -446,16 +497,11 @@ def _apply_verdict(
             "table_access_patterns 가 비어 있음 — 결정론 R/W 링킹 불가",
             verdict=verdict.summary,
         )
-        return 0.1, no_match_reason or "table_access_patterns 미산출"
+        return "table_access_patterns 미산출"
 
     if verdict.ok:
         log_info(_STEP, "patterns_verified", result=verdict.summary)
-        # confidence = 테이블 해소율(측정값). 검증 자체는 통과했으므로 최소 0.5.
-        # A single regex site can legitimately yield multiple semantic R/W edges,
-        # so ``edges / matched_sites`` is a coverage score, not a probability.
-        # ScanResult's public contract is a bounded confidence value.
-        confidence = min(1.0, max(0.5, round(verdict.resolved_ratio, 2)))
-        return confidence, no_match_reason
+        return None
 
     # 검증 실패 패턴을 downstream에 보내면 검증이 경고로 전락한다.
     log_warning(
@@ -471,7 +517,7 @@ def _apply_verdict(
 # ─────────────────────────────────────────────────────────────
 
 
-def _build_user_message(project_root: Path, scanner: dict, tables: list[Table]) -> str:
+def _build_user_message(scanner: dict, tables: list[Table]) -> str:
     """scanner 단서 + SKILL 후보 + DDL 테이블 목록을 user 메시지로 직렬화.
 
     user 메시지 prefix 에 박는 이유:
@@ -483,10 +529,8 @@ def _build_user_message(project_root: Path, scanner: dict, tables: list[Table]) 
     skills_brief = _list_skills_brief()
     ddl_tables = ", ".join(sorted(t.name for t in tables)) if tables else "(DDL 없음)"
     return "\n".join([
-        f"project_root: {project_root}",
-        "",
-        "scanner_input:",
-        json.dumps(scanner, ensure_ascii=False, indent=2),
+        "project_inventory:",
+        json.dumps(scanner, ensure_ascii=False, separators=(",", ":")),
         "",
         "available_skills (이름: 1줄 설명):",
         skills_brief,
@@ -494,7 +538,7 @@ def _build_user_message(project_root: Path, scanner: dict, tables: list[Table]) 
         "ddl_tables (이 프로젝트가 접근하는 DB 테이블 — verify_table_regex 해소 기준):",
         ddl_tables,
         "",
-        "위 단서로 프로젝트 성격을 식별하고 ScanResult 를 출력하라.",
+        "위 단서로 프로젝트 성격을 식별하고 ScanProposal 을 출력하라.",
     ])
 
 

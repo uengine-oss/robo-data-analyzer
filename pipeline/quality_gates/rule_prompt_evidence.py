@@ -212,43 +212,25 @@ def rule_evidence(
             )
         direct_source, returns, assignments = inventory.direct_evidence(line)
         call_occurrences = inventory.direct_call_occurrences(line)
-        direct_effects = (
-            [
-                effect_ref({
-                    "op": "call",
-                    "target": occurrence.callee,
-                    "value": None,
-                    "from_source": None,
-                    "occurrence_id": occurrence.call_id,
-                    "source_line": occurrence.line + inventory.line_offset,
-                    "call_source": occurrence.call_source,
-                    "argument_sources": list(occurrence.argument_sources),
-                    "receiver_source": occurrence.receiver_source,
-                    "source_range": list(occurrence.source_range)
-                    if occurrence.source_range is not None else None,
-                    "callee_source": occurrence.callee_source,
-                    "callee_kind": occurrence.callee_kind,
-                    "context_role": occurrence.context_role,
-                    "condition_fact_id": occurrence.condition_fact_id,
-                    "presence_status": occurrence.presence_status,
-                    "resolution_status": occurrence.resolution_status,
-                    "resolution_outcome": occurrence.resolution_outcome,
-                    "resolution_scope": occurrence.resolution_scope,
-                    "resolution_reason": occurrence.resolution_reason,
-                    "callee_id": occurrence.callee_id,
-                    "external_identity_key": occurrence.external_identity_key,
-                })
-                for occurrence in call_occurrences
-            ]
-            if call_occurrences
-            else [
-                effect_ref({
-                    "op": "call", "target": callee,
-                    "value": None, "from_source": None,
-                })
-                for callee in sorted(inventory.direct_callees(line))
-            ]
-        )
+        direct_callees = inventory.direct_callees(line)
+        if {item.callee.lower() for item in call_occurrences} != direct_callees:
+            raise ValueError(
+                f"Rule row call occurrences do not cover direct calls: line={line}"
+            )
+        direct_effects = [
+            effect_ref({
+                "op": "call",
+                "target": occurrence.callee,
+                "value": None,
+                "from_source": None,
+                "occurrence_id": occurrence.call_id,
+                "call_source": occurrence.call_source,
+                "argument_sources": list(occurrence.argument_sources),
+                "receiver_source": occurrence.receiver_source,
+                "callee_id": occurrence.callee_id,
+            })
+            for occurrence in call_occurrences
+        ]
         direct_effects.extend(
             effect_ref({
                 "op": "ret", "target": None,

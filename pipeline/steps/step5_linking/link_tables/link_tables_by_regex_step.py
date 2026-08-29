@@ -13,15 +13,13 @@ from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
-from pipeline.execution.step_config import step_config
+from pipeline.execution.step_config import require_step_config_value, step_config
 
 from agents.rule_compiler import compile_exclusion_rules, split_rules
 from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import RegexTableLinker
 from pipeline.steps.step5_linking.link_tables.view_expansion import expand_view_edges
 from shared.events.runtime_logger import log_info, log_warning
-from graph.edges.reads_writes import upsert_reads_writes
-from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message
 
 _STEP = "step5.link_deterministic"
@@ -30,11 +28,7 @@ _STEP = "step5.link_deterministic"
 async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
     """결정론 grep → ``ReadsWrites`` 엣지 + ``unresolved`` 큐."""
     cfg = step_config(config)
-    project = cfg.get("codebase")
-    neo: Neo4jClient | None = cfg.get("neo_client")
-    if project is None:
-        log_warning(_STEP, "config_missing", "project 누락 — step skip")
-        return {}
+    project = require_step_config_value(cfg, "codebase", step=_STEP)
 
     scan = require_scan_result(state)
 
@@ -69,12 +63,7 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         log_info(_STEP, "view_expansion", added=len(view_edges))
         outcome.edges.extend(view_edges)
 
-    # raw 중복 (같은 코드노드·테이블·동작을 여러 라인에서 매칭) 은 Neo4j MERGE 가 자동
-    # dedup — state 의 list 는 raw 그대로. 다른 step 이 set 으로 변환해 사용.
-    if neo is not None and outcome.edges:
-        await upsert_reads_writes(neo, outcome.edges)
-
-    # 라이브 스트림 — 결정론 R/W 링킹 결과를 step 완료 즉시 화면으로.
+    # 라이브 스트림은 임시 진행 표시다. 제품 graph는 전체 계획 검증 후에만 쓴다.
     stream = cfg.get("stream")
     await emit_edges(stream, outcome.edges)
     emit_message(stream, f"✅ 결정론 R/W 링킹 완료 — {len(outcome.edges)}건")

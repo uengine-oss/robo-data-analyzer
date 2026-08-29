@@ -1,7 +1,7 @@
 """search/corpus — 요청 DB별 코퍼스 캐시 (전역 싱글턴 .npz 대체).
 
 놀이터는 기동 시 한 DB 의 코퍼스·임베딩을 전역 캐시(.npz)해 요청별 DB 전환이 불가했다.
-여기선 **(uri, database) 키 캐시**로 바꿔 요청마다 그 DB 의 코퍼스를 쓴다(전역 싱글턴 없음).
+여기선 **(uri, database, analysis scope) 키 캐시**로 바꿔 요청마다 정확한 코퍼스를 쓴다.
 캐시는 임베딩 지문 + EMBEDDED 노드 수 서명으로 무효화한다(재분석 시 자동 재로드).
 
 - bm25·structural 재료(코드 텍스트)는 인메모리 코퍼스(게이트 재현 우선 — fulltext 이관은 후속 스펙).
@@ -25,6 +25,7 @@ _NO_EMBED_MSG = "이 그래프에는 검색 임베딩이 없습니다 (분석을
 _CORPUS_QUERY = f"""
 MATCH (n)
 WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+  AND n.analysis_scope_id = $analysis_scope_id
   AND n.generation_id = $generation_id
   AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
@@ -34,12 +35,12 @@ RETURN n.id AS id, coalesce(n.type, head(labels(n))) AS label,
        coalesce(n.stereotype,'') AS stereotype
 ORDER BY id
 """
-_FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})-[:CALLS]->"
-                 f"(n {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) WHERE n.id IS NOT NULL "
+_FAN_IN_QUERY = (f"MATCH (a {{graph_owner: '{ANALYZER_GRAPH_OWNER}', analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}})-[:CALLS]->"
+                 f"(n {{graph_owner: '{ANALYZER_GRAPH_OWNER}', analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}}) WHERE n.id IS NOT NULL "
                  "RETURN n.id AS id, count(DISTINCT a) AS fi")
 
-# (uri, db) -> (signature, Corpus)
-_cache: dict[tuple[str, str], tuple[tuple, "Corpus"]] = {}
+# (uri, db, analysis_scope_id) -> (signature, Corpus)
+_cache: dict[tuple[str, str, str], tuple[tuple, "Corpus"]] = {}
 
 
 class SearchUnavailable(RuntimeError):
@@ -49,11 +50,19 @@ class SearchUnavailable(RuntimeError):
 class Corpus:
     """요청 DB 한 벌의 코퍼스 — bm25/structural 재료 + by_id 메타 + fan_in (+scan 벡터)."""
 
-    def __init__(self, rows: list[dict], fan_in: dict, generation_id: str, vecs=None):
+    def __init__(
+        self,
+        rows: list[dict],
+        fan_in: dict,
+        analysis_scope_id: str,
+        generation_id: str,
+        vecs=None,
+    ):
         self.rows = rows
         self.by_id = {r["id"]: r for r in rows}
         self.ids = [r["id"] for r in rows]
         self.fan_in = fan_in
+        self.analysis_scope_id = analysis_scope_id
         self.generation_id = generation_id
         self._vecs = vecs
         from rank_bm25 import BM25Okapi
@@ -65,7 +74,11 @@ class Corpus:
         return self._vecs
 
 
-def load_corpus(*, generation_id: str | None = None) -> Corpus:
+def load_corpus(
+    *,
+    analysis_scope_id: str | None = None,
+    generation_id: str | None = None,
+) -> Corpus:
     """요청 DB 코퍼스(캐시). 지문 대조 후 서명 일치 시 재사용, 아니면 재로드."""
     from search.corpus.neo4j_reader import read_driver, resolve_target
 
@@ -73,11 +86,15 @@ def load_corpus(*, generation_id: str | None = None) -> Corpus:
     drv, db = read_driver()
     try:
         with completed_generation_session(
-            drv, db, expected_generation_id=generation_id,
+            drv,
+            db,
+            analysis_scope_id=analysis_scope_id,
+            expected_generation_id=generation_id,
         ) as s:
+            analysis_scope_id = s.analysis_scope_id
             generation_id = s.generation_id
             meta = s.run(
-                f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner, generation_id: $generation_id}}) "
+                f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner, analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}}) "
                 "RETURN m.fingerprint AS fp",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()
@@ -88,14 +105,14 @@ def load_corpus(*, generation_id: str | None = None) -> Corpus:
             if fp != want:
                 raise SearchUnavailable(f"임베딩 모델 불일치 (그래프={fp}, 질의={want}) — 재분석 필요")
             count = s.run(
-                f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: $graph_owner, generation_id: $generation_id}}) RETURN count(n) AS c",
+                f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: $graph_owner, analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}}) RETURN count(n) AS c",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()["c"]
             if count == 0:
                 raise SearchUnavailable(_NO_EMBED_MSG)
 
-            sig = (generation_id, fp, count)
-            key = (uri, db)
+            sig = (analysis_scope_id, generation_id, fp, count)
+            key = (uri, db, analysis_scope_id)
             cached = _cache.get(key)
             if cached is not None and cached[0] == sig:
                 return cached[1]
@@ -103,7 +120,7 @@ def load_corpus(*, generation_id: str | None = None) -> Corpus:
             rows = s.run(_CORPUS_QUERY).data()
             fan_in = {r["id"]: r["fi"] for r in s.run(_FAN_IN_QUERY).data()}
             vecs = _load_vectors(s, [r["id"] for r in rows]) if SETTINGS.semantic_search.dense_impl == "scan" else None
-            corpus = Corpus(rows, fan_in, generation_id, vecs)
+            corpus = Corpus(rows, fan_in, analysis_scope_id, generation_id, vecs)
         _cache[key] = (sig, corpus)
         return corpus
     except CompletedGenerationUnavailable as error:
@@ -117,7 +134,7 @@ def _load_vectors(session, ids: list[str]):
     import numpy as np
 
     m = {r["id"]: r["v"] for r in session.run(
-        "MATCH (n {graph_owner: $graph_owner, generation_id: $generation_id}) "
+        "MATCH (n {graph_owner: $graph_owner, analysis_scope_id: $analysis_scope_id, generation_id: $generation_id}) "
         "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
         "RETURN n.id AS id, n.embedding AS v",
         ids=ids,

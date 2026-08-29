@@ -1,6 +1,5 @@
 """run 판정 도구 — 헌법 IX 3층 중 1·2층(자동 검사 가능한 축)의 상설 소유자.
 
-절차 정본은 `specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`.
 새 검증 축이 생기면 일회용 스크립트를 쓰지 말고 여기에 추가해 매 run 상시로 돌게 한다.
 
 사용:
@@ -17,8 +16,8 @@ manifest 의 `neo4j_database` 와 다르면 경고한다.
 판정 축 (골드셋 없이 결정론 — 04 §3, 08 §20.0)
   [A] 회계    : 분기표 행 수(obligation) — 결정론 예측치와 일치해야 구조가 안 깨진 것
   [B] findings: 품질 격리 상태별 집계 — 정확도 축
-  [C] nl 품질 : 참조번호 누출·공허 서술·상한 절단 — record 응답 전수
-  [D] 비교    : baseline run 과 공통 행의 cond 채점 대조 — 경로 동일/변경 분리
+  [C] 구조 품질: 조건·효과 구조가 sealed evidence와 일치하는지 전수 대조
+  [D] 비교    : baseline run 과 공통 행의 구조 조건 대조 — 경로 동일/변경 분리
   [E] RETURN  : 원문 occurrence(독립 정답지) ↔ AST ↔ 행 증거 (04 §3.3)
   [F] CALL    : AST FUNCTION_CALL(독립 정답지) ↔ 행 증거 call 효과 ↔ 그래프 CALLS (04 §3.1)
   [G] R/W     : 결정론 링커 reads/writes ↔ 그래프 READS/WRITES, callee 오귀속 (04 §3.2)
@@ -35,10 +34,6 @@ from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.quality_gates.nl_reference_safety import (
-    MIN_REFERENCE_LEAK,
-    reference_leak_count,
-)
 from pipeline.quality_gates.rule_audit_artifact import (
     RULE_AUDIT_DIRECTORY,
     load_rule_audit_records,
@@ -47,56 +42,9 @@ from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
 from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
 
 RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
-VAGUE = re.compile(r"해당 케이스를 처리한다|다음 단계로 진행한다$|처리하고 종료한다$")
-# Historical provider-backed runs used a 600-character Rule narrative leaf.  Current
-# deterministic Rules have ``nl=""`` and are audited through ``rule-structures``.
-LEGACY_RULE_NL_MAX_LENGTH = 600
-NL_LIMIT = LEGACY_RULE_NL_MAX_LENGTH
 STRING_LITERAL = re.compile(
     r'"(?:\\.|[^"\\])*"|\'(?:\'\'|\\.|[^\'\\])*\'|`(?:``|[^`])*`'
 )
-
-
-def _reference_leak_count(row: dict) -> int:
-    """Count only evidence IDs that the current row could actually echo.
-
-    A bare ``C3``/``E5`` can be a real legacy status code.  Treating every such token as
-    an internal-reference leak made the checker accuse correct business text.  The
-    evidence row already declares the only private IDs exposed to the model, so the
-    measurement must intersect with that exact set.
-    """
-    return reference_leak_count(str(row.get("nl") or ""), row)
-
-
-def _delivered_nl_quality(
-    graph_rows: list[dict], evidence_rows: dict[tuple[str, str], dict],
-) -> Counter:
-    """Measure consumer-visible graph narratives against the same row evidence."""
-    quality = Counter()
-    for graph_row in graph_rows:
-        key = (
-            str(graph_row.get("target_id") or ""),
-            f"R{int(graph_row.get('anchor_line') or 0)}",
-        )
-        evidence = evidence_rows.get(key)
-        if evidence is None:
-            quality["unmatched"] += 1
-            continue
-        narrative = str(graph_row.get("nl") or "").strip()
-        if not narrative:
-            continue
-        quality["n"] += 1
-        delivered = {**evidence, "nl": narrative}
-        if _reference_leak_count(delivered) >= MIN_REFERENCE_LEAK:
-            quality["leak"] += 1
-        if VAGUE.search(narrative):
-            quality["vague"] += 1
-        # Frame projections deliberately preserve complete meaning beyond the old
-        # 600-character model wire limit.  Only landing exactly on that legacy limit
-        # is a truncation signal; a longer projection is not evidence of cutting.
-        if len(narrative) == NL_LIMIT:
-            quality["at_limit"] += 1
-    return quality
 
 
 def _graph_rule_structure_delta(
@@ -117,9 +65,10 @@ def _graph_rule_structure_delta(
         expected = expected_rows[key]
         delivered = actual[key]
         if (
-            (delivered.get("cond") or None) != (expected.get("cond") or None)
-            or list(delivered.get("effects") or ()) != list(expected.get("then") or ())
-            or str(delivered.get("nl") or "") != str(expected.get("nl") or "")
+            (delivered.get("structural_condition") or None)
+            != (expected.get("structural_condition") or None)
+            or list(delivered.get("structural_effects") or ())
+            != list(expected.get("structural_effects") or ())
         ):
             mismatches.append(key)
     return {
@@ -245,7 +194,7 @@ def load_rule_obligations(run_dir: Path) -> set[tuple[str, str]]:
 
 
 def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
-    """record 에서 (target_id, R키) → {cond, then, nl, when, direct} 를 전수 수집."""
+    """Collect each Rule's structural fields and sealed evidence references."""
     audit_records = load_rule_audit_records(run_dir)
     if audit_records:
         rows: dict[tuple[str, str], dict] = {}
@@ -261,12 +210,15 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                 rule = rules[row_key]
                 owner_id = str(row_owners.get(row_key) or target_id)
                 rows[(owner_id, str(row_key))] = {
-                    "cond": rule.get("cond"),
-                    "then": list(rule.get("then") or ()),
-                    "nl": str(rule.get("nl") or ""),
+                    "structural_condition": rule.get("structural_condition"),
+                    "structural_effects": list(
+                        rule.get("structural_effects") or ()
+                    ),
                     "when": list(evidence_row.get("when") or ()),
                     "direct": list(evidence_row.get("direct") or ()),
-                    "expected_cond": render_row_condition(evidence_row, conditions),
+                    "expected_structural_condition": render_row_condition(
+                        evidence_row, conditions
+                    ),
                 }
         return rows
     rows: dict[tuple[str, str], dict] = {}
@@ -281,9 +233,12 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                     for node_key, target_id, evidence_rows in blocks:
                         for row_key, evidence in evidence_rows.items():
                             rows[(target_id, row_key)] = {
-                                "cond": list(evidence.get("when") or []),
-                                "then": list(evidence.get("direct") or []),
-                                "nl": "",
+                                "structural_condition": list(
+                                    evidence.get("when") or []
+                                ),
+                                "structural_effects": list(
+                                    evidence.get("direct") or []
+                                ),
                                 "when": evidence.get("when") or [],
                                 "direct": evidence.get("direct") or [],
                             }
@@ -293,9 +248,8 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                             if row is None or not isinstance(rule, dict):
                                 continue
                             rows[(target_id, row_key)] = {
-                                "cond": rule.get("cond") or [],
-                                "then": rule.get("then") or [],
-                                "nl": (rule.get("nl") or "").strip(),
+                                "structural_condition": rule.get("cond") or [],
+                                "structural_effects": rule.get("then") or [],
                                 "when": row.get("when") or [],
                                 "direct": row.get("direct") or [],
                             }
@@ -306,9 +260,8 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                 target_id = str(record.get("target_id") or "unknown")
                 for row_key, evidence in evidence_rows.items():
                     rows[(target_id, row_key)] = {
-                        "cond": list(evidence.get("when") or []),
-                        "then": list(evidence.get("direct") or []),
-                        "nl": "",
+                        "structural_condition": list(evidence.get("when") or []),
+                        "structural_effects": list(evidence.get("direct") or []),
                         "when": evidence.get("when") or [],
                         "direct": evidence.get("direct") or [],
                     }
@@ -317,9 +270,8 @@ def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
                     if row is None:
                         continue
                     rows[(target_id, row_key)] = {
-                        "cond": rule.get("cond") or [],
-                        "then": rule.get("then") or [],
-                        "nl": (rule.get("nl") or "").strip(),
+                        "structural_condition": rule.get("cond") or [],
+                        "structural_effects": rule.get("then") or [],
                         "when": row.get("when") or [],
                         "direct": row.get("direct") or [],
                     }
@@ -351,7 +303,7 @@ def load_rule_findings(run_dir: Path) -> dict[tuple[str, str], dict]:
             if value.get("concern") != "rules":
                 continue
             status = str(value.get("status") or "")
-            if status not in {"rejected", "unverified", "unavailable"}:
+            if status not in {"excluded", "rejected", "unverified", "unavailable"}:
                 raise ValueError(
                     f"invalid Rule finding status at {path}:{line_number}: {status!r}"
                 )
@@ -767,7 +719,7 @@ async def _graph_gold_axes(source_root: Path) -> dict[str, set]:
                 f"(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
                 "WHERE any(label IN labels(routine) WHERE "
                 "label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
-                "AND (b:TABLE OR b:OBJECT_REFERENCE) "
+                "AND b:TABLE "
                 "RETURN routine.file_path AS file, routine.name AS name, "
                 "b.name AS table_name"
             )
@@ -874,21 +826,33 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             "RETURN type(r) AS rel, count(*) AS n "
             "ORDER BY n DESC LIMIT 12"
         )
-        # cond 가 빈 규칙(무조건 실행 행)과 direct outcome이 없는 nested-control 행은 예시를
-        # 만들지 않는 것이 계약이다(example_synthesis). 둘을 위반으로 세면 진짜 신호가 묻힌다.
+        # Example은 충분한 업무 조건과 업무 효과가 모두 있는 Rule에서만 생성된다.
         rule_example = await one(
             f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             f"OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "WITH r, count(e) AS examples, "
-            "     (r.cond IS NULL OR r.cond = '') AS unconditional, "
-            "     (r.then IS NOT NULL AND size(r.then) > 0) AS has_outcome "
+            "     (r.business_condition IS NOT NULL "
+            "      AND r.business_condition <> '' "
+            "      AND r.business_effects IS NOT NULL "
+            "      AND size(r.business_effects) > 0) AS expects_example "
             "RETURN count(r) AS rules, "
-            "       sum(CASE WHEN unconditional THEN 1 ELSE 0 END) AS unconditional_rules, "
-            "       sum(CASE WHEN NOT unconditional AND NOT has_outcome THEN 1 ELSE 0 END) "
-            "         AS conditional_without_outcome, "
-            "       sum(CASE WHEN NOT unconditional AND has_outcome AND examples = 0 THEN 1 ELSE 0 END) "
-            "         AS conditional_without_example, "
+            "       sum(CASE WHEN expects_example THEN 1 ELSE 0 END) AS eligible_rules, "
+            "       sum(CASE WHEN NOT expects_example THEN 1 ELSE 0 END) AS ineligible_rules, "
+            "       sum(CASE WHEN expects_example AND examples = 0 THEN 1 ELSE 0 END) "
+            "         AS eligible_without_example, "
             "       sum(examples) AS example_links"
+        )
+        rule_business_projection = await one(
+            f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
+            "RETURN count(*) AS n, "
+            "       sum(CASE WHEN r.structural_condition IS NOT NULL "
+            "                 AND r.structural_condition <> '' "
+            "                 AND (r.business_condition IS NULL OR r.business_condition = '') "
+            "                THEN 1 ELSE 0 END) AS missing_business_condition, "
+            "       sum(CASE WHEN r.structural_effects IS NOT NULL "
+            "                 AND size(r.structural_effects) > 0 "
+            "                 AND (r.business_effects IS NULL OR size(r.business_effects) = 0) "
+            "                THEN 1 ELSE 0 END) AS missing_business_effects"
         )
         orphan_example = await one(
             f"MATCH (e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
@@ -899,13 +863,15 @@ async def _graph_axes(database: str | None) -> dict[str, object]:
             f"MATCH (c:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
             f"-[:HAS_RULE]->(r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
             "RETURN c.id AS target_id, r.anchor_line AS anchor_line, "
-            "r.cond AS cond, r.then AS effects, r.nl AS nl"
+            "r.structural_condition AS structural_condition, "
+            "r.structural_effects AS structural_effects"
         )
         return {
             "database": getattr(client, "_database", None),
             "labels": counts,
             "relations": rels,
             "rule_example": rule_example[0] if rule_example else {},
+            "rule_business_projection": rule_business_projection,
             "orphan_example": orphan_example[0] if orphan_example else {},
             "rule_rows": rule_rows,
         }
@@ -936,6 +902,7 @@ def judge(
     )
     print(
         f"\n[A] Rule 회계: obligation {len(obligations)} = trusted {len(rows)} + "
+        f"excluded {rule_statuses['excluded']} + "
         f"rejected/unverified {rule_statuses['rejected'] + rule_statuses['unverified']} + "
         f"unavailable {rule_statuses['unavailable']} · residual {len(residual)} · "
         f"unknown {len(unknown)}"
@@ -950,30 +917,28 @@ def judge(
                 findings[json.loads(line).get("status")] += 1
     print(f"[B] findings: {dict(findings)} · 합계 {sum(findings.values())}")
 
-    # [C] nl 품질
-    quality = Counter()
-    for row in all_rows.values():
-        nl = row["nl"]
-        if not nl:
-            continue
-        quality["n"] += 1
-        if _reference_leak_count(row) >= MIN_REFERENCE_LEAK:
-            quality["leak"] += 1
-        if VAGUE.search(nl):
-            quality["vague"] += 1
-        if len(nl) == NL_LIMIT:
-            quality["at_limit"] += 1
-    n = quality["n"] or 1
-    print(f"[C] nl {quality['n']}행 — 누출 {quality['leak']} ({quality['leak'] / n * 100:.1f}%)"
-          f" · 공허 {quality['vague']} ({quality['vague'] / n * 100:.1f}%)"
-          f" · 상한절단 {quality['at_limit']} ({quality['at_limit'] / n * 100:.1f}%)")
+    # [C] sealed evidence → structural Rule exactness
+    condition_mismatches = sum(
+        row.get("structural_condition")
+        != row.get("expected_structural_condition")
+        for row in all_rows.values()
+        if "expected_structural_condition" in row
+    )
+    direct_effects_missing = sum(
+        bool(row.get("direct")) and not row.get("structural_effects")
+        for row in all_rows.values()
+    )
+    print(
+        f"[C] Rule 구조 {len(all_rows)}행 — 조건 불일치 {condition_mismatches} · "
+        f"직접 효과 누락 {direct_effects_missing}"
+    )
 
     # [D] baseline 비교 — cond==when 채점을 행 단위로 대조
     if baseline_dir is not None:
         base_rows = load_rule_rows(baseline_dir)
         shared = all_rows.keys() & base_rows.keys()
         def expected_path(row: dict) -> object:
-            return row.get("expected_cond", row["when"])
+            return row.get("expected_structural_condition", row["when"])
 
         same_path = [
             k for k in shared
@@ -983,9 +948,12 @@ def judge(
 
         def failure_rate(keys: list, table: dict) -> tuple[int, int]:
             def mismatched(row: dict) -> bool:
-                if "expected_cond" in row:
-                    return row["cond"] != row["expected_cond"]
-                return set(row["cond"]) != set(row["when"])
+                if "expected_structural_condition" in row:
+                    return (
+                        row["structural_condition"]
+                        != row["expected_structural_condition"]
+                    )
+                return set(row["structural_condition"]) != set(row["when"])
 
             failed = sum(1 for k in keys if mismatched(table[k]))
             return failed, len(keys)
@@ -994,7 +962,7 @@ def judge(
             base_failed, total = failure_rate(keys, base_rows)
             new_failed, _ = failure_rate(keys, all_rows)
             if total:
-                print(f"[D] {label} {total}행 — cond 불일치"
+                print(f"[D] {label} {total}행 — 구조 조건 불일치"
                       f" base {base_failed} ({base_failed / total * 100:.2f}%)"
                       f" → now {new_failed} ({new_failed / total * 100:.2f}%)")
         only_new = len(all_rows.keys() - base_rows.keys())
@@ -1059,32 +1027,27 @@ def judge(
     ):
         if values:
             print(f"    ⚠ {label} sample: {values[:3]}")
-    delivered_quality = _delivered_nl_quality(graph["rule_rows"], rows)
-    delivered_n = delivered_quality["n"] or 1
-    print(
-        f"[C-delivery] graph nl {delivered_quality['n']}행 — "
-        f"누출 {delivered_quality['leak']} "
-        f"({delivered_quality['leak'] / delivered_n * 100:.1f}%) · "
-        f"공허 {delivered_quality['vague']} "
-        f"({delivered_quality['vague'] / delivered_n * 100:.1f}%) · "
-        f"상한절단 {delivered_quality['at_limit']} "
-        f"({delivered_quality['at_limit'] / delivered_n * 100:.1f}%) · "
-        f"미대조 {delivered_quality['unmatched']}"
-    )
+    print("[C-delivery] 공개 Rule 업무 의미 투영")
+    for projection_row in graph["rule_business_projection"]:
+        print(
+            f"    Rule {projection_row['n']} · "
+            f"조건 투영 누락 {projection_row['missing_business_condition']} · "
+            f"효과 투영 누락 {projection_row['missing_business_effects']}"
+        )
     print(f"\n[G] 그래프 관계 (DB={actual_db})")
     for row in graph["relations"]:
         print(f"    {row['rel']:<16} {row['n']}")
     counts = graph["rule_example"]
     orphans = (graph["orphan_example"] or {}).get("orphans")
-    print(f"[H] EXAMPLE — RULE {counts.get('rules')} "
-          f"(무조건 행 {counts.get('unconditional_rules')} 는 예시 없음이 계약) · "
-          f"조건-only 행 {counts.get('conditional_without_outcome')} · "
+    print(f"[H] EXAMPLE — RULE {counts.get('rules')} · "
+          f"생성 대상 {counts.get('eligible_rules')} · "
+          f"생성 비대상 {counts.get('ineligible_rules')} · "
           f"HAS_EXAMPLE {counts.get('example_links')} · 고아 EXAMPLE {orphans}")
-    unmatched = counts.get("conditional_without_example") or 0
+    unmatched = counts.get("eligible_without_example") or 0
     if unmatched:
-        print(f"    ⚠ 조건과 직접 결과가 있는 RULE 인데 EXAMPLE 없음 {unmatched}건 — 04 §3.5 위반 후보")
+        print(f"    ⚠ 충분한 조건·효과가 있는데 EXAMPLE 없음 {unmatched}건 — 위반 후보")
     else:
-        print("    조건과 직접 결과가 있는 RULE 의 예시 누락 0")
+        print("    생성 대상 RULE의 예시 누락 0")
     if orphans:
         print("    ⚠ 소유 RULE 없는 EXAMPLE — 04 §3.5 위반 후보")
     if gold_dir is not None:

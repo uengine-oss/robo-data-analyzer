@@ -13,15 +13,19 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field, ValidationError
 
 from agents.contracts import CallWrapper, DdlTransform, TableAccessPattern
-from agents.tools.inspection import SkillCatalogError, build_skill_catalog
+from agents.tools.inspection import (
+    SkillCatalogError,
+    build_skill_catalog,
+    make_list_code_nodes,
+)
 from agents.tools.filesystem import make_filesystem_tools
+from graph.schema.graph_nodes import CodeNode
 from llm import embedder
 from llm.client import build_llm_client
 from llm.configs.loader import _build_llm_config, load_llm_config
-from agents.middleware.call_limit import ModelCallLimitMiddleware
 from agents.middleware.cost_tracking import CostTrackingMiddleware
-from agents.middleware.todos import TodoTrackerMiddleware
 from agents.middleware.tool_events import ToolEventEmitterMiddleware
+from agents.scan import _build_user_message as build_scan_user_message
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.prompt_values import _extract_target_and_sort
 from agents.runtime import (
@@ -46,6 +50,10 @@ from llm.usage.usage_jsonl_writer import (
     persist_usage_and_charge_budget,
 )
 from search.query.query_llm import _record_usage
+from pipeline.execution.run_output_context import (
+    reset_response_locale,
+    set_response_locale,
+)
 
 
 class _BoundaryResponse(BaseModel):
@@ -58,6 +66,29 @@ class _DefaultedBoundaryResponse(BaseModel):
 
 
 class LlmBoundaryContractTest(unittest.TestCase):
+    def test_scan_prompt_hides_bound_root_and_keeps_compact_complete_inventory(self) -> None:
+        inventory = {
+            "extension_counts": {f"x{index:02d}": 1 for index in range(25)},
+            "manifest_paths": ["project.manifest"],
+            "scanner_category_file_counts": {"Source": 75},
+        }
+
+        message = build_scan_user_message(inventory, [])
+
+        self.assertNotIn("project_root", message)
+        self.assertNotIn("analysis-root", message)
+        self.assertIn('"x24":1', message)
+        self.assertIn('"Source":75', message)
+        self.assertNotIn("manifest_content", message)
+        self.assertIn("ScanProposal 을 출력하라", message)
+        self.assertNotIn("ScanResult 를 출력하라", message)
+
+        prompt = (
+            Path(__file__).resolve().parents[2] / "agents" / "prompts" / "scan.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("경로는 프로젝트 상대경로", prompt)
+        self.assertNotIn("user message 의 `project_root`", prompt)
+
     def test_agent_stack_has_no_lossy_context_rewrite_or_summary(self) -> None:
         root = Path(__file__).resolve().parents[2]
         stack_source = (root / "agents" / "middleware" / "stack.py").read_text(
@@ -69,9 +100,16 @@ class LlmBoundaryContractTest(unittest.TestCase):
             "SummarizationMiddleware",
             "context_editing_trigger_tokens",
             "_TOOL_RESULT_KEEP_LAST",
+            "TodoListMiddleware",
+            "TodoTrackerMiddleware",
+            "write_todos",
+            "PatchToolCallsMiddleware",
+            "deepagents",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, stack_source)
+        requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+        self.assertNotIn("deepagents", requirements)
         settings_source = (root / "shared" / "config" / "settings.py").read_text(
             encoding="utf-8"
         )
@@ -95,7 +133,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
         for relative_path in (
             "agents/residual.py",
             "pipeline/steps/step7_analyze_code/step_entry.py",
-            "pipeline/steps/step7_analyze_code/batch_prompt_values.py",
+            "pipeline/steps/step7_analyze_code/table_usage_prompt_values.py",
             "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
         ):
             with self.subTest(relative_path=relative_path):
@@ -329,10 +367,6 @@ class LlmBoundaryContractTest(unittest.TestCase):
             blocking_parent.write_text("file", encoding="utf-8")
             diagnostic_path = blocking_parent / "events.jsonl"
 
-            todo_middleware = TodoTrackerMiddleware("test", diagnostic_path)
-            state = {"todos": [{"content": "inspect", "status": "in_progress"}]}
-            self.assertIs(todo_middleware.after_model(state, None), state)
-
             tool_middleware = ToolEventEmitterMiddleware("test", diagnostic_path)
             tool_middleware._emit(
                 "tool_start",
@@ -343,10 +377,6 @@ class LlmBoundaryContractTest(unittest.TestCase):
                 result_stats=None,
                 result_content=None,
             )
-
-    def test_nonpositive_model_call_limit_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            ModelCallLimitMiddleware("test", max_calls=0)
 
     def test_unreadable_utf8_file_is_reported_by_grep(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -363,6 +393,111 @@ class LlmBoundaryContractTest(unittest.TestCase):
         self.assertIn("NO_MATCHES", output)
         self.assertIn("READ_SKIPPED: count=1", output)
         self.assertIn("UnicodeDecodeError", output)
+
+    def test_filesystem_search_pages_are_complete_without_silent_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory)
+            for index in range(205):
+                (source_root / f"f{index:03}.txt").write_text(
+                    f"needle {index}\n", encoding="utf-8",
+                )
+            tools = make_filesystem_tools(source_root)
+
+            first_glob = tools["glob_search"].invoke({
+                "pattern": "*.txt", "base": ".", "offset": 0,
+            })
+            last_glob = tools["glob_search"].invoke({
+                "pattern": "*.txt", "base": ".", "offset": 200,
+            })
+            first_grep = tools["grep"].invoke({
+                "pattern": "needle", "path_glob": "*.txt", "base": ".",
+                "offset": 0,
+            })
+            last_grep = tools["grep"].invoke({
+                "pattern": "needle", "path_glob": "*.txt", "base": ".",
+                "offset": 160,
+            })
+
+        self.assertIn("returned=200 total=205 next_offset=200", first_glob)
+        self.assertIn("returned=5 total=205 next_offset=null", last_glob)
+        self.assertIn("returned=80 total=205 next_offset=80", first_grep)
+        self.assertIn("returned=45 total=205 next_offset=null", last_grep)
+        self.assertNotIn(str(source_root), first_glob)
+        self.assertNotIn(str(source_root), first_grep)
+        self.assertIn("f000.txt", first_glob)
+        self.assertIn("f000.txt:1:needle 0", first_grep)
+
+    def test_relative_glob_path_opens_the_matching_code_node_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory)
+            source = source_root / "src" / "sample.c"
+            source.parent.mkdir()
+            source.write_text("void sample(void) {}\n", encoding="utf-8")
+            nodes = [CodeNode(
+                id="fn:sample", name="sample", signature="sample()",
+                file_path="src/sample.c", start_line=1, end_line=1,
+                label="FUNCTION",
+            )]
+            tools = make_filesystem_tools(source_root)
+            listing = make_list_code_nodes(nodes, project_root=source_root)
+
+            globbed = tools["glob_search"].invoke({
+                "pattern": "**/*.c", "base": ".",
+            })
+            result = json.loads(listing.invoke({"file": "src/sample.c"}))
+
+        self.assertIn("src/sample.c", globbed)
+        self.assertNotIn(str(source_root), globbed)
+        self.assertEqual("sample", result["items"][0]["name"])
+
+    def test_partial_upload_tools_cannot_see_or_read_unselected_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory)
+            selected = source_root / "selected.c"
+            outside = source_root / "outside.c"
+            selected.write_text("selected needle\n", encoding="utf-8")
+            outside.write_text("outside needle\n", encoding="utf-8")
+            tools = make_filesystem_tools(
+                source_root,
+                allowed_files=(selected,),
+            )
+
+            listing = tools["ls"].invoke({"path": "."})
+            globbed = tools["glob_search"].invoke({
+                "pattern": "*.c", "base": ".",
+            })
+            grepped = tools["grep"].invoke({
+                "pattern": "needle", "path_glob": "*.c", "base": ".",
+            })
+            outside_read = tools["read_file"].invoke({"path": "outside.c"})
+
+        self.assertIn("selected.c", listing)
+        self.assertNotIn("outside.c", listing)
+        self.assertIn("selected.c", globbed)
+        self.assertNotIn("outside.c", globbed)
+        self.assertIn("selected needle", grepped)
+        self.assertNotIn("outside needle", grepped)
+        self.assertEqual("NOT_SELECTED: outside.c", outside_read)
+
+    def test_code_node_listing_exposes_every_page(self) -> None:
+        nodes = [
+            CodeNode(
+                id=f"fn:{index}", name=f"fn_{index}", signature=f"fn_{index}()",
+                file_path="sample.c", start_line=index + 1, end_line=index + 1,
+                label="FUNCTION",
+            )
+            for index in range(55)
+        ]
+        listing = make_list_code_nodes(nodes)
+        first = json.loads(listing.invoke({"file": "sample.c", "offset": 0}))
+        second = json.loads(listing.invoke({"file": "sample.c", "offset": 50}))
+
+        self.assertEqual((50, 55, 50), (
+            first["returned"], first["total"], first["next_offset"],
+        ))
+        self.assertEqual((5, 55, None), (
+            second["returned"], second["total"], second["next_offset"],
+        ))
 
     def test_usage_metadata_is_required_for_cost_accounting(self) -> None:
         response_without_usage = SimpleNamespace(usage_metadata=None)
@@ -427,6 +562,12 @@ class LlmBoundaryContractTest(unittest.TestCase):
 
 
 class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._response_locale_token = set_response_locale("ko")
+
+    async def asyncTearDown(self) -> None:
+        reset_response_locale(self._response_locale_token)
+
     async def test_submit_tool_validation_error_is_not_reported_as_missing_call(self) -> None:
         invalid_submit = AIMessage(
             content="",
@@ -453,7 +594,6 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     tools=[],
                     response_format=_BoundaryResponse,
                     user_message="inspect",
-                    max_calls=1,
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
@@ -484,7 +624,6 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     tools=[],
                     response_format=_BoundaryResponse,
                     user_message="inspect",
-                    max_calls=1,
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
@@ -529,7 +668,6 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     tools=[],
                     response_format=_BoundaryResponse,
                     user_message="inspect",
-                    max_calls=1,
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
@@ -555,7 +693,6 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     tools=[],
                     response_format=_BoundaryResponse,
                     user_message="inspect",
-                    max_calls=2,
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
@@ -579,7 +716,6 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     tools=[],
                     response_format=_BoundaryResponse,
                     user_message="inspect",
-                    max_calls=3,
                     run_dir=Path("unused"),
                     cost_budget=CostBudget(limit_usd=1.0),
                 )
@@ -679,10 +815,24 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "llm.runners.yaml_llm_runner.load_llm_config",
                     return_value=SimpleNamespace(
-                        provider="openai", model="cfg-model",
+                        provider="openai",
+                        api_base="https://api.example/v1",
+                        model="cfg-model",
+                        max_tokens=321,
+                        sampling=SimpleNamespace(temperature=0.2, top_p=0.8),
+                        reasoning_effort="none",
+                        extra_body={"seed": 7},
                         structured_output_method="function_calling",
                     ),
                 ),
+                patch(
+                    "llm.runners.yaml_llm_runner.response_cache.is_enabled",
+                    return_value=True,
+                ),
+                patch(
+                    "llm.runners.yaml_llm_runner.response_cache.make_key",
+                    return_value="k" * 64,
+                ) as make_cache_key,
                 patch(
                     "llm.runners.yaml_llm_runner.response_cache.load",
                     return_value=_BoundaryResponse(value="cached"),
@@ -703,6 +853,10 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             build_client.assert_not_called()
+            self.assertEqual(321, make_cache_key.call_args.kwargs["max_tokens"])
+            self.assertEqual(0.2, make_cache_key.call_args.kwargs["temperature"])
+            self.assertEqual(0.8, make_cache_key.call_args.kwargs["top_p"])
+            self.assertEqual({"seed": 7}, make_cache_key.call_args.kwargs["extra_body"])
             self.assertEqual("cached", result.value)
             prompt_record.assert_called_once()
             evidence = prompt_record.call_args.kwargs

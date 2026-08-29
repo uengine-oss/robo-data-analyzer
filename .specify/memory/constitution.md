@@ -1,211 +1,187 @@
-# ROBO Data Analyzer Constitution
+# ROBO Data Analyzer 헌법
 
-<!--
-  These principles describe what the robo-data-analyzer codebase ALREADY embodies.
-  They were derived (2026-06-15) by reverse-engineering the implementation, not from a
-  prior design doc. Every new spec/plan MUST be checked against them ("Constitution Check"
-  gate in plan.md). Amending a principle requires bumping the version below and noting why.
--->
+이 문서는 Analyzer가 어떤 기능을 추가하거나 리팩터링하더라도 지켜야 하는 최상위 원칙이다.
+구체적인 wire와 필드는 `specs/131-cross-node-semantic-grounding/`의 현행 spec과 contract가
+소유한다. 과거 spec·실험·보고서는 현재 제품 계약을 바꾸지 못한다.
 
-## Core Principles
+## I. 사실을 확인한 뒤에만 제품을 바꾼다
 
-### I. Determinism-First (결정론 우선)
+- 잘못된 결과 하나의 정확한 원문 좌표에서 시작해
+  `원문 → Parser 구조 사실 → Analyzer 내부 변환 → 실제 모델 요청 → 응답 검증 → graph 공개`를
+  실제 입력값·변환값·출력값으로 추적한다.
+- 가설은 다음 검사를 고르는 데만 사용한다. 원인이 닫히기 전에 제품 로직을 수정하지 않는다.
+- 가장 값싼 증거인 봉인 hash, 기존 actual, exact-once ledger와 현재 source/data flow부터 확인한다.
+  필요할 때만 영향 좌표, 집중 계측, 최소 재현·역실험, Git history/bisect, 외부 1차 근거 순으로
+  조사 범위를 넓힌다.
+- 특정 고객 코드, 이름 모양, 한 언어의 문자열 패턴에 맞춘 패치는 제품 해법이 아니다.
 
-LLM calls are reserved for steps that genuinely require *meaning*. Everything that can be
-computed deterministically MUST be: AST/DDL parsing, code↔table R/W grep linking, call
-classification, the bottom-up analysis DAG (Tarjan SCC + Kahn rounds), the Example Mapping
-builder, Leiden component clustering, and health metrics are all **LLM 0**.
+## II. Parser는 구조를 기록하고 Analyzer가 의미를 결정한다
 
-**Rationale**: determinism makes runs reproducible, cheap, and auditable. An LLM where a
-regex or graph algorithm suffices is a defect, not a feature.
+- ANTLR Parser는 decode 결과, grammar 종류, 정확한 source range, parent/child, source order,
+  call/callee/receiver/argument 범위, 선언·사용·import·type reference·조건식과 문법적 presence만
+  생산한다.
+- Parser는 final binding, overload 선택, type compatibility, linkage, internal/external,
+  standard-library/framework 분류, 업무 의미와 graph edge를 결정하지 않는다.
+- Analyzer의 언어별 semantic adapter가 C·Java·Python·SQL 등의 scope, visibility, import,
+  type, linkage와 동적 한계를 해석한다. 언어 중립 resolution core가 최종 상태와 관계 후보를
+  정확히 한 번 확정한다.
+- Analyzer가 Parser 결손을 언어별 정규식, 문자열 분할, 괄호 세기, 이름 추측으로 다시 파싱해
+  숨기는 것은 금지한다. 필요한 구조 사실이 없으면 Parser 계약을 고친다.
 
-### II. Zero-Branch Strategy Pattern (분기 0)
+## III. 모든 필수 대상을 손실 없이 정확히 한 번 닫는다
 
-Pipeline variants (`framework` / `dbms`) are expressed by **declaring** a `Strategy(steps=…)`
-in `pipeline/strategies.py`. `pipeline/execution/langgraph_builder.py` assembles the LangGraph
-StateGraph with **no strategy `if` branches**. A step tuple = a parallel superstep group.
-Adding a new strategy MUST touch exactly one place (the declaration) and zero control-flow
-branches.
+- 각 단계는 먼저 required population을 확정하고, 각 key를 성공·정상 미확정·명시 제외·실패 중
+  계약이 허용한 한 상태에 정확히 한 번 배정한다.
+- missing, duplicate, unexpected, unclassified residual을 빈 성공이나 정상 미확정으로 바꾸지 않는다.
+- 같은 함수·원문·의미 의무를 같은 concern에서 반복 분석하지 않는다. 큰 입력을 나눌 때도 각 source
+  item과 의미 obligation은 정확히 한 partition에만 속하고 한 번만 합쳐져야 한다.
+- partial upload는 정상 입력이다. 업로드 범위 밖 정의는 `external`로 닫는다. `unresolved`나
+  occurrence를 별도 제품 graph node/label로 만들지 않고 run artifact와 진단 장부에 보존한다.
 
-**Rationale**: branching logic scattered across steps is where divergence bugs breed.
+## IV. 모델에는 의미 판정에 꼭 필요한 비중복 정보만 보낸다
 
-### III. Single Source of Truth (단일 진실)
+- 함수 원문은 한 번 줄 번호를 붙인 뒤 Parser 범위로 잘라 한 section에만 둔다.
+- 모델 입력은 원문, 작은 구조 지도, 원문만으로 알 수 없는 사용 symbol의 확정 선언값·타입,
+  직접 table/column 사용, 확정된 사용자 callee의 반환·외부 상태·직접 data 효과, 현재 코드가 실제로
+  소비하는 검증된 project/framework 계약으로 구성한다.
+- stable ID, hash, 절대 경로, char offset, grammar 내부 ref, candidate/resolution 장부, confidence,
+  evidence 복창, question처럼 모델의 의미 판정을 개선하지 않는 내부 정보는 모델에 보내지 않는다.
+- 같은 사실을 source·structure·symbol·table·callee section에 반복하지 않는다. 빈 선택 section도
+  보내지 않는다.
+- 짧게 만들기 위해 이름을 암호처럼 축약하거나 의미를 생략하지 않는다. 제거 기준은 오직
+  `없어도 정확성·완전성·재현성이 변하지 않고 다른 권위 값에서 완전히 복원되는가`다.
 
-Each cross-cutting fact has exactly one home: all `ROBO_*` environment config lives in
-`shared/config/settings.py` (the `SETTINGS` singleton); all Neo4j relationship names live in
-`graph/schema/rel_types.py` (never a Cypher string literal). No magic numbers inline.
+## V. LLM 호출은 닫힌 목록이고 같은 의미를 두 번 묻지 않는다
 
-**Rationale**: one definition, one place to change, no drift.
+제품에서 허용되는 생성 family는 다음뿐이다.
 
-### IV. No Silent Failure (silent fail 금지)
+1. 알려지지 않은 project의 scanning adapter 후보
+2. 알려지지 않은 외부 문서 형식의 adapter 후보
+3. 기존 패턴으로 연결되지 않은 table 접근 후보
+4. 함수 Summary
+5. 직접 FunctionTableUsage
+6. Rule atom 업무 의미와 row 분류
+7. 최종 Table·Column 설명
 
-Every **operational or deterministic-contract failure** that makes the phase unable to
-produce a trustworthy result MUST `log_error` + `stream.emit(error)` + `raise`. Returning a
-quietly empty result is forbidden (the unresolved-queue-emptied incident). Absent inputs that
-invalidate a phase (e.g. missing antlr AST dir), exhausted transport, missing audit evidence,
-budget overflow, and deterministic invariant violations are fatal.
+- Example, Module, Component, Glossary, search segment, graph projection과 모든 ledger는 LLM 없이
+  결정론적으로 만든다.
+- Summary·FunctionTableUsage·Rule은 같은 함수 입력에서 concern별 projection을 만들고 서로의
+  자연어 결과나 완료를 기다리지 않는다. 승인된 3분할 외에 같은 함수를 다른 의미로 다시 묻지 않는다.
+- hidden judge, repair, second meaning pass, dummy warm-up, 자동 follow-up/tool loop, content retry는
+  금지한다. 서버가 request bytes를 받지 않았음이 증명된 transport 실패만 같은 invocation identity로
+  재전송할 수 있다. 현재 runner와 provider SDK의 자동 재시도는 0이며, `deadline`·`length`·`repetition`·
+  schema 실패를 더 작은 의미 요청이나 수정된 응답으로 성공 승격하지 않는다.
+- 공통 system prefix는 byte-identical하게 유지하고 가변 입력은 뒤에 둔다. 각 family의 첫 실제
+  요청이 cache를 데우며, cache hit를 위해 의미가 다른 요청을 억지로 합치지 않는다.
+- 위 cache는 provider의 KV-prefix cache다. Analyzer의 영속 응답 cache는 기본 OFF이며, 모델 이름이나
+  endpoint를 동일성 근거로 삼지 않는다. weights/revision·tokenizer·quantization·serving runtime·provider
+  hard limit 정본의 ref와 SHA-256이 일치할 때만 사용하고, 실제 필터 적용 메시지와 모든 생성 설정을 key에
+  포함한다. LangChain 등 별도 숨은 response cache는 금지한다.
 
-An LLM candidate that fails schema, syntax, grounding, or semantic validation is a
-**quality finding, not an operational step failure**. The producer MUST preserve the exact
-target coordinates, candidate/evidence reference, and reasons; quarantine the unverified
-candidate from trusted downstream derivation; emit the finding to logs and run results; and
-continue independent work. It MUST NOT fabricate an empty success, silently drop the finding,
-retry content, or turn one bad candidate into a whole-run failure. Run completion MUST expose
-that findings exist.
+## VI. 출력 빵틀은 누락을 막되 모델에게 구조 소유권을 넘기지 않는다
 
-**Rationale**: both extremes corrupt truth. A silent empty result looks like success, while
-aborting a full rebuild for one model-quality defect destroys the evidence needed to measure
-and improve that defect and can make reanalysis impossible.
+- 모델 응답은 closed schema와 Analyzer가 미리 배정한 local key를 사용한다. extra field와 임의 key를
+  거부한다.
+- Summary 모델은 함수 전체 흐름의 `summary`와 허용된 `stereotype`을 한 번만 만든다. 세부 문장을
+  따로 생성해 기계적으로 이어 붙인 것을 최종 Summary로 승격하지 않는다.
+- Table 모델은 Analyzer가 확정한 직접 `(function, table, access mode)`만 설명한다. 하위 함수의 table
+  사용을 caller에 복사하지 않고 Summary 문장을 다시 입력으로 사용하지 않는다.
+- Rule 모델은 Analyzer가 확정한 condition/effect atom key마다 의미 문자열 하나와 row의
+  `business_rule|implementation_detail|insufficient` 분류 문자열 하나만 한 응답에서 채운다. atom이
+  비면 Analyzer가 해당 row를 `insufficient`로 닫는다. 새 row·symbol·effect,
+  Python, Rule, Example, 근거·질문 문장을 만들지 않는다.
+- 모델의 schema·grounding·coverage 실패는 구조 후보를 제품 의미로 승격시키지 않는다. 모델이 만든
+  진단 문장을 또 저장하지 않고 Analyzer가 보존된 구조와 상태로 감사 사유를 결정론적으로 만든다.
 
-### V. KV-Cache-Friendly Prompts (KV 캐시 친화)
+## VII. Strategy B에서 업무 의미의 최종 생산자는 Analyzer다
 
-LLM prompt system bodies that share a prefix MUST be **byte-identical** so the inference
-cache (KV/RadixAttention) hits. The 3-split fan-out shares one `llm/prompts/framework/_common.yaml`
-via `extends`. Prompt files are SHA256-pinned in `llm/prompts/prompt_hashes.json` and guarded by CI
-(`byte_identical.yml`) — any drift fails the build.
+- Strategy A 제품 노선은 사용하지 않는다. 좌표·분기·exact-once 장부는 Strategy B의 구조 기반으로
+  보존한다.
+- Analyzer는 `business_rule`이면서 필요한 모든 atom이 `sufficient`인 row만 restricted Python의
+  업무 조건·효과로 투영해 제품 Rule로 공개한다.
+- `implementation_detail`은 `excluded`, 의미 불충분은 `unverified`, 모델 호출 실패는
+  `unavailable` finding으로 후보 row마다 정확히 한 번 종료한다.
+- Example은 공개된 Rule의 같은 조건·효과에서 LLM 0회로 생성한다. Rule과 Example의 의미 값과 순서는
+  동일해야 한다.
+- restricted Python은 자연어 변동을 구조적으로 비교하기 위한 표기이지 실행 코드가 아니다.
+  Python parse 성공이나 반복 문자열 동일성은 업무 의미 정확도나 제품 합격이 아니다.
 
-**Rationale**: a one-character diff in a shared system prompt silently destroys cache reuse
-and inflates cost/latency.
+## VIII. 결정론 코드는 의미를 추측하지 않고 조립·검증·보존한다
 
-### VI. Bounded Semantic Frames (제한된 의미 프레임)
+- AST/DDL 구조, source range, owner, direct data access, call candidate와 occurrence, source order,
+  exact key, Rule/Example 조립, graph identity와 ledger는 결정론 코드가 소유한다.
+- 결정론 코드는 근거가 없는 업무 뜻을 만들거나 모델의 부족한 뜻을 fallback으로 채우지 않는다.
+- 표준·라이브러리·framework 제공 함수는 내부 판정 장부에는 필요할 수 있지만 제품 `CALLS` 관계로
+  공개하지 않는다. lexical shadowing 뒤 선택된 callable identity와 봉인 registry로 분류한다.
+- 같은 사용자 함수를 한 함수 안에서 여러 번 호출하면 occurrence는 모두 보존하고 제품 `CALLS`
+  caller→callee pair는 하나만 만든다.
 
-Forced output schemas MUST stay shallow, bounded, and derived from the target's actual structural
-obligations. Deterministic code owns target type, child/evidence IDs, coordinates, ownership,
-conditions, CALL/RW, data-object identity, order, and the list of meaning slots that are applicable.
-The LLM fills only the natural-language meaning and sufficiency values for those preassigned slots.
+## IX. 임의 제한으로 속도나 성공률을 꾸미지 않는다
 
-A single unconstrained paragraph is forbidden when omission of distinct obligations cannot be
-validated. A giant universal, recursive, or unbounded repeated schema is also forbidden. Frame
-families MUST include only slots supported by the actual AST/evidence and MUST be partitioned or
-flattened when grammar size or repetition grows. Display/search summaries MAY be projections of the
-canonical frame, but MUST NOT become a second semantic producer.
+- 임의 item·문자·token·시간 상한, Top-N, sampling, truncation, skip, 조용한 fallback으로 분석량을
+  줄이지 않는다.
+- provider가 실제로 강제하는 hard context/output limit은 실행 전 model·tokenizer·runtime·GPU 정체성과
+  함께 봉인한다. hard limit을 실제로 넘는 경우에만 source와 obligation을 겹치지 않게 분할하고
+  exact-once로 한 번 합친다.
+- 성능은 결과 수를 줄인 시간이 아니라 동일 required population을 처리한 wall time, queue,
+  input/output token, cache, prefill/decode, validation, write/publish 시간으로 측정한다.
+- 요청 admission은 실제 token·KV·GPU 자원에 근거한다. 관측 없이 동시성 숫자를 고정하지 않는다.
 
-"Bounded" constrains the schema shape and one execution unit; it MUST NOT impose an arbitrary
-character, item, Top-N, or fact-count ceiling on canonical meaning, source, missing context, or
-results. The complete source/AST obligation set MUST be enumerated first. Oversized work is split by
-stable obligation and exact source/evidence closure, then merged exactly once with zero omission,
-duplication, reordering, or unclassified residual. A prose summary of source or child output MUST NOT
-replace canonical source/evidence for a later semantic decision. Provider limits surface an explicit
-partial/needs-context result; they never authorize truncation or silent skipping.
+## X. 기존 DB에 검증된 generation만 원자적으로 공개한다
 
-**Rationale**: the 2026-05-30 incident proved that deeply nested/repeated schemas can cause
-repetition and whitespace blowups. The 2026-08-12 semantic audit also proved that one free summary
-string cannot expose missing decisions, outcomes, call purposes, or transaction effects. A bounded
-dynamic frame preserves both completeness validation and output stability.
+- 새 database나 임시 database를 만들지 않는다. 실행 시작 시 인증과 `SHOW DATABASES`가 실패하거나
+  허용된 기존 database 집합과 online 상태가 다르면 즉시 중단한다.
+- 전체 graph 삭제나 부분 결과의 active 공개를 금지한다. 구조와 의미 stage는 서로 다른
+  `(identity, property)` 소유권을 가져야 한다.
+- 모든 node·relationship을 비공개 building generation에 쓰고, operation·property·identity·endpoint·
+  exact-once ledger를 같은 generation에서 다시 읽어 검증한다.
+- 검증이 모두 끝난 뒤에만 active generation pointer를 한 transaction에서 CAS로 교체한다. 어느 검사가
+  실패해도 transaction 전체를 rollback하고 이전 active generation을 유지한다.
+- 제품 graph에는 검증된 제품 node와 관계만 둔다. candidate, occurrence, unresolved, raw response,
+  local key, finding은 content-addressed run artifact가 소유한다.
 
-### VII. Structured Output Channels (구조화 출력 채널)
+## XI. 검증하지 않은 축은 합격이라고 말하지 않는다
 
-**Agent** structured output MUST be forced via a `submit_*` tool wrap (`structured_agent.py`);
-agents finalize by calling their submit tool exactly once. **Simple (non-agent) calls** use
-`llm.with_structured_output(..., include_raw=True)`. The provider/deployment config owns the
-default channel, and an output-contract YAML MAY override it only with recorded wire and
-failure evidence. The resolved channel is part of the response-cache key. Provider adapters
-MUST receive a deep copy of the canonical schema because strict tool conversion may mutate it.
-Both channels fail closed through the same internal Pydantic validation and raw/usage evidence.
+분석 정확도 합격은 다음 세 층을 모두 요구한다.
 
-**Rationale**: the 2026-08-03 probe sanctioned `response_format json_schema strict` after
-grammar masking worked and the historical hang did not reproduce. A fresh production prompt
-on 2026-08-04 re-detected a narrower xgrammar deadlock: a quote intended as string content was
-accepted as the JSON closing quote, after which the model wanted literal whitespace while the
-grammar wanted a comma, so only structural whitespace repeated. The identical prompt/schema
-completed through strict function calling, but a real 24-row RULE tool schema was rejected as
-`Invalid grammar request`; therefore neither channel is universally correct. Spec 116 TA-58~62
-records the bounded probes and permits a rule-level override only for a schema shape actually
-proven on the current deployment. Schema-validation failures and repetition aborts MUST retain
-their raw/partial input and MUST NOT trigger content retries.
+1. 자동 단위·계약·회귀 테스트와 prompt/schema/hash 검사
+2. source→AST→Analyzer→graph의 결정론 exact-once 전수 회계와 sealed baseline diff
+3. 사전에 봉인한 실제 좌표의 직접 업무 의미 판정
 
-### VIII. Explicit Ownership and Dependency Direction (명시적 소유권과 의존 방향)
+- 수정 중에는 formal red와 영향받은 작은 실제 데이터를 먼저 확인하고 점진적으로 넓힌다.
+- 실제 유료 의미 검증 범위는 실행 전에 봉인한 대표 source slice로 제한할 수 있다. 이 경우 선택 범위의
+  정확성·완전성·비용만 판정하며, 실행하지 않은 전체 corpus 처리 속도나 제품 규모 성능을 합격으로
+  승격하지 않는다.
+- GPU·서비스·DB가 비가용하면 가능한 정적 검증만 수행하고 나머지는 `미검증`으로 남긴다. 실행하지 않은
+  실제 분석이나 의미 판정을 과거 수치·Python 구문 성공·테스트 통과로 대신하지 않는다.
 
-Every module MUST live under the owner that changes for the same reason: pipeline, graph, LLM,
-search, logging, API, or system configuration. High-level orchestration may depend on these
-owners; low-level contracts MUST NOT import a heavyweight orchestrator merely to reuse a small
-helper. Shared behavior belongs in the narrowest stable owner with all consumers identified.
+## XII. 한 책임은 한 이름·한 위치·한 진실을 가진다
 
-**Rationale**: explicit ownership prevents generic shared dumping grounds, circular dependencies,
-duplicate truths, and refactors that only make the directory tree cosmetically smaller.
-
-### IX. Three-Layer Verification (3층 검증 의무)
-
-An analysis result is "verified" only when **all three layers** have run and been reported.
-No layer substitutes for another.
-
-1. **Automated tests** — unit/contract suites and prompt byte identity.
-2. **Deterministic answer-key comparison** — the answer already lives in the request. Row
-   obligation accounting (`rows = trusted + findings + unavailable`, zero residual), CALL /
-   R-W / RETURN occurrence keys, Rule↔branch-table subtraction (refs must exist in *that*
-   request's evidence), and EXAMPLE derivation equivalence.
-3. **Direct semantic adjudication by the main agent** — a pre-frozen stratified sample of
-   code nodes plus **every** table, judging information sufficiency first, then meaning.
-   A separate LLM judge is forbidden: a verifier that shares the model's limits is not a verifier.
-
-Any axis not measured MUST be reported as `미검증`, never folded into a pass. Passing tests
-is not evidence of semantic accuracy. Procedure detail lives in
-`specs/131-cross-node-semantic-grounding/history/handovers/04-검증방법.md`, which this
-principle makes binding rather than advisory.
-
-**Rationale**: on 2026-08-07 a prompt overhaul was declared "all axes passed" after only
-layer 1 and part of layer 2 had run; four answer-key comparisons and the entire semantic
-layer were never executed. The procedure existed and was simply not read, because nothing
-required it.
-
-### X. Root-Cause Order (원인 추적 순서)
-
-When a result looks wrong, start from **one wrong coordinate**, never from an aggregate
-statistic, and walk the production chain **front to back**:
-
-`source → parser AST → deterministic assembly → the prompt actually sent → information
-sufficiency → grader/answer-key → model & prompt`
-
-The model is the **last** suspect. Information sufficiency is judged before blame: if the
-main agent cannot determine the answer from what the model received, that is `needs_context`
-and the defect is upstream (evidence production), not the model. Failures are grouped by
-common cause and fixed **generically once**, then re-checked with a fixed replay; sample-specific
-answers MUST NOT be hardcoded.
-
-**Rationale**: measured both ways in one session. A trigger-header fatal was traced to
-deterministic assembly (statement dml promoted to table op) — the model was never involved.
-The nl reference-number leak was traced to the prompt contract defining `nl` as a restatement
-of fields the model had just filled. Starting at the statistic would have produced a wording
-patch for both.
-
-## Cross-Service Contracts
-
-The analyzer is one service in a pipeline. Its boundaries (and therefore the only things that
-ripple to other services when changed) are:
-
-- **↔ Catalog service**: HTTP `sample-context` and `/lineage` endpoints.
-- **→ Architect service**: read-only MCP semantic-frame projection. Normal Architect generation
-  consumes Analyzer-owned structured meaning, structural facts, evidence IDs, coordinates, and
-  sufficiency state. Complete source bodies are audit/debug material, not the normal generation
-  packet.
-
-A spec change that does NOT touch a contract is internal (no cross-service impact). A spec
-change that touches a contract MUST flag the affected downstream service.
-
-## Cost & Safety Constraints
-
-- A per-run USD circuit breaker (`ROBO_BUDGET_RUN_USD`, default 20) MUST abort a run that
-  exceeds budget (the "$400 incident" prevention).
-- Each run is destructive by policy: it wipes the Neo4j graph (`DETACH DELETE`) and rmtrees
-  `logs/` at start. Specs MUST treat a run as a full rebuild, not an incremental update.
-- The model is single-concurrent-run; pause/resume/stop is an in-process soft hold with no
-  disk resume.
+- 함수·필드·파일·관계 이름은 producer부터 consumer, 저장, search, test, 문서까지 같은 개념을 즉시
+  알아볼 수 있게 일관된 이름을 쓴다. 별칭과 호환 껍데기로 옛 구조를 무기한 유지하지 않는다.
+- 소비처가 0이거나 다른 권위 값에서 완전히 복원되는 필드는 제거한다. 정확성·완전성·재현성에 필요한
+  내부 좌표와 상태는 모델에서 숨길 수 있어도 내부 정본에서 삭제하지 않는다.
+- `specs`에는 현행 SDD와 실행 가능한 contract만 둔다. audit·archive·run·experiment는 각각 지정된
+  전용 위치에 두며 임시 파일과 raw 실행물을 제품 디렉터리에 섞지 않는다.
+- Architect와 goal-verify는 이 Analyzer 작업 범위 밖이다. 명시적으로 범위가 바뀌지 않는 한 읽기·실행·
+  수정·stage하지 않는다.
+- 사용자 WIP와 출처 미확정 파일은 보존한다. 보호 목록에 든 파일을 검증된 책임 slice와 섞어 commit하지
+  않는다.
 
 ## Governance
 
-This constitution supersedes ad-hoc convention. New features go through
-`/speckit-specify → /speckit-plan`; each `plan.md` MUST include a Constitution Check section
-verifying compliance with the principles above. A principle is amended only by editing this
-file and bumping the version, with the rationale recorded.
+- 현재 진실의 우선순위는 `현재 코드와 실제 실행 결과 → 이 헌법과 현행 spec/contracts → tasks → archive`다.
+- 변경은 `spec → plan → tasks → 구현 → 국소 반증 → 전체 검증 → diff 감사` 순서로 진행한다.
+- 헌법과 현행 spec이 충돌하면 작업을 멈추고 둘을 먼저 정합시킨다. 과거 문서를 현재화해 충돌을 숨기지
+  않는다.
+- 원칙을 바꿀 때는 이 문서의 major/minor version을 올리고 변경 이유를 기록한다.
 
-**Version**: 1.6.0 | **Ratified**: 2026-06-15 | **Last Amended**: 2026-08-20
-(1.6.0 — VI clarifies that bounded means finite schema/execution shape, never an arbitrary content or
-result cap; large contexts require exact obligation/source partitioning and lossless merge, and
-summary-of-summary cannot replace canonical evidence. 1.5.0 — VI replaced the single-free-string rule with bounded dynamic semantic frames and the
-Analyzer→Architect semantic-frame boundary was made explicit. Complete source remains authoritative
-inside Analyzer analysis and for audit, but is not a normal Architect generation payload. 1.4.0 —
-IX and X added: three-layer verification made binding and root-cause order fixed,
-after a session declared a prompt overhaul "passed" with two of three layers unrun. 1.3.2 —
-IV amended to distinguish fatal operational/deterministic-contract failures from surfaced,
-quarantined LLM quality findings so a bad candidate cannot masquerade as success or abort an
-otherwise auditable rebuild; VII remains as amended in 1.3.1; see spec 116 TA-77~80)
+**Version**: 2.0.0
+
+**Ratified**: 2026-06-15
+
+**Last Amended**: 2026-08-27
+
+**Amendment**: Parser와 Analyzer 책임 경계, 최소 비중복 모델 입력, Strategy B, exact-once 회계,
+임의 제한 금지, 기존 DB의 atomic generation 공개, 3층 검증과 범위 밖 자산 보호를 하나의 현행
+Analyzer 헌법으로 다시 세웠다. 과거의 전체 graph 삭제 전제와 Architect 제품 경계는 폐기했다.

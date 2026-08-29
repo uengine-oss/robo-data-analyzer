@@ -57,7 +57,7 @@ def build_column_usage_projections(
         }
         ddl_columns = context.extra.get("ddl_columns_by_table") or {}
 
-        for usage in context.extra.get("data_object_usages") or ():
+        for usage in context.data_object_usages:
             table_id = str(getattr(usage, "table_id", "") or "")
             if (
                 table_id not in projected
@@ -245,16 +245,16 @@ def _parser_unqualified_identifiers(
 ) -> tuple[tuple[str, bool, int], ...]:
     """Return evidence-v2 syntax or reject an incomplete Oracle AST.
 
-    An absent key means the Parser did not account for unqualified SQL identifiers. Empty is a
+    ``None`` means the Parser did not account for unqualified SQL identifiers. Empty is a
     valid, explicit v2 result. Treating both states as ``()`` would recreate C-028.
     """
-    if "unqualified_identifier_references" not in context.extra:
+    if context.unqualified_identifier_references is None:
         raise ValueError(
             "Oracle column projection requires parser data-object evidence v2: "
             f"{context.id} at {context.file_path}:{context.start_line}-{context.end_line}"
         )
     result: list[tuple[str, bool, int]] = []
-    for reference in context.extra["unqualified_identifier_references"] or ():
+    for reference in context.unqualified_identifier_references:
         name = str(getattr(reference, "name", "") or "").strip()
         line = int(getattr(reference, "evidence_line", 0) or 0)
         if not name or not context.start_line <= line <= context.end_line:

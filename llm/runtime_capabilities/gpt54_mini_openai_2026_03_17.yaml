@@ -1,0 +1,20 @@
+sealed_model_runtime_capabilities:
+  runtime_kind: provider_managed
+  provider_id: openai
+  model_id: gpt-5.4-mini-2026-03-17
+  model_revision: gpt-5.4-mini-2026-03-17
+  serving_runtime:
+    runtime_id: openai-api
+    runtime_version: v1
+    runtime_config_sha256: 17bb1d0f7120924caf28e730463508627d65da0dc5698326f367d068d65e6ad7
+  provider_hard_limits:
+    context_tokens: 400000
+    max_output_tokens: 128000
+  profile_version: openai-model-page-2026-08-29
+  provider_managed_disclosure:
+    tokenizer_identity: provider_managed_undisclosed
+    quantization: provider_managed_undisclosed
+    infrastructure: provider_managed_undisclosed
+  provenance:
+    model_page: https://developers.openai.com/api/docs/models/gpt-5.4-mini
+    verified_at: 2026-08-29

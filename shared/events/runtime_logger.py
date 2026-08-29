@@ -59,27 +59,30 @@ _ERROR_LOG_FILENAME = "error.log"
 _COMPONENT_LABELS: dict[str, str] = {
     "run":                       "🚀 실행",
     "step1.parse_ddl":           "1️⃣  DDL 파싱",
+    "step1.discover_datasource": "1️⃣  데이터소스 발견",
+    "step1.resolve_data_objects": "1️⃣  데이터 객체 확인",
     "step2.load_ast":            "2️⃣  AST 적재",
     "step3.load_external":       "3️⃣  외부 파일 적재",
-    "step4.scan":             "4️⃣  Scan Agent",
+    "step4.scan":                "4️⃣  Scan Agent",
     "step4.scan_external":       "4️⃣  외부 포맷 Agent",
     "step5.link_deterministic":  "5️⃣ ①결정론 연결",
-    "step5.link_calls_by_name":  "5️⃣ ②Call 이름 분류",
-    "step5.link_calls_by_ast":   "5️⃣ ②Call AST 분류",
+    "step5.link_dbms_tables":    "5️⃣ ①DBMS 테이블 매칭",
+    "step5.link_parser_calls":   "5️⃣ ②호출 의미 판정",
     "step5.link_residual_patterns": "5️⃣ ③잔여 패턴 루프",
     "step5.link_external":       "5️⃣  외부 파일 연결",
     "step6.build_context":       "6️⃣  분석 컨텍스트",
-    "step1.discover_datasource": "1️⃣  데이터소스 발견",
-    "step7.analyze_code":    "7️⃣  코드노드 분석",
-    "step8.summarize_module":    "8️⃣  모듈 요약",
+    "step7.analyze_code":        "7️⃣  코드노드 분석",
+    "step7.analyze_code.batch":  "7️⃣  DBMS 묶음 분석",
+    "step7.analyze_code.three_split": "7️⃣  3분할 의미 분석",
+    "step8.build_module_summary_rollups": "8️⃣  모듈 요약 집계",
+    "step8.build_components":    "8️⃣  컴포넌트 구성",
     "step8.enrich_table_description": "8️⃣  테이블 설명",
-    "step5.link_dbms_tables":         "5️⃣ ①DBMS 테이블 매칭",
-    "step8.enrich_lineage_from_catalog":  "8️⃣  catalog 리니지",
-    "step8.embed":               "8️⃣  임베딩",
+    "step8.build_search_segments": "8️⃣  검색 조각 구성",
     "llm.call":                  "🤖 LLM 호출",
+    "llm.embedder":              "🔎 임베딩",
+    "search.query.query_llm":    "🔎 검색 질의 해석",
     "stream.phase":              "📡 단계",
     "stream.tool":               "🔧 도구",
-    "stream.todo":               "📝 Todo",
     "stream.error":              "💥 스트림 에러",
     "stream.warning":            "⚠️  스트림 경고",
 }
@@ -118,7 +121,6 @@ _OPERATION_LABELS: dict[str, str] = {
     "node_done":          "  ✓ 노드",
     "tool_start":         "  ▶ 도구",
     "tool_end":           "  ✓ 도구",
-    "todo_update":        "  todo 변경",
 }
 
 _KEY_LABELS: dict[str, str] = {
@@ -525,7 +527,7 @@ def log_info(
 
         [INFO] step1.parse_ddl: start project=apascrt strategy=framework
         [INFO] step1.parse_ddl: done schemas=1 tables=7 columns=73 elapsed=0.3s
-        [INFO] step5.link_calls_by_name: done call_sites=1158 internal=773 external=312
+        [INFO] step5.link_parser_calls: done call_sites=1158 internal=773 external=312
         [INFO] llm.call: done in=4500 out=850 cached=4400 cost=$0.0014 elapsed=8.2s
 
     Args:

@@ -1,9 +1,9 @@
-"""Compatibility projections derived solely from validated semantic frames."""
+"""Validated semantic-frame projection into the published code summary."""
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from pipeline.models.code_analysis_output import QuestionItem, SummaryOutput
+from pipeline.models.code_analysis_output import SummaryOutput
 from pipeline.models.semantic_frame import (
     FUNCTION_SUMMARY_ROLES,
     SemanticFrame,
@@ -21,8 +21,19 @@ _SUMMARY_ROLE_ORDER = {
 }
 
 
-def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
-    """Project the old code summary contract without another meaning producer."""
+def project_summary(
+    frame: SemanticFrame,
+    *,
+    summary: str,
+    stereotype: str,
+) -> SummaryOutput:
+    """Publish the one model-owned whole-target summary with its validated frame.
+
+    Slot meanings are structured semantic details.  Joining those details does not
+    produce a readable whole-target summary and used to leak the response schema into
+    the product text.  The same model response therefore owns exactly one final
+    ``summary``; this projection only validates and attaches deterministic metadata.
+    """
     candidates = [
         slot for slot in frame.slots.values()
         if (slot.family, slot.role) in _SUMMARY_ROLE_ORDER
@@ -43,7 +54,6 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
         _SUMMARY_ROLE_ORDER[(slot.family, slot.role)], *_source_order(slot),
     ))
     grounded = [slot for slot in candidates if slot.meaning.strip()]
-    meanings = _dedupe_meanings(slot.meaning for slot in grounded)
     missing = _dedupe_meanings(
         item
         for slot in candidates
@@ -53,7 +63,7 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
 
     if candidates and all(slot.status == "sufficient" for slot in candidates):
         status = "sufficient"
-    elif meanings:
+    elif grounded:
         status = "partial"
         if not missing:
             # A non-sufficient leaf is invalid without missing_context, but preserve an
@@ -64,13 +74,11 @@ def project_summary(frame: SemanticFrame, *, stereotype: str) -> SummaryOutput:
         if not missing:
             raise ValueError("insufficient semantic frame projection lacks missing_context")
 
-    questions = _questions(candidates)
     return SummaryOutput(
-        summary="\n".join(meanings),
+        summary=summary,
         stereotype=stereotype if status != "insufficient" else "",
         evidence_status=status,
         missing_context=missing,
-        questions=questions,
         semantic_frame=frame,
     )
 
@@ -85,19 +93,4 @@ def _dedupe_meanings(values: Iterable[str]) -> list[str]:
             continue
         seen.add(key)
         result.append(value)
-    return result
-
-
-def _questions(slots: Iterable[SemanticSlot]) -> list[QuestionItem]:
-    result: list[QuestionItem] = []
-    seen: set[tuple[str, str]] = set()
-    for slot in slots:
-        for missing in slot.missing_context:
-            text = " ".join(missing.split())
-            reason = f"{slot.family}.{slot.role} slot의 현재 근거가 부족함"
-            key = (text.casefold(), reason)
-            if not text or key in seen:
-                continue
-            seen.add(key)
-            result.append(QuestionItem(text=text, reason=reason))
     return result

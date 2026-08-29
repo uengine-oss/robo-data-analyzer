@@ -1,31 +1,23 @@
-"""정밀도 우선 REFER_TO 링커 (spec 081): 판별은 문자열이 아니라 호출 지점에서 한다.
-
-순서가 핵심이다. 먼저 **코드만** 보고 해석기 호출부를 찾아 키를 확정한 뒤, 그 키가
-**주소성 있는 조각**을 가리킬 때만 잇는다. 문자열부터 대조하면 ``put("orderId")`` 도
-후보가 되어 스키마 필드명과 우연히 맞아버리는데, 호출부부터 보면 그런 후보가 애초에
-생기지 않는다.
-
-키가 정적으로 확정되지 않는 호출(런타임 조립·분기·외부입력)은 **연결도 추정도 하지
-않는다.** 미연결이 정답이며 건수만 관측치로 남긴다.
-"""
+"""Resolve Parser-owned call arguments to verified external source records."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
-from graph.schema.graph_edges import ReferTo, References
-from graph.schema.graph_nodes import CodeNode, Constant, ExternalChunk, ProjectFile
-from pipeline.steps.step5_linking.link_external.key_index import (
-    mask_comments_and_literals,
-    quoted_literals,
-)
-from pipeline.steps.step5_linking.link_external.resolver_catalog import (
-    call_sites,
-    promote_wrappers,
-)
-from pipeline.steps.step5_linking.link_external.literal_constants import LiteralConstantIndex
-from shared.files.source_excerpt import raw_node_text
+from graph.schema.graph_edges import References
+from graph.schema.graph_nodes import Constant
 from pipeline.languages import external_resolvers
-from pipeline.steps.step5_linking.link_external.target_index import TargetIndex
+from pipeline.models.external_reference_resolution import (
+    ExternalReferenceOccurrence,
+    ExternalReferenceResolutionLedger,
+    ResolvedExternalReferenceLink,
+)
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
+from pipeline.steps.step5_linking.link_external.literal_constants import (
+    LiteralConstantIndex,
+    decode_complete_string_literal,
+)
+from pipeline.steps.step5_linking.link_external.target_index import TargetHit, TargetIndex
 
 
 class ExternalLinkContractError(ValueError):
@@ -34,126 +26,168 @@ class ExternalLinkContractError(ValueError):
 
 @dataclass(frozen=True)
 class LinkOutcome:
-    external_edges: list[ReferTo]
-    #: 해석기 호출인데 키가 정적으로 확정되지 않은 건수 (동적 조립·분기·외부입력).
-    dynamic_key_sites: int = 0
-    #: 주소성이 있는데 아무도 부르지 않은 조각 — 다음에 무엇을 확장할지 알려준다.
-    orphan_chunks: list[str] = field(default_factory=list)
-    #: 자동 승격된 사내 래퍼 (이름 → 키 인자 위치).
-    promoted_wrappers: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    resolved_external_reference_links: list[ResolvedExternalReferenceLink]
+    external_reference_ledger: ExternalReferenceResolutionLedger
+
+
+def link_external(
+    *,
+    call_sites: Sequence[Mapping[str, Any]],
+    constants: list[Constant],
+    source_records: list[ExternalSourceRecord],
+    source_files: list[ExternalSourceFile] | None = None,
+    references_edges: list[References] | None = None,
+) -> LinkOutcome:
+    """Resolve only configured arguments of exact Parser call occurrences."""
+    call_ids = [str(site.get("call_id") or "") for site in call_sites]
+    if any(not call_id for call_id in call_ids) or len(call_ids) != len(set(call_ids)):
+        raise ExternalLinkContractError(
+            "Parser call occurrences require unique non-empty call IDs"
+        )
+    target_index = TargetIndex(source_records, source_files or [])
+    constants_by_routine = LiteralConstantIndex(constants, references_edges)
+    resolver_arguments = external_resolvers()
+    required_ids: list[str] = []
+    occurrences: list[ExternalReferenceOccurrence] = []
+    links: list[ResolvedExternalReferenceLink] = []
+    seen_links: set[tuple[str, str, str]] = set()
+
+    for site in call_sites:
+        resolver_name = str(site.get("call_text") or "")
+        argument_indexes = resolver_arguments.get(resolver_name)
+        if argument_indexes is None:
+            continue
+        call_id = str(site["call_id"])
+        owner_id = str(site.get("caller_id") or "")
+        source_file = str(site.get("file") or "")
+        source_line = site.get("line")
+        if (
+            not source_file
+            or isinstance(source_line, bool)
+            or not isinstance(source_line, int)
+            or source_line < 1
+        ):
+            raise ExternalLinkContractError(
+                f"external resolver call lacks exact source coordinates: {call_id}"
+            )
+        raw_arguments = site.get("argument_sources")
+        arguments = (
+            tuple(str(value) for value in raw_arguments)
+            if isinstance(raw_arguments, (list, tuple))
+            else ()
+        )
+        presence = str(site.get("presence_status") or "active")
+        for argument_index in argument_indexes:
+            occurrence_id = f"{call_id}:external-argument:{argument_index}"
+            required_ids.append(occurrence_id)
+            if not owner_id:
+                resolution = _unresolved("owner_not_resolved")
+            elif presence == "inactive":
+                resolution = {
+                    "rejected_not_external_reference": {
+                        "reason_code": "inactive_call",
+                    },
+                }
+            elif presence != "active":
+                resolution = _unresolved("configuration_dependent_call")
+            elif argument_index >= len(arguments):
+                resolution = _unresolved("missing_argument")
+            else:
+                argument_source = arguments[argument_index]
+                value = _determined_value(
+                    argument_source, owner_id, constants_by_routine,
+                )
+                if value is None:
+                    resolution = _unresolved("dynamic_argument")
+                else:
+                    hits = target_index.lookup(
+                        value, source_file=_normalized(source_file),
+                    )
+                    resolution, linked_hit = _resolve_hits(hits)
+                    if linked_hit is not None:
+                        link_identity = (
+                            owner_id, linked_hit.target_id, linked_hit.matched_key,
+                        )
+                        if link_identity not in seen_links:
+                            seen_links.add(link_identity)
+                            links.append(ResolvedExternalReferenceLink(
+                                owner_code_node_id=owner_id,
+                                external_source_record_id=linked_hit.target_id,
+                                external_key=linked_hit.matched_key,
+                            ))
+            occurrences.append(ExternalReferenceOccurrence(
+                external_reference_occurrence_id=occurrence_id,
+                parser_call_occurrence_id=call_id,
+                owner_code_node_id=owner_id,
+                source_file=source_file,
+                source_line=source_line,
+                resolver_name=resolver_name,
+                argument_index=argument_index,
+                resolution=resolution,
+            ))
+
+    ledger = ExternalReferenceResolutionLedger(
+        required_external_reference_occurrence_ids=tuple(required_ids),
+        occurrences=tuple(occurrences),
+    )
+    return LinkOutcome(
+        resolved_external_reference_links=links,
+        external_reference_ledger=ledger,
+    )
 
 
 def _normalized(path: str) -> str:
     return path.replace("\\", "/").strip().strip("/")
 
 
-def link_external(
-    *,
-    code_nodes: list[CodeNode],
-    constants: list[Constant],
-    chunks: list[ExternalChunk],
-    routine_ids: set[str],
-    project_files: list[ProjectFile] | None = None,
-    references_edges: list[References] | None = None,
-) -> LinkOutcome:
-    """해석기 호출부에서 확정된 키를 주소성 있는 대상에 잇는다.
-
-    "이 루틴이 어느 리터럴 상수를 쓰는가"는 step2 의 REFERENCES 를 그대로 쓴다.
-    지역 대입이나 상수 연결식을 실행 결과처럼 접지 않는다.
-
-    호출 탐지에만 step2 의 ``call_sites`` 를 쓰지 않는다. 실측 결과 그 목록은 단순
-    ``obj.method()`` 일부만 담고 ``context.lookup(x)`` 처럼 캐스팅·체이닝이 붙은 호출은
-    누락한다(loan-ejb-app 440건 중 해석기 호출 0건). 불완전한 목록으로 거르면 놓치므로
-    본문에서 직접 찾는다.
-    """
-    index = TargetIndex(chunks, project_files or [])
-    constants_by_routine = LiteralConstantIndex(constants, references_edges)
-    routines = sorted(
-        (node for node in code_nodes if node.id in routine_ids), key=lambda node: node.id,
-    )
-    catalog = promote_wrappers(routines)
-    promoted = {name: positions for name, positions in catalog.items()
-                if name not in _declared_names()}
-
-    edges: list[ReferTo] = []
-    seen: set[tuple[str, str]] = set()
-    dynamic = 0
-    used_keys: set[str] = set()
-
-    for code in routines:
-        raw_code = raw_node_text(code)
-        if not raw_code:
-            continue
-        source_file = _normalized(code.file_path)
-        masked = mask_comments_and_literals(raw_code)
-        for site in call_sites(
-            masked, raw_code, catalog, code.start_line or 1, code.name or "",
-        ):
-            value = _determined_value(site.expression, code, constants_by_routine)
-            if value is None:
-                dynamic += 1
-                continue
-            hits = index.lookup(value, source_file=source_file)
-            if not hits:
-                continue
-            for hit in hits:
-                used_keys.add(hit.matched_key)
-                identity = (code.id, hit.target_id)
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                edges.append(ReferTo(
-                    source_id=code.id,
-                    target_id=hit.target_id,
-                    matched_key=hit.matched_key,
-                    evidence_file=code.file_path,
-                    evidence_line=max(0, site.line),
-                    via_symbol=_symbol_name(site.expression),
-                ))
-
-    return LinkOutcome(
-        external_edges=edges,
-        dynamic_key_sites=dynamic,
-        orphan_chunks=_orphans(chunks, used_keys),
-        promoted_wrappers=promoted,
-    )
-
-
-def _declared_names() -> frozenset[str]:
-    return frozenset(external_resolvers())
-
-
 def _determined_value(
-    expression: str, code: CodeNode, constants: LiteralConstantIndex,
+    expression: str,
+    owner_id: str,
+    constants: LiteralConstantIndex,
 ) -> str | None:
-    """키 인자 표현식을 확정 문자열로. 확정 못 하면 None(동적)."""
-    raw = expression.strip()
-    if not raw:
-        return None
-    literals = quoted_literals(raw)
-    if len(literals) == 1 and literals[0].start == 0 and literals[0].end == len(raw):
-        value = literals[0].value
-        return value if value else None
-    name = _symbol_name(raw)
-    if not name:
-        return None
-    return constants.value_for(code.id, name)
+    literal = decode_complete_string_literal(expression)
+    if literal is not None:
+        return literal
+    name = _symbol_name(expression)
+    return constants.value_for(owner_id, name) if name else None
 
 
 def _symbol_name(expression: str) -> str:
-    """``Class.CONST`` / ``CONST`` 에서 마지막 마디. 그 밖이면 빈 문자열."""
     raw = expression.strip()
-    if not raw or not all(part.isidentifier() for part in raw.split(".") if part):
+    parts = raw.split(".")
+    if not raw or any(not part.isidentifier() for part in parts):
         return ""
-    return raw.rsplit(".", 1)[-1]
+    return parts[-1]
 
 
-def _orphans(chunks: list[ExternalChunk], used_keys: set[str]) -> list[str]:
-    """주소성이 있는데 아무 호출부도 부르지 않은 조각의 대표 키."""
-    output: list[str] = []
-    for chunk in chunks:
-        if chunk.provenance != "source_span" or not chunk.addressable_keys:
-            continue
-        if not any(key in used_keys for key in chunk.addressable_keys):
-            output.append(f"{chunk.file_path}#{chunk.addressable_keys[0]}")
-    return sorted(output)
+def _unresolved(reason_code: str, candidates: tuple[str, ...] = ()) -> dict:
+    return {
+        "unresolved": {
+            "reason_code": reason_code,
+            "candidate_target_ids": candidates,
+        },
+    }
+
+
+def _resolve_hits(hits: list[TargetHit]) -> tuple[dict, TargetHit | None]:
+    if not hits:
+        return _unresolved("target_not_uploaded"), None
+    ordered = sorted(
+        hits, key=lambda hit: (hit.target_kind, hit.target_id, hit.matched_key),
+    )
+    if len(ordered) > 1:
+        return _unresolved(
+            "ambiguous_external_key",
+            tuple(hit.target_id for hit in ordered),
+        ), None
+    hit = ordered[0]
+    if hit.target_kind == "external_file":
+        return _unresolved(
+            "file_target_has_no_verified_record", (hit.target_id,),
+        ), None
+    return {
+        "linked": {
+            "external_source_record_id": hit.target_id,
+            "external_key": hit.matched_key,
+        },
+    }, hit

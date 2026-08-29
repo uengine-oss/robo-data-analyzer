@@ -41,11 +41,11 @@ structured_output_method: json_schema
 #   Qwen3.6 의 thinking mode default ON → reasoning 토큰 폭증 (불필요 비용).
 #   OpenRouter 가 cross-provider 표준화 — SGLang 의 ``enable_thinking`` 도 자동 매핑.
 #
-# allow_fallbacks: true
-#   throughput 1위 provider 가 502/429 등 실패 시 다음 provider 로 자동 fallback.
+# allow_fallbacks: false
+#   선택된 provider 실패를 다른 serving runtime의 성공으로 바꾸지 않는다.
 extra_body:
   provider:
     sort: throughput
-    allow_fallbacks: true
+    allow_fallbacks: false
   reasoning:
     enabled: false

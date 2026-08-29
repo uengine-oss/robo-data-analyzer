@@ -264,13 +264,52 @@ class ApiContract(StrictAgentOutput):
     )
 
 
+class ScanProposal(StrictAgentOutput):
+    """Unknown-project Scan Agent가 제안할 수 있는 최소 계약.
+
+    원문 좌표, 검증 상태, 신뢰도와 SKILL 소유 사실은 포함하지 않는다. 제안된
+    테이블 접근 규칙은 Analyzer가 production linker로 다시 검증한 뒤에만
+    ``ScanResult``로 승격한다.
+    """
+
+    matched_skill: Optional[str] = Field(..., description="매칭된 SKILL 이름 또는 null")
+    table_access_rules: list[
+        WrapperKeyRule | MethodCallRule | SqlFragmentRule | EmbeddedSqlRule
+    ] = Field(default_factory=list)
+    table_access_patterns: list[TableAccessPattern] = Field(default_factory=list)
+    ddl_transform: DdlTransform = Field(
+        default_factory=lambda: DdlTransform(ddl_naming_rule="as_is")
+    )
+    call_wrappers: list[CallWrapper] = Field(default_factory=list)
+    framework_runtime_functions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_proposal_scope(self) -> "ScanProposal":
+        custom_fields_present = bool(
+            self.table_access_rules
+            or self.table_access_patterns
+            or self.ddl_transform != DdlTransform(ddl_naming_rule="as_is")
+            or self.call_wrappers
+            or self.framework_runtime_functions
+        )
+        if self.matched_skill is not None and custom_fields_present:
+            raise ValueError(
+                "matched SKILL 제안은 이름만 반환해야 하며 SKILL 소유 계약을 복사할 수 없음"
+            )
+        return self
+
+
 class ScanResult(StrictAgentOutput):
-    """Scan Agent 1회 invoke 의 최종 출력."""
+    """Analyzer가 검증을 끝낸 프로젝트 스캔 계약."""
     analysis_status: Literal["completed", "unavailable"] = "completed"
+    table_access_status: Literal["completed", "unavailable"] = Field(
+        "completed",
+        description=(
+            "테이블 R/W 계약 facet의 독립 상태. unavailable이면 테이블 규칙은 비우되 "
+            "검증된 handler/API/call 계약까지 지우지 않는다."
+        ),
+    )
     matched_skill: Optional[str] = Field(None, description="매칭된 SKILL 이름 또는 null")
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    evidence: str = Field(..., description="자연어 단서")
-    evidence_locations: list[str] = Field(default_factory=list, description="['path:line', ...]")
 
     # 결정론 grep 용 — 구조화 규칙(DSL, 우선) + raw 정규식(탈출구, 4종 템플릿 불가 시만).
     # 규칙은 코드(_finalize)가 컴파일해 patterns 에 합류 — 검증·링킹 관문은 하나 (spec 108).
@@ -297,16 +336,6 @@ class ScanResult(StrictAgentOutput):
     # 호출 wrapper — 인자가 실제 호출 대상인 코드노드 (SKILL 이 정의). 없으면 빈배열.
     # ``call_classifier`` 가 wrapper 호출을 만나면 인자를 추출해 Calls 엣지로 정합.
     call_wrappers: list[CallWrapper] = Field(default_factory=list)
-
-    # 호환·진단 metadata. downstream LLM 의미 입력으로 사용하지 않는다 (spec 131 C-016).
-    codebase_notes: str = Field(
-        "",
-        description=(
-            "과거 프로젝트 성격 / wrapper / 명명 convention 진단 1단락. "
-            "구조화·검증된 table_access_patterns와 API/runtime 계약만 downstream 의미를 소유하며, "
-            "이 자유문은 다른 LLM prompt에 전달되지 않는다."
-        ),
-    )
 
     # 분기표 종료문 행용 — 예외 핸들러 진입 라벨/매크로 (spec 116 1단계 [handler] 행).
     # SKILL fence 계약이 있으면 그 값으로 결정론 덮어쓰기 — 추측으로 채우지 않는다.
@@ -341,20 +370,38 @@ class ScanResult(StrictAgentOutput):
     no_match_reason: Optional[str] = None
 
     @model_validator(mode="after")
-    def validate_scan_evidence_and_fallback(self) -> "ScanResult":
+    def validate_verified_scan_contract(self) -> "ScanResult":
         if self.analysis_status == "unavailable":
             if (
                 self.matched_skill is not None
                 or self.table_access_rules
                 or self.table_access_patterns
                 or self.table_access_exclusion_rules
+                or self.call_wrappers
+                or self.handler_markers
+                or self.api_contracts
+                or self.framework_runtime_functions
             ):
-                raise ValueError("unavailable scan은 검증되지 않은 규칙/skill을 포함할 수 없음")
+                raise ValueError("unavailable scan은 downstream 계약/skill을 포함할 수 없음")
             if not (self.no_match_reason or "").strip():
                 raise ValueError("unavailable scan은 no_match_reason이 필수")
+            if self.table_access_status != "unavailable":
+                raise ValueError("unavailable scan은 table_access_status도 unavailable이어야 함")
             return self
-        if len(self.evidence_locations) < 3:
-            raise ValueError("evidence_locations는 실제 path:line 근거가 3개 이상이어야 함")
+        if self.table_access_status == "unavailable":
+            if (
+                self.table_access_rules
+                or self.table_access_patterns
+                or self.table_access_exclusion_rules
+                or self.ddl_transform != DdlTransform(ddl_naming_rule="as_is")
+            ):
+                raise ValueError(
+                    "table access unavailable은 검증되지 않은 R/W 규칙/변환을 포함할 수 없음"
+                )
+            if not (self.no_match_reason or "").strip():
+                raise ValueError("table access unavailable은 no_match_reason이 필수")
+        elif self.no_match_reason is not None:
+            raise ValueError("completed table access는 no_match_reason을 포함할 수 없음")
         if self.matched_skill is None and self.table_access_exclusion_rules:
             raise ValueError(
                 "table_access_exclusion_rules는 검토 가능한 matched SKILL 계약에서만 허용"
@@ -395,17 +442,3 @@ class ResidualPatternResult(StrictAgentOutput):
         ...,
         description="현재 entity→DDL 변환을 바꿔야 할 때만 새 전체 값, 아니면 null",
     )
-    no_pattern_reason: Optional[str] = Field(
-        ...,
-        description="패턴/변환 제안이 모두 없을 때의 비어 있지 않은 사유, 제안 시 null",
-    )
-
-    @model_validator(mode="after")
-    def validate_proposal_or_reason(self) -> "ResidualPatternResult":
-        has_proposal = bool(self.table_access_patterns) or self.ddl_transform_override is not None
-        reason = (self.no_pattern_reason or "").strip()
-        if has_proposal and self.no_pattern_reason is not None:
-            raise ValueError("패턴/변환을 제안했으면 no_pattern_reason은 null이어야 함")
-        if not has_proposal and not reason:
-            raise ValueError("패턴/변환 제안이 없으면 no_pattern_reason이 필수")
-        return self

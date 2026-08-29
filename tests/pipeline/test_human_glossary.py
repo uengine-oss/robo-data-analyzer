@@ -83,6 +83,27 @@ terms:
             with self.assertRaisesRegex(ValueError, "strict UTF-8"):
                 load_human_glossary(root)
 
+    def test_valid_content_is_not_rejected_by_arbitrary_size_or_count_caps(self) -> None:
+        aliases = [f"별칭-{index}" for index in range(25)]
+        canonical = "표준어-" + ("가" * 80)
+        meaning = "뜻" * 300
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._write(root, "\n".join((
+                'schema_version: "1.0"',
+                "terms:",
+                f"  - canonical: {canonical}",
+                "    aliases:",
+                *(f"      - {alias}" for alias in aliases),
+                f"    meaning: {meaning}",
+                "    category: 업무 상태",
+            )))
+            glossary = load_human_glossary(root)
+
+        self.assertEqual(canonical, glossary.terms[0].canonical)
+        self.assertEqual(tuple(aliases), glossary.terms[0].aliases)
+        self.assertEqual(meaning, glossary.terms[0].meaning)
+
 
 if __name__ == "__main__":
     unittest.main()

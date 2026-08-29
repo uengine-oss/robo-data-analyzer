@@ -15,7 +15,13 @@ from pipeline.quality_gates.example_synthesis import synthesize_examples
 
 
 def _rule(anchor, cond, then=()):
-    return RuleItem(anchor_line=anchor, cond=cond, then=list(then), nl="")
+    return RuleItem(
+        anchor_line=anchor,
+        structural_condition=cond,
+        structural_effects=list(then),
+        business_condition=cond,
+        business_effects=list(then),
+    )
 
 
 class SynthesisTable(unittest.TestCase):
@@ -29,22 +35,23 @@ class SynthesisTable(unittest.TestCase):
     def test_and_condition_expands_every_term(self):
         rules = [_rule(1, 'F("a") == "01" and F("b") != "Z"', ['ret("RC_ERR")'])]
         got = synthesize_examples(rules)[1]
-        self.assertEqual("satisfy", got[0]["kind"])
-        self.assertEqual(["F('a') == '01'", "F('b') != 'Z'"], got[0]["given"])
-        self.assertEqual(['ret("RC_ERR")'], got[0]["then"])
+        self.assertEqual(
+            ["F('a') == '01'", "F('b') != 'Z'"],
+            got[0]["given_conditions"],
+        )
+        self.assertEqual(['ret("RC_ERR")'], got[0]["expected_effects"])
 
     def test_or_condition_takes_one_satisfying_path(self):
         rules = [_rule(1, 'F("a") == "03" or F("a") == "003"', ['ret("RC_NRM")'])]
         got = synthesize_examples(rules)[1]
-        self.assertEqual(["F('a') == '03'"], got[0]["given"])
+        self.assertEqual(["F('a') == '03'"], got[0]["given_conditions"])
 
     def test_emits_only_one_satisfying_scenario(self):
         rules = [_rule(1, 'F("a") == "01"', ['ret("RC_ERR")'])]
         got = synthesize_examples(rules)[1]
         self.assertEqual(1, len(got))
-        self.assertEqual("satisfy", got[0]["kind"])
-        self.assertEqual(["F('a') == '01'"], got[0]["given"])
-        self.assertEqual(['ret("RC_ERR")'], got[0]["then"])
+        self.assertEqual(["F('a') == '01'"], got[0]["given_conditions"])
+        self.assertEqual(['ret("RC_ERR")'], got[0]["expected_effects"])
 
     def test_else_of_resolves_to_negated_sibling_condition(self):
         rules = [
@@ -52,8 +59,8 @@ class SynthesisTable(unittest.TestCase):
             _rule(518, 'else_of("IF@512")', ['ret("RC_ERR")']),
         ]
         got = synthesize_examples(rules)[518]
-        self.assertEqual(["F('bank') != '03'"], got[0]["given"])
-        self.assertEqual(['ret("RC_ERR")'], got[0]["then"])
+        self.assertEqual(["F('bank') != '03'"], got[0]["given_conditions"])
+        self.assertEqual(['ret("RC_ERR")'], got[0]["expected_effects"])
 
     def test_else_if_chain_negates_each_preceding_condition(self):
         # 드모르간 계약: else-if 3단의 마지막 행은 앞 조건을 **전부 부정**한 상태다.
@@ -67,11 +74,11 @@ class SynthesisTable(unittest.TestCase):
         synthesized = synthesize_examples(rules)
         self.assertEqual(
             ["F('bank') != '03'", "F('bank') == '71'"],
-            synthesized[518][0]["given"],
+            synthesized[518][0]["given_conditions"],
         )
         self.assertEqual(
             ["F('bank') != '03'", "F('bank') != '71'"],
-            synthesized[524][0]["given"],
+            synthesized[524][0]["given_conditions"],
         )
 
     def test_negating_or_condition_negates_every_disjunct(self):
@@ -80,7 +87,10 @@ class SynthesisTable(unittest.TestCase):
             _rule(518, 'else_of("IF@512")', ['ret("RC_ERR")']),
         ]
         got = synthesize_examples(rules)[518]
-        self.assertEqual(["F('a') != '03'", "F('a') != '003'"], got[0]["given"])
+        self.assertEqual(
+            ["F('a') != '03'", "F('a') != '003'"],
+            got[0]["given_conditions"],
+        )
 
     def test_unconditional_rule_has_no_examples(self):
         self.assertEqual([], synthesize_examples([_rule(9, None, ['ret("RC_NRM")'])])[9])
@@ -110,8 +120,8 @@ class SynthesisTable(unittest.TestCase):
         self.assertTrue(result[40])
         self.assertLessEqual(resolver.call_count, len(rules) * 2)
         self.assertEqual(
-            len(result[40][0]["given"]),
-            len(set(result[40][0]["given"])),
+            len(result[40][0]["given_conditions"]),
+            len(set(result[40][0]["given_conditions"])),
         )
 
     def test_syntax_error_condition_yields_no_examples(self):
@@ -121,7 +131,10 @@ class SynthesisTable(unittest.TestCase):
     def test_predicate_call_condition_is_kept_as_a_whole(self):
         rules = [_rule(1, 'F("strncmp(x, \\"03\\", n)") == 0', ['ret("RC_NRM")'])]
         got = synthesize_examples(rules)[1]
-        self.assertEqual(["F('strncmp(x, \"03\", n)') == 0"], got[0]["given"])
+        self.assertEqual(
+            ["F('strncmp(x, \"03\", n)') == 0"],
+            got[0]["given_conditions"],
+        )
 
 
 class SynthesisStaysInsideLeafContract(unittest.TestCase):
@@ -132,13 +145,16 @@ class SynthesisStaysInsideLeafContract(unittest.TestCase):
         got = synthesize_examples([_rule(1, cond, ['ret("RC_ERR")'])])[1]
         self.assertTrue(got)
         for example in got:
-            for leaf in (*example["given"], *example["then"]):
+            for leaf in (
+                *example["given_conditions"],
+                *example["expected_effects"],
+            ):
                 self.assertNotIn("\n", leaf)
 
     def test_long_but_valid_satisfying_leaf_is_not_truncated(self):
         cond = 'F("%s") == "03"' % ("x" * 466)
         got = synthesize_examples([_rule(1, cond, ['ret("RC")'])])[1]
-        self.assertEqual(["satisfy"], [example["kind"] for example in got])
+        self.assertEqual(1, len(got))
 
     def test_long_parser_owned_predicate_is_not_silently_dropped(self):
         source_predicate = " || ".join(f"code == {index}" for index in range(80))
@@ -147,7 +163,10 @@ class SynthesisStaysInsideLeafContract(unittest.TestCase):
         got = synthesize_examples([_rule(1, cond, ['ret("RC")'])])[1]
 
         self.assertEqual(1, len(got))
-        self.assertEqual(source_predicate, got[0]["given"][0][3:-2])
+        self.assertEqual(
+            source_predicate,
+            got[0]["given_conditions"][0][3:-2],
+        )
         ExampleItem.model_validate(got[0])
 
 

@@ -3,7 +3,7 @@
 # 표가 담는 것: 구문 데이터만 (키워드·relation·dml_type·감지 구문·대상 추출 구문).
 # 정규식 조립·판정 로직은 pipeline/dml_semantics.py 의 단일 빌더만 수행한다 (research D7).
 # 새 구문 지원 = 이 파일 수정뿐이어야 한다 (헌법 II·III).
-# 표 밖 DML 키워드 나열 금지 — specs/106-dml-semantics-table/contracts/dml-semantics-contract.md 계약 1.
+# 표 밖 DML 키워드 나열 금지 — specs/131-cross-node-semantic-grounding/spec.md의 구조 사실 경계.
 #
 # 필드 (data-model.md):
 #   키          : dml_type 값이자 기본 감지 키워드 (대문자)

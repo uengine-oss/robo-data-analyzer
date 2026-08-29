@@ -13,9 +13,8 @@ ontology ``role_of`` 는 분류 전용 — 어느 dataclass/엣지/internal 인�
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from graph.schema.graph_edges import (
     BelongsTo,
@@ -24,17 +23,13 @@ from graph.schema.graph_edges import (
     StatementNext,
 )
 from graph.schema.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
-from shared.config.settings import SETTINGS
 from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
-from shared.events.runtime_logger import log_error, log_warning
 from pipeline.models.data_object_usage import (
     unqualified_identifiers_from_parser_ast,
     usages_from_parser_ast,
 )
-
-_COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 
 # DBMS 순수 선언 노드 — Variable 노드로 수집 (CodeNode 아님, 분석 제외).
 # ★ CURSOR 정의는 제외 — 쿼리 로직(선별 조건 = 비즈니스 규칙)을 담으므로 CodeNode 로 분석한다
@@ -63,6 +58,9 @@ class ParseResult:
     statement_next_edges: list[StatementNext] = field(default_factory=list)  # 구문 → 다음 구문 (DBMS 실행 흐름)
     call_sites: list[dict] = field(default_factory=list)   # canonical call occurrence ledger
     callable_facts: list[dict] = field(default_factory=list)  # IR 2 structural declarations
+    parameter_facts: list[dict] = field(default_factory=list)  # IR 2 lexical parameter bindings
+    binding_target_facts: list[dict] = field(default_factory=list)  # IR 2 grammar targets
+    scope_directive_facts: list[dict] = field(default_factory=list)  # Python global/nonlocal names
     structural_expression_facts: list[dict] = field(default_factory=list)
     semantic_expression_facts: list[dict] = field(default_factory=list)
     resolved_expression_facts: list[dict] = field(default_factory=list)
@@ -101,7 +99,7 @@ def _make_code_node(
     """라벨 = ``node["type"]`` (Framework METHOD/FUNCTION · DBMS PROCEDURE/SELECT/IF 등).
 
     ``module_id`` (소속 모듈 id) → ``owner_id`` (HAS_MEMBER 빌드·그룹핑).
-    ``package_id`` (소속 폴더 id) → ``package`` (external 호출 스키마 귀속, call_linker).
+    ``package_id`` (소속 폴더 id) → ``package`` (언어 adapter의 namespace 판단 입력).
     """
     sl = int(node.get("startLine") or 0)
     code_node = CodeNode(
@@ -258,24 +256,34 @@ def _folder_package(rel_path: str) -> tuple[str, Package | None]:
     return package_id, Package(id=package_id, name=parts[-1])
 
 
-def _src_path(raw: dict, source_root: Path, json_path: Path) -> str:
-    """antlr JSON 의 ``filePath`` → 절대 소스 경로 (step2 code_text 슬라이싱용).
-
-    ``filePath`` 가 없으면 폴백하지만, ``fileName`` 은 디렉토리 없는 basename 이고
-    ``json_path.stem`` 은 확장자까지 잃는다 → **존재하지 않을 경로를 지어낸다**.
-    그러면 SourceFileCache 가 못 읽어 code_text 가 통째로 빈다(spec 045 FR-007)
-    → 조용히 넘기지 않고 경고로 표면화한다.
-    """
-    rel = raw.get("filePath")
-    if not rel:
-        rel = raw.get("fileName") or json_path.stem
-        log_warning(
-            _COMPONENT, "src_path_fallback",
-            "antlr JSON 에 filePath 가 없어 폴백으로 경로를 구성했다 — "
-            "실제 파일과 다를 수 있고, 그 경우 이 파일의 code_text 가 전부 빈다.",
-            fallback=str(rel), json_path=str(json_path),
+def _required_source_id(raw: dict, json_path: Path) -> str:
+    """Return the Parser-owned POSIX-relative source identity or fail closed."""
+    value = str(raw.get("filePath") or "").strip().replace("\\", "/")
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or any(
+        part in {"", ".", ".."} for part in path.parts
+    ):
+        raise ValueError(
+            f"invalid Parser filePath in {json_path}: {value!r}"
         )
-    return str(source_root / rel)
+    return path.as_posix()
+
+
+def _absolute_source_path(
+    source_id: str,
+    source_root: Path,
+    json_path: Path,
+) -> str:
+    """Resolve one validated Parser source identity inside the sealed source root."""
+    source_base = source_root.resolve()
+    source_path = (source_base / source_id).resolve()
+    try:
+        source_path.relative_to(source_base)
+    except ValueError as error:
+        raise ValueError(
+            f"Parser filePath is outside source root in {json_path}: {source_id!r}"
+        ) from error
+    return str(source_path)
 
 
 def _file_module_id(file_path: str) -> str:

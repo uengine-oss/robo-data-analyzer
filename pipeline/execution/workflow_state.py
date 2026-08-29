@@ -7,11 +7,11 @@
   새 step 추가도 키 책임 단일하면 reducer 불필요.
 - 모든 step 의 입출력은 이 state 의 키.
 
-dedup / 단일 진실
+중복 / 단일 진실
 ────────────────
-list 안 raw 중복은 **Neo4j MERGE Cypher 가 자동 dedup** (그래프 진실 보장자).
-state / artifact 의 list 가 raw 매치 그대로여도 분석 흐름엔 영향 0 — 다른 step 이
-``set`` 으로 변환해 사용 (예: ``build_context_step`` 의 reads/writes set).
+발생 장부는 source occurrence를 손실 없이 보존한다. 제품 공개 전에는 각 builder가
+안정된 제품 identity로 투영하고, 완전한 ``ProductWritePlan``이 operation·property owner·
+endpoint·record hash의 누락과 중복을 검증한다. Neo4j MERGE에 정확성 책임을 넘기지 않는다.
 
 영역 규칙 — 새 step 추가 시
 ─────────────────────────────
@@ -34,14 +34,12 @@ from graph.schema.graph_edges import (
     HasColumn,
     HasExample,
     HasMember,
-    HasQuestion,
     HasRule,
     InitBy,
     ParentOf,
     ReadsWrites,
     References,
     StatementNext,
-    ExternalEdge,
 )
 from graph.schema.graph_nodes import (
     Column,
@@ -51,23 +49,21 @@ from graph.schema.graph_nodes import (
     CodeNode,
     Module,
     Package,
-    Question,
     Rule,
     Schema,
     Table,
-    ObjectReference,
     Variable,
-    ExternalChunk,
-    ProjectFile,
 )
+from pipeline.models.external_reference_resolution import ResolvedExternalReferenceLink
+from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 
 
 class WorkflowState(TypedDict, total=False):
     """파이프라인 1회 실행의 누적 state.
 
     각 키 = 1 step 만 반환 — LangGraph default replace 로 충분.
-    list 중복은 Neo4j MERGE 가 dedup (그래프 진실 보장자), 분석 흐름은 set 변환으로
-    자동 dedup — state 자체는 raw list 그대로 OK.
+    occurrence list는 raw 발생을 보존하고, 제품 identity 중복 제거와 exact-once 검증은
+    최종 ProductWritePlan builder가 소유한다.
 
     ``operator.add`` reducer 키 (여러 step 이 나눠 누적 반환):
     - ``call_sites`` / ``import_refs`` — step2 가 파일별 partial 로 여러 dict 반환.
@@ -80,12 +76,11 @@ class WorkflowState(TypedDict, total=False):
     # ── step1_parse_ddl 결과 ──────────────────────
     schemas: list[Schema]
     tables: list[Table]
-    object_references: list[ObjectReference]
     columns: list[Column]
     has_column_edges: list[HasColumn]
     # BELONGS_TO 는 두 step 이 누적: step1(Table→Schema) + step2(그릇 FILE/CLASS→Package).
     # 끝점 종류만 다른 같은 "소속" 관계 — default replace 면 step2 가 step1 을 덮어쓰므로
-    # ``operator.add`` 로 누적 (reads_writes_edges 와 동일 패턴). 중복은 Neo4j MERGE 가 dedup.
+    # ``operator.add`` 로 누적한다. 최종 제품 builder가 안정 identity로 투영·검증한다.
     belongs_to_edges: Annotated[list[BelongsTo], operator.add]
     fk_edges: list[Fk]
 
@@ -106,6 +101,9 @@ class WorkflowState(TypedDict, total=False):
     # step2 가 파일별 partial 로 여러 dict 반환 → 누적 필요 (다른 키는 한 번에 반환).
     call_sites: Annotated[list[dict], operator.add]
     callable_facts: list[dict]
+    parameter_facts: list[dict]
+    binding_target_facts: list[dict]
+    scope_directive_facts: list[dict]
     structural_expression_facts: list[dict]
     semantic_expression_facts: list[dict]
     resolved_expression_facts: list[dict]
@@ -117,10 +115,11 @@ class WorkflowState(TypedDict, total=False):
     evidence_completeness: list[dict]
     preprocessing_contexts: list[dict]
 
-    # ── step3_load_external + step5_linking 결과 (spec 078) ──
-    project_files: list[ProjectFile]
-    external_chunks: list[ExternalChunk]
-    external_edges: Annotated[list[ExternalEdge], operator.add]
+    # ── step3_load_external + step5_linking 결과 ──
+    external_source_files: list[ExternalSourceFile]
+    external_source_records: list[ExternalSourceRecord]
+    resolved_external_reference_links: list[ResolvedExternalReferenceLink]
+    external_reference_ledger: dict
 
     # ── step4_scan_project 결과 (Framework 만) ─
     scan_result: dict                     # ScanResult Pydantic → dict
@@ -129,7 +128,7 @@ class WorkflowState(TypedDict, total=False):
     # 여러 step 이 누적 반환 — framework: 결정론(stage1) + 잔여 패턴 루프(stage3) /
     # dbms: DML 매칭(stage1) + catalog lineage(step8). reducer가 없으면 뒤 step이
     # 앞 엣지를 통째 덮어써 step6(build_context)가 불완전한 R/W를 LLM에 전달한다.
-    # → ``operator.add``로 누적 (중복은 Neo4j MERGE·step6 set 변환이 자동 dedup).
+    # → ``operator.add``로 누적한다. step6 소비와 최종 제품 builder가 각 계약 key를 검증한다.
     reads_writes_edges: Annotated[list[ReadsWrites], operator.add]
     calls_edges: list[Calls]
     call_resolution_ledger: list[dict]
@@ -146,15 +145,19 @@ class WorkflowState(TypedDict, total=False):
     data_object_resolution_metrics: dict[str, int | float]
 
     # ── step7 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
-    # 비즈니스 로직 3가지 (rules/examples/questions) + 관련 엣지 6종.
+    # 구조화된 Rule/Example과 관련 엣지.
     # Rule 노드 id = "<function id>::R<anchor>" (anchor 좌표 정체성, spec 116).
-    # 중복은 Neo4j MERGE Cypher 가 id 키로 dedup (rule / example / question 공통).
+    # Rule/Example builder가 owner·anchor·ordinal identity의 누락·중복을 DB 쓰기 전에 검증한다.
     rules: list[Rule]
     examples: list[Example]
-    questions: list[Question]
     has_rule_edges: list[HasRule]
     has_example_edges: list[HasExample]
-    has_question_edges: list[HasQuestion]
     affects_table_edges: list[AffectsTable]
 
-    # step8 build_components는 합성 노드를 만들지 않고 FUNCTION.component_id 속성만 SET — state 누적 없음.
+    # ── step8 결정론 후처리 결과 ────────────────────
+    # Component node/relationship은 최종 publication만 만든다. 이 state 값은
+    # 제품 graph를 쓰기 전의 DB 비종속 전체 membership 정본이다.
+    component_member_ids_by_component_id: dict[str, list[str]]
+    # 제품 SearchSegment로 투영하기 전의 전체 text/vector/parent record.
+    # dict를 써 checkpoint에 별도 runtime type 허용을 추가하지 않는다.
+    search_segments: list[dict]

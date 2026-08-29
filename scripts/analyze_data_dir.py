@@ -97,14 +97,6 @@ async def _consume_stream(stream: NDJSONStream) -> None:
             print(f"[PHASE] {event.get('event','?')}  node={event.get('node','-')}")
         elif etype == "tool_event":
             print(f"[TOOL ] {event.get('event','?'):<10} {event.get('tool','-'):<25} {str(event.get('message',''))[:80]}")
-        elif etype == "todo_update":
-            todos = event.get("todos") or []
-            in_progress = [
-                (t.get("content") or "?") for t in todos
-                if isinstance(t, dict) and t.get("status") == "in_progress"
-            ]
-            current = in_progress[0] if in_progress else "(none)"
-            print(f"[TODO ] {len(todos)} items, in_progress: {current[:60]}")
         elif etype == "error":
             print(f"[ERROR] {event.get('component','-')} : {str(event.get('message',''))[:200]}")
         elif etype == "warning":
@@ -138,6 +130,11 @@ async def analyze_one(
         # 비어 있으면 None → 샘플 보강 skip.
         datasource=SETTINGS.catalog_api.test_datasource or None,
         corpus_root=inputs.data_dir,
+        selected_source_ids=inputs.selected_source_ids,
+        validation_baseline_ref=inputs.validation_baseline_ref,
+        validation_baseline_sha256=inputs.validation_baseline_sha256,
+        validation_answer_key_ref=inputs.validation_answer_key_ref,
+        validation_answer_key_sha256=inputs.validation_answer_key_sha256,
     )
 
     stream = NDJSONStream()

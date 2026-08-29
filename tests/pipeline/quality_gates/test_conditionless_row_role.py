@@ -14,11 +14,13 @@ import unittest
 
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
 from pipeline.quality_gates.branch_inventory import build_inventory
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
-def _role_at(source, subtree, lang, line, statements=(), call_lines=()):
+def _role_at(source, subtree, lang, line, statements=(), calls=()):
     inventory = build_inventory(
-        source, subtree, lang, statements=tuple(statements), call_lines=tuple(call_lines),
+        source, subtree, lang, statements=tuple(statements),
+        call_occurrences=parser_call_occurrences(calls),
     )
     rows = {row["line"]: row for row in inventory.table_rows()}
     return rows[line]
@@ -61,7 +63,7 @@ class ConditionlessDecisionBecomesControllerTest(unittest.TestCase):
                               target="rc", operator="="),
                 StatementFact("s6", "RETURN", 6, 6, expression="rc"),
             ),
-            call_lines=((4, "fetch"),),
+            calls=((4, "fetch"),),
         )
         self.assertEqual("controller", row["role"])
 

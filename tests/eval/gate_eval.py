@@ -1,8 +1,8 @@
 """tests/eval/gate_eval — 검색 게이트 상시 측정 (놀이터 이관·정착, spec 044 SC-001).
 
 analyzer `search/` 코어를 골드(cluster_gold + rewrite_gold)로 채점 → gold 이름 회수율.
-현 config(rewrite/judge/ce_top)를 그대로 쓰되 환경변수로 A/B 가능:
-  ROBO_SEARCH_JUDGE=off|p15  ROBO_SEARCH_REWRITE=off|novel_abbrev  ROBO_SEARCH_CE_TOP=15|30
+현 config(rewrite/ce_top)를 그대로 쓰되 환경변수로 A/B 가능:
+  ROBO_SEARCH_REWRITE=off|novel_abbrev  ROBO_SEARCH_CE_TOP=15|30
 
 실행: ./.venv/Scripts/python.exe tests/eval/gate_eval.py [--pool 30]
 CE 점수는 `.search_cache/ce_scores.json` 디스크 캐시 — 첫 실행만 느리고 재측정은 즉시.
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     ap.add_argument("--pool", type=int, default=30)
     args = ap.parse_args()
     print(f"════ 게이트 pool_k={args.pool} · rewrite={DEFAULT.cluster_rewrite_mode} "
-          f"judge={DEFAULT.cluster_judge_mode} ce_top={DEFAULT.cluster_ce_top} · LLM={SETTINGS.semantic_search.llm_config} ════", flush=True)
+          f"ce_top={DEFAULT.cluster_ce_top} · LLM={SETTINGS.semantic_search.llm_config} ════", flush=True)
     nh, nt, nm = run_db("neo4j", args.pool)
     th, tt, tm = run_db("test", args.pool)
     print(f"\n════ 합산 {nh + th}/{nt + tt}  (neo4j {nh}/{nt} · test {th}/{tt}) ════")

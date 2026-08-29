@@ -22,6 +22,7 @@ from pipeline.steps.step7_analyze_code.batch_analyze import _analyze_batch
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import BatchSummaryItem
+from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from graph.schema.graph_nodes import CodeNode
 from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
@@ -76,6 +77,105 @@ class DispatchRanksTest(unittest.TestCase):
 
 
 class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_analyzed_code_nodes_as_an_explicit_state_update(self):
+        node = CodeNode(
+            id="function:a", name="a", signature="a()", file_path="a.c",
+            start_line=1, end_line=2, label="FUNCTION",
+        )
+        contexts = {node.id: _Ctx(node.id)}
+        code_by_id = {node.id: node}
+        state = {
+            "code_nodes": [node],
+            "calls_edges": [],
+            "parent_of_edges": [],
+        }
+
+        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+            analyzed = code_by_id[code_id]
+            analyzed.meaning_status = "sufficient"
+            on_summary_ready = kwargs.get("on_summary_ready")
+            if on_summary_ready is not None:
+                on_summary_ready(code_id)
+            return analyzed
+
+        async def _fake_finalize(result, stream):
+            from pipeline.steps.step7_analyze_code.example_mapping_builder import (
+                ExampleMappingResult,
+            )
+            return ExampleMappingResult()
+
+        target = "pipeline.steps.step7_analyze_code.framework_per_node"
+        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+             mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
+            from pipeline.execution.pause_controller import PauseController
+            result = await run_framework_per_node_analysis(
+                state=state, contexts=contexts, code_by_id=code_by_id,
+                strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
+                cost_budget=None, stream=None, table_descriptions={},
+                pause=PauseController(), source_cache=mock.Mock(),
+                handoff=AnalysisHandoff(PrioritySemaphore(64)),
+            )
+
+        self.assertEqual("sufficient", result["code_nodes"][0].meaning_status)
+
+    async def test_first_summary_warms_without_blocking_other_node_work(self):
+        contexts = {key: _Ctx(key) for key in ("a", "b")}
+        code_by_id = {key: _Node(key) for key in contexts}
+        state = {
+            "code_nodes": list(code_by_id.values()),
+            "calls_edges": [],
+            "parent_of_edges": [],
+        }
+        events: list[str] = []
+        started: set[str] = set()
+        all_nodes_started = asyncio.Event()
+
+        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+            started.add(code_id)
+            events.append(f"node:{code_id}")
+            if len(started) == 2:
+                all_nodes_started.set()
+            warm_event = kwargs["summary_warm_event"]
+            if kwargs["is_summary_warmup"]:
+                events.append("warm_summary:started")
+                await asyncio.wait_for(all_nodes_started.wait(), timeout=1)
+                events.append("warm_summary:done")
+                warm_event.set()
+            else:
+                events.append("other_work:started")
+                await asyncio.wait_for(warm_event.wait(), timeout=1)
+                events.append("other_summary:started")
+            on_summary_ready = kwargs.get("on_summary_ready")
+            if on_summary_ready is not None:
+                on_summary_ready(code_id)
+            return code_by_id[code_id]
+
+        async def _fake_finalize(result, stream):
+            from pipeline.steps.step7_analyze_code.example_mapping_builder import (
+                ExampleMappingResult,
+            )
+            return ExampleMappingResult()
+
+        target = "pipeline.steps.step7_analyze_code.framework_per_node"
+        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+             mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
+            from pipeline.execution.pause_controller import PauseController
+            await run_framework_per_node_analysis(
+                state=state, contexts=contexts, code_by_id=code_by_id,
+                strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
+                cost_budget=None, stream=None,
+                table_descriptions={}, pause=PauseController(),
+                source_cache=mock.Mock(),
+                handoff=AnalysisHandoff(PrioritySemaphore(64)),
+            )
+
+        self.assertLess(
+            events.index("other_work:started"), events.index("warm_summary:done")
+        )
+        self.assertLess(
+            events.index("warm_summary:done"), events.index("other_summary:started")
+        )
+
     async def test_caller_starts_after_callee_summary_not_full_completion(self):
         """caller(CALLS 의존)는 callee 의 rules 완료가 아니라 summary 확정에 풀린다."""
         contexts = {
@@ -103,7 +203,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             events.append(f"done:{code_id}")
             return code_by_id[code_id]
 
-        async def _fake_persist(result, neo, stream):
+        async def _fake_finalize(result, stream):
             from pipeline.steps.step7_analyze_code.example_mapping_builder import (
                 ExampleMappingResult,
             )
@@ -113,13 +213,12 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
 
         target = "pipeline.steps.step7_analyze_code.framework_per_node"
         with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
-             mock.patch(f"{target}.run_summary", mock.AsyncMock(return_value=None)), \
-             mock.patch(f"{target}._persist_and_emit_code", _fake_persist):
+             mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             result = await run_framework_per_node_analysis(
                 state=state, contexts=contexts, code_by_id=code_by_id,
                 strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
-                cost_budget=None, neo=None, stream=None,
+                cost_budget=None, stream=None,
                 table_descriptions={},
                 pause=PauseController(), source_cache=mock.Mock(),
                 handoff=AnalysisHandoff(PrioritySemaphore(64)),
@@ -162,7 +261,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             events.append(f"done:{code_id}")
             return code_by_id[code_id]
 
-        async def _fake_persist(result, neo, stream):
+        async def _fake_finalize(result, stream):
             from pipeline.steps.step7_analyze_code.example_mapping_builder import (
                 ExampleMappingResult,
             )
@@ -172,13 +271,12 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
 
         target = "pipeline.steps.step7_analyze_code.framework_per_node"
         with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
-             mock.patch(f"{target}.run_summary", mock.AsyncMock(return_value=None)), \
-             mock.patch(f"{target}._persist_and_emit_code", _fake_persist):
+             mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             await run_framework_per_node_analysis(
                 state=state, contexts=contexts, code_by_id=code_by_id,
                 strategy=mock.Mock(prompts_dir="llm/prompts/framework", name="framework"),
-                cost_budget=None, neo=None, stream=None,
+                cost_budget=None, stream=None,
                 table_descriptions={},
                 pause=PauseController(), source_cache=mock.Mock(),
                 handoff=AnalysisHandoff(PrioritySemaphore(64)),
@@ -198,6 +296,17 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             id="n", signature="n()", file_path="sample.sql",
             start_line=1, end_line=3,
             direct_reads=("db:APP.ORDERS",),
+            data_object_usages=(DataObjectUsageEvidence(
+                source_id="n",
+                raw_reference="db:APP.ORDERS",
+                name="ORDERS",
+                access="READ",
+                evidence_file="sample.sql",
+                evidence_line=2,
+                producer="linked_edges",
+                table_id="db:APP.ORDERS",
+                resolution="exact",
+            ),),
         )
         summary_ready = asyncio.Event()
         table_hold = asyncio.Event()
@@ -208,13 +317,10 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                     "n": BatchSummaryItem(
                         node_key="1-3", summary="업무 처리를 수행한다",
                         stereotype="DataQuery", evidence_status="partial",
-                        missing_context=["상태 코드 정의"], questions=[{
-                            "text": "상태 코드의 업무 의미는 무엇인가?",
-                            "reason": "제공 근거에 정의가 없다",
-                        }],
+                        missing_context=["상태 코드 정의"],
                         semantic_frame=semantic_frame_for_node(
                             node, meaning="업무 처리를 수행한다",
-                            status="partial", missing_context=["상태 코드 정의"],
+                            status="partial",
                         ),
                     )
                 }
@@ -248,8 +354,8 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(ready_waiter, finished, "summary-ready signal timed out")
                 self.assertEqual("업무 처리를 수행한다", node.summary)
                 self.assertEqual(
-                    "상태 코드의 업무 의미는 무엇인가?",
-                    node.extra["questions"][0]["text"],
+                    "partial",
+                    ctx.extra["summary_status"],
                 )
                 self.assertFalse(task.done(), "table-insight tail should still be running")
             finally:

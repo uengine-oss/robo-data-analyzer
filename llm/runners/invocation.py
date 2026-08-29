@@ -2,8 +2,8 @@
 
 용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/steps/step7_analyze_code`` (code_summary / code_table_insights /
-  code_summary/code_table_insights)
+- ``pipeline/steps/step7_analyze_code`` (code_summary /
+  code_table_usage_meanings)
 - ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
 
 yaml 형식 (단순)::

@@ -22,7 +22,6 @@ LLM 호출 0 · Neo4j 0 · **재실행 상한을 소진하지 않는다.** 생�
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import re
 import sys
@@ -37,7 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.languages import ROUTINE_LABELS, callsite_labels, detect_strategy, lang_of
+from pipeline.languages import ROUTINE_LABELS, detect_strategy, lang_of
 from pipeline.quality_gates.branch_inventory import (
     build_inventory,
     validate_static_jump_targets,
@@ -47,10 +46,14 @@ from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
+from pipeline.steps.step2_load_ast.expression_ownership import (
+    attach_routine_expression_ledger,
+)
 from pipeline.steps.step5_linking.link_tables.link_dbms_tables_step import _link
-from pipeline.steps.step5_linking.link_calls.call_linker import CallLinker
+from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
 from pipeline.steps.step6_build_context.build_context_step import (
-    _data_object_identity_aliases, _owning_routine, _table_op_lines,
+    _table_op_lines,
+    build_parser_call_evidence,
 )
 from pipeline.steps.step6_build_context.control_subtree import (
     build_control_subtrees, build_statement_facts,
@@ -87,8 +90,19 @@ class _Corpus:
         self.modules: list = []
         self.variables: list = []
         self.constants: list = []
+        self.call_sites: list[dict] = []
+        self.callable_facts: list[dict] = []
+        self.parameter_facts: list[dict] = []
+        self.binding_target_facts: list[dict] = []
+        self.scope_directive_facts: list[dict] = []
+        self.macro_facts: list[dict] = []
         self.import_refs: list[dict] = []
+        self.evidence_sources: list[dict] = []
+        self.evidence_completeness: list[dict] = []
+        self.preprocessing_contexts: list[dict] = []
+        self.resolved_expression_facts: list[dict] = []
         self.parent_edges: list = []
+        self._classified_calls = None
         self._load()
 
     @property
@@ -111,36 +125,39 @@ class _Corpus:
             self.variables += result.variables
             self.constants += result.constants
             self.parent_edges += result.parent_of_edges
-            self._call_sites = getattr(self, "_call_sites", []) + list(result.call_sites)
+            self.call_sites += result.call_sites
+            self.callable_facts += result.callable_facts
+            self.parameter_facts += result.parameter_facts
+            self.binding_target_facts += result.binding_target_facts
+            self.scope_directive_facts += result.scope_directive_facts
+            self.macro_facts += result.macro_facts
             self.import_refs += result.import_refs
+            self.evidence_sources += result.evidence_sources
+            self.evidence_completeness += result.evidence_completeness
+            self.preprocessing_contexts += result.preprocessing_contexts
+            self.resolved_expression_facts += list(
+                getattr(result, "resolved_expression_facts", ())
+            )
+        attach_routine_expression_ledger(
+            self.nodes, self.resolved_expression_facts,
+        )
 
-    def _call_lines(self) -> dict[str, list[tuple[int, str]]]:
-        """(routine 상대 줄, 호출명) — reader call_site + CodeNode 형 호출 자리."""
-        by_id = {node.id: node for node in self.nodes}
-        start_by_id = {node.id: node.start_line for node in self.nodes}
-        lines: dict[str, list[tuple[int, str]]] = {}
-        for site in getattr(self, "_call_sites", ()):
-            caller = str(site.get("caller_id") or "")
-            start = start_by_id.get(caller)
-            name = str(site.get("call_text") or "")
-            if not caller or start is None or not name:
-                continue
-            line = int(site.get("line") or 0) - start + 1
-            if line >= 1:
-                lines.setdefault(caller, []).append((line, name))
-        labels = callsite_labels()
-        for node in self.nodes:
-            if node.label not in labels or not node.name:
-                continue
-            routine = _owning_routine(node, by_id)
-            if routine is None:
-                continue
-            line = node.start_line - routine.start_line + 1
-            if line >= 1:
-                lines.setdefault(routine.id, []).append((line, node.name))
-        for value in lines.values():
-            value.sort()
-        return lines
+    def _classify_calls(self):
+        if self._classified_calls is None:
+            self._classified_calls = classify_call_sites(
+                self.call_sites,
+                self.nodes,
+                macro_facts=self.macro_facts,
+                preprocessing_contexts=self.preprocessing_contexts,
+                callable_facts=self.callable_facts,
+                parameter_facts=self.parameter_facts,
+                binding_target_facts=self.binding_target_facts,
+                scope_directive_facts=self.scope_directive_facts,
+                import_refs=self.import_refs,
+                evidence_sources=self.evidence_sources,
+                evidence_completeness=self.evidence_completeness,
+            )
+        return self._classified_calls
 
     def _table_ops(self) -> dict[str, list[tuple[int, str, str]]]:
         if self.strategy != "dbms":
@@ -148,13 +165,8 @@ class _Corpus:
         tables = []
         for path in sorted((self.data_dir / "ddl").glob("*.sql")):
             tables += parse_ddl_file(path, db=self.data_dir.name).tables
-        edges = _link(self.nodes, tables, self.parent_edges, self.cache)
-        # Product step6 converts unresolved OBJECT_REFERENCE graph ids back to their exact
-        # source spelling before they enter RULE evidence.  Reproduce that boundary here;
-        # comparing an internal sha256 id with the saved ``DUAL``/``ALL_OBJECTS`` spelling
-        # is a checker-coordinate error, not a semantic evidence change.
-        _aliases, unresolved_names = _data_object_identity_aliases(self.nodes, "")
-        return _table_op_lines(edges, self.nodes, unresolved_names)
+        _link(self.nodes, tables)
+        return _table_op_lines(self.nodes)
 
     def evidence(self) -> dict[str, dict]:
         """routine id → rule evidence rows."""
@@ -167,7 +179,9 @@ class _Corpus:
         """routine id → complete rule evidence packet, including dereference tables."""
         subtrees = build_control_subtrees(self.nodes)
         facts = build_statement_facts(self.nodes, self.variables, self.constants)
-        call_lines = self._call_lines()
+        call_occurrences = build_parser_call_evidence(
+            self.call_sites, self._classify_calls().ledger, self.nodes,
+        )
         table_ops = self._table_ops()
         markers = () if self.strategy == "dbms" else _FRAMEWORK_HANDLER_MARKERS
         out: dict[str, dict] = {}
@@ -180,7 +194,7 @@ class _Corpus:
                 line_offset=max(fn.start_line - 1, 0),
                 handler_markers=markers,
                 statements=tuple(facts.get(fn.id, ())),
-                call_lines=tuple(call_lines.get(fn.id, ())),
+                call_occurrences=tuple(call_occurrences.get(fn.id, ())),
                 table_ops=tuple(table_ops.get(fn.id, ())),
             )
             rows = required_rule_rows(inventory)
@@ -223,7 +237,7 @@ class _Corpus:
         """Reproduce DBMS CALL summary ownership and rounds without a run."""
         if self.strategy != "dbms":
             raise ValueError("callee-summary preflight currently requires a DBMS corpus")
-        calls = asyncio.run(CallLinker().link(self.nodes))
+        calls = self._classify_calls().edges
         eff_parent, _eff_children, analysis_ids = build_effective_tree(self.nodes)
         callees_by_node: dict[str, set[str]] = {}
         for edge in calls:
@@ -305,17 +319,8 @@ class _Corpus:
             parsed = parse_ddl_file(path, db=self.data_dir.name)
             tables += parsed.tables
             columns += parsed.columns
-        edges = _link(self.nodes, tables, self.parent_edges, self.cache)
-        by_id = {node.id: node for node in self.nodes}
-        direct_items = {(edge.source_id, edge.target_id) for edge in edges}
-        inherited_items: set[tuple[str, str]] = set()
-        inherited_routines: set[str] = set()
-        for edge in edges:
-            owner = by_id.get(edge.source_id)
-            routine = _owning_routine(owner, by_id) if owner is not None else None
-            if routine is not None and routine.id != edge.source_id:
-                inherited_items.add((routine.id, edge.target_id))
-                inherited_routines.add(routine.id)
+        edges = _link(self.nodes, tables)
+        product_items = {(edge.source_id, edge.target_id) for edge in edges}
         direct_operations: dict[str, list[dict]] = {}
         for edge in edges:
             direct_operations.setdefault(edge.target_id, []).append({})
@@ -329,10 +334,12 @@ class _Corpus:
             "table_comments": sum(bool(table.comment) for table in tables),
             "column_descriptions": sum(bool(column.description) for column in columns),
             "column_comments": sum(bool(column.comment) for column in columns),
-            "direct_insight_items": len(direct_items),
-            "direct_insight_nodes": len({source_id for source_id, _ in direct_items}),
-            "inherited_duplicate_items": len(inherited_items - direct_items),
-            "inherited_routines": len(inherited_routines),
+            "product_access_items": len(product_items),
+            "product_access_routines": len({source_id for source_id, _ in product_items}),
+            "unresolved_occurrences": sum(
+                len(node.extra.get("unresolved_data_object_usages") or ())
+                for node in self.nodes
+            ),
         }
 
 def _measure(data_dir: Path) -> None:
@@ -390,11 +397,10 @@ def _measure(data_dir: Path) -> None:
             f"column {table_semantics['column_comments']}"
         )
         print(
-            "    table-insight direct items "
-            f"{table_semantics['direct_insight_items']} / owner nodes "
-            f"{table_semantics['direct_insight_nodes']} · inherited duplicate items "
-            f"{table_semantics['inherited_duplicate_items']} / routines "
-            f"{table_semantics['inherited_routines']}"
+            "    product access items "
+            f"{table_semantics['product_access_items']} / routines "
+            f"{table_semantics['product_access_routines']} · unresolved occurrences "
+            f"{table_semantics['unresolved_occurrences']}"
         )
         summary = corpus.dbms_summary_dependencies()
         print(

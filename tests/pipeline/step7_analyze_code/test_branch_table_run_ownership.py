@@ -13,6 +13,7 @@ from pipeline.models.analysis_context import ControlSubtreeNode
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
 from pipeline.quality_gates.audit_artifact_paths import audit_file_stem
 from pipeline.quality_gates.branch_inventory import build_inventory
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 from pipeline.steps.step7_analyze_code.branch_audit import (
     persist_branch_table,
     persist_routine_audits,
@@ -67,7 +68,7 @@ class BranchTableRunOwnership(unittest.TestCase):
             self.assertEqual(["code:sample.fn"], list(records))
             self.assertEqual(RULE_AUDIT_SCHEMA, records["code:sample.fn"]["schema"])
             self.assertEqual(1, len(records["code:sample.fn"]["rules"]))
-            self.assertEqual("", records["code:sample.fn"]["rules"][0]["nl"])
+            self.assertNotIn("nl", records["code:sample.fn"]["rules"][0])
 
     def test_rule_record_replays_embedded_condition_expression_evidence(self) -> None:
         inventory = build_inventory(
@@ -121,7 +122,8 @@ class BranchTableRunOwnership(unittest.TestCase):
                 record["evidence"]["condition_expression_schema"],
             )
             self.assertEqual(
-                'F("x") == F("0")', record["rules"][0]["cond"],
+                'F("x") == F("0")',
+                record["rules"][0]["structural_condition"],
             )
 
     def test_active_run_write_failure_is_not_downgraded_to_success(self) -> None:
@@ -219,7 +221,7 @@ class DbmsRoutineAudits(unittest.TestCase):
             (ControlSubtreeNode("if", "IF", 1, 1, expression="ready"),),
             "sql",
             statements=(),
-            call_lines=((1, "act"),),
+            call_occurrences=parser_call_occurrences(((1, "act"),)),
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

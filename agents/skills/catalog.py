@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+from shared.files.run_cache_context import read_run_text
+
 SKILLS_ROOT = Path(__file__).resolve().parent
 FRAMEWORK_SKILLS_DIR = SKILLS_ROOT / "framework"
 EXTERNAL_SKILLS_DIR = SKILLS_ROOT / "external"
@@ -30,7 +32,7 @@ def build_skill_catalog(skills_dir: Path, *, prefix: str = "") -> str:
         if not document.exists():
             continue
         try:
-            lines = document.read_text(encoding="utf-8").splitlines()
+            lines = read_run_text(document, encoding="utf-8").splitlines()
         except OSError as error:
             raise SkillCatalogError(
                 f"Cannot read SKILL document {document}: {type(error).__name__}: {error}"
@@ -56,7 +58,6 @@ SKILL_CONTRACT_KEYS = (
     "framework_runtime_functions",
     "handler_markers",
     "api_contracts",
-    "codebase_notes",
 )
 
 
@@ -74,7 +75,7 @@ def load_skill_contract(
     if not document.is_file():
         return {}
     try:
-        text = document.read_text(encoding="utf-8")
+        text = read_run_text(document, encoding="utf-8")
     except OSError as error:
         raise SkillCatalogError(
             f"Cannot read SKILL document {document}: {type(error).__name__}: {error}"

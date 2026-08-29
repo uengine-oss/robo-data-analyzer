@@ -17,7 +17,7 @@ class StereotypeRules(unittest.TestCase):
                 value, violation = exclude_contradicted_stereotype(
                     name, has_writes=True
                 )
-                self.assertEqual("", value)
+                self.assertEqual("Unclassified", value)
                 self.assertIn("모순", violation)
 
     def test_no_writes_keeps_query(self):

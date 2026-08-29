@@ -44,23 +44,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             {
                 **rule["static_values"],
                 "response_locale": locale,
-                "codebase_notes": "",
-                "module_intent": "",
-                "reads": "[]",
-                "writes": "[]",
-                "table_ops": "{}",
-                "data_object_usages": "[]",
-                "referenced_symbols": "[]",
                 "external_evidence": "[]",
-                "callee_summaries": "[]",
-                "branch_index": "(없음)",
-                "id": "code:generic:target",
-                "signature": "target",
+                "callee_contexts": "[]",
                 "code_body": body,
-                "source_file": "generic.source",
-                "source_range": "1-1",
-                "source_status": "available",
-                "coordinate_system": "absolute-file-line",
                 "structural_profile": "{}",
                 "applicable_slots": "[]",
             },
@@ -73,48 +59,41 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 rendered = self._render_framework_summary(body, locale)
                 self.assertIn(body, rendered)
                 self.assertIn(f"response_locale: {locale}", rendered)
-                self.assertIn("## [TARGET]", rendered)
-                self.assertIn("## [EFFECTIVE_FLOW_EVIDENCE]", rendered)
-                self.assertIn("## [NON-AUTHORITATIVE CONTEXT STATUS]", rendered)
-                self.assertIn(
-                    "## [ASSIGNED CALL FACTS — NOT CALLEE IMPLEMENTATION PROSE]",
-                    rendered,
-                )
-                self.assertIn("coordinate_system: absolute-file-line", rendered)
+                self.assertIn("structural_profile_json:", rendered)
+                self.assertIn("applicable_slots_json:", rendered)
+                self.assertIn("linked_external_source_json:", rendered)
+                self.assertNotIn("module_intent:", rendered)
+                self.assertNotIn("direct_data_object_usages_json:", rendered)
                 self.assertIn("잘못:", rendered)
                 self.assertIn("좋음:", rendered)
                 self.assertIn("`slots`", rendered)
                 self.assertIn("`stereotype`", rendered)
-                self.assertIn("missing_context", rendered)
+                self.assertNotIn("missing_context", rendered)
                 self.assertNotIn("`domain_terms`", rendered)
                 self.assertNotIn("`logical_name`", rendered)
                 contracts.append(rendered.replace(body, "<BODY>").replace(locale, "<LOCALE>"))
         self.assertEqual(1, len(set(contracts)))
 
-    def test_sql_batch_uses_same_single_meaning_contract_and_dbms_ontology(self) -> None:
-        rule = _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_summary_batch")
+    def test_sql_node_uses_same_single_meaning_contract_and_dbms_ontology(self) -> None:
+        rule = _load_rule(ROOT / "llm" / "prompts" / "dbms", "code_summary_node")
         body = "BEGIN SELECT state INTO v_state FROM records WHERE id = p_id; END;"
         rendered = _safe_format(
             rule["user_template"],
             {
                 **rule["static_values"],
                 "response_locale": "fr",
-                "unit_id": "unit:generic",
-                "unit_signature": "procedure target",
-                "module_intent": "",
-                "codebase_notes": "",
-                "ancestor_context": "",
-                "node_count": 1,
-                "node_keys": "1-1",
-                "nodes": body,
+                "structural_profile": "{}",
+                "applicable_slots": "{}",
+                "callee_contexts": "[]",
+                "external_evidence": "[]",
+                "code_body": body,
             },
         )
         self.assertIn(body, rendered)
         self.assertIn("response_locale: fr", rendered)
-        self.assertIn("## [TARGET_BATCH]", rendered)
-        self.assertIn("## [SURROUNDING_CONTEXT — NOT NODE BEHAVIOR]", rendered)
-        self.assertIn("## [TARGET_NODES]", rendered)
-        self.assertIn("coordinate_system: absolute-file-line", rendered)
+        self.assertIn("structural_profile_json:", rendered)
+        self.assertIn("applicable_slots_json:", rendered)
+        self.assertIn("linked_callee_outcomes_json:", rendered)
         self.assertIn("잘못:", rendered)
         self.assertIn("좋음:", rendered)
         self.assertIn(stereotype_prompt_options("dbms"), rendered)
@@ -146,8 +125,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         # RadixAttention은 첫 변동 지점까지만 재사용한다. 같은 concern의 모든 대상이 긴 고정
         # 계약을 공유하도록 분할 계약을 TARGET/SOURCE보다 앞에 두고, 행 증거는 맨 뒤에 둔다.
         for strategy, names in (
-            ("framework", ("code_summary", "code_table_insights")),
-            ("dbms", ("code_summary_batch", "code_table_insights_batch")),
+            ("framework", ("code_summary", "code_table_usage_meanings")),
+            ("dbms", ("code_summary_node", "code_table_usage_meanings_batch")),
         ):
             for name in names:
                 with self.subTest(strategy=strategy, name=name):
@@ -195,11 +174,11 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(language=language):
                 parsed = RuleItem(
                     anchor_line=line,
-                    cond='F("req_cd") == "01"',
-                    then=['ret("0")'],
+                    structural_condition='F("req_cd") == "01"',
+                    structural_effects=['ret("0")'],
                 )
                 self.assertEqual(line, parsed.anchor_line)
-                self.assertEqual("", parsed.nl)
+                self.assertFalse(hasattr(parsed, "nl"))
 
     def test_rule_contract_is_language_neutral_structure(self) -> None:
         for language, _statement, line in (
@@ -211,10 +190,10 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             with self.subTest(language=language):
                 item = RuleItem(
                     anchor_line=line,
-                    cond='F("state") == "READY"',
-                    then=['call("handle")'],
+                    structural_condition='F("state") == "READY"',
+                    structural_effects=['call("handle", None, [])'],
                 )
-                self.assertEqual("", item.nl)
+                self.assertFalse(hasattr(item, "nl"))
 
     def test_framework_stereotype_rubric_covers_residual_role_boundaries(self) -> None:
         text = _load_rule(
@@ -279,10 +258,10 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
     def test_every_semantic_prompt_pairs_bad_and_good_examples(self) -> None:
         cases = (
             ("framework", "code_summary"),
-            ("framework", "code_table_insights"),
+            ("framework", "code_table_usage_meanings"),
             ("framework", "table_description"),
-            ("dbms", "code_summary_batch"),
-            ("dbms", "code_table_insights_batch"),
+            ("dbms", "code_summary_node"),
+            ("dbms", "code_table_usage_meanings_batch"),
             ("dbms", "table_description"),
         )
         for strategy, rule_name in cases:
@@ -312,7 +291,6 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         semantic_files = (
             ROOT / "pipeline" / "steps" / "step7_analyze_code" / "summary_quality.py",
             ROOT / "pipeline" / "languages.py",
-            ROOT / "pipeline" / "execution" / "analysis_profile.py",
         )
         for path in semantic_files:
             with self.subTest(path=path.name):

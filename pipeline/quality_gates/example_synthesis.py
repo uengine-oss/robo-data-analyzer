@@ -190,8 +190,8 @@ def _fits(term: str) -> bool:
 
 def synthesize_examples(rules) -> dict[int, list[dict]]:
     """anchor → 예시 dict 목록. 규칙 목록 하나(한 함수·한 배치)를 그대로 받는다."""
-    cond_by_anchor = {
-        rule.anchor_line: (rule.cond or "")
+    condition_by_anchor = {
+        rule.anchor_line: rule.business_condition
         for rule in rules or ()
         if getattr(rule, "anchor_line", None) is not None
     }
@@ -201,8 +201,8 @@ def synthesize_examples(rules) -> dict[int, list[dict]]:
     memo: dict[tuple[str, int], tuple[str, ...]] = {}
     for rule in rules or ():
         anchor = rule.anchor_line
-        cond = (rule.cond or "").strip()
-        effects = [str(effect) for effect in (rule.then or ())]
+        cond = (rule.business_condition or "").strip()
+        effects = [str(effect) for effect in (rule.business_effects or ())]
         # An Example must demonstrate an observable rule effect. A condition-only row is still
         # a valid RULE/control fact, but an empty outcome creates a misleading scenario node.
         if not cond or not effects:
@@ -216,7 +216,7 @@ def synthesize_examples(rules) -> dict[int, list[dict]]:
         terms = [
             term
             for term in _ordered_unique(
-                _satisfy_terms(tree, cond_by_anchor, {anchor}, memo)
+                _satisfy_terms(tree, condition_by_anchor, {anchor}, memo)
             )
             if _fits(term)
         ]
@@ -224,6 +224,9 @@ def synthesize_examples(rules) -> dict[int, list[dict]]:
             synthesized[anchor] = []
             continue
         synthesized[anchor] = [
-            {"kind": "satisfy", "given": terms, "then": effects},
+            {
+                "given_conditions": terms,
+                "expected_effects": effects,
+            },
         ]
     return synthesized

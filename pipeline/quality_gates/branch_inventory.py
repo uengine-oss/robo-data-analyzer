@@ -256,7 +256,7 @@ class BranchInventory:
     # DBMS DML 효과 좌표 (routine 상대 줄, op, 테이블) — step5 링커 정본 (spec 119).
     # framework 는 제공하지 않으므로 빈 튜플이고 증거가 달라지지 않는다.
     ast_table_ops: tuple[tuple[int, str, str], ...] = ()
-    ast_call_lines: tuple[tuple[int, str], ...] = ()
+    effect_call_positions: tuple[tuple[int, str], ...] = ()
     ast_call_occurrences: tuple[CallOccurrenceFact, ...] = ()
     entry_region: EffectRegion | None = None
     continuation_regions: tuple[EffectRegion, ...] = ()
@@ -295,7 +295,7 @@ class BranchInventory:
         if 1 <= relative <= len(self.source_lines):
             line = self.source_lines[relative - 1]
             returns, assignments, _calls_found, _effects = _ast_line_facts(
-                self.ast_statements, self.ast_call_lines, relative, relative,
+                self.ast_statements, self.effect_call_positions, relative, relative,
             )
             return line, returns, assignments
         return "", frozenset(), ()
@@ -321,7 +321,7 @@ class BranchInventory:
             return continuation.statement_effects
         _returns, _assignments, _calls, effects = _ast_line_facts(
             self.ast_statements,
-            self.ast_call_lines,
+            self.effect_call_positions,
             relative,
             relative,
             table_ops=self.ast_table_ops,
@@ -390,7 +390,9 @@ class BranchInventory:
         if continuation is not None:
             return continuation.callees
         return frozenset(
-            name.lower() for line, name in self.ast_call_lines if line == relative
+            name.lower()
+            for line, name in self.effect_call_positions
+            if line == relative
         )
 
     def direct_call_occurrences(
@@ -403,7 +405,8 @@ class BranchInventory:
             (
                 occurrence
                 for occurrence in self.ast_call_occurrences
-                if occurrence.context_role == "effect"
+                if occurrence.structural_role == "effect"
+                if occurrence.presence_status == "active"
                 if occurrence.line + self.line_offset in owned_lines
                 and occurrence.callee.lower() in owned_callees
             ),
@@ -929,7 +932,7 @@ def _assignment_pair(fact: StatementFact) -> tuple[str, str]:
 
 def _ast_termination_rows(
     statements: Sequence[StatementFact],
-    call_lines: Sequence[tuple[int, str]],
+    effect_call_positions: Sequence[tuple[int, str]],
     handler_markers: Sequence[str],
 ) -> tuple[tuple[int, str, str], ...]:
     """AST 정본에서 [exit]/[handler] 행을 만든다 — source 첫 토큰 재탐색을 대체한다.
@@ -940,7 +943,7 @@ def _ast_termination_rows(
     """
     handlers = {str(marker) for marker in handler_markers if str(marker).strip()}
     rows: dict[int, tuple[int, str, str]] = {}
-    for line, name in call_lines:
+    for line, name in effect_call_positions:
         if name in handlers and line not in rows:
             rows[line] = (line, "handler", name)
     labels = sorted(
@@ -975,14 +978,14 @@ def _ast_termination_rows(
             continue
         keyword = fact.label.lower()
         expression = " ".join((fact.expression or "").split())
-        statement = f"{keyword} {expression}".strip()[:160]
+        statement = f"{keyword} {expression}".strip()
         rows[fact.start] = (fact.start, "exit", statement)
     return tuple(rows[line] for line in sorted(rows))
 
 
 def _ast_line_facts(
     statements: Sequence[StatementFact],
-    call_lines: Sequence[tuple[int, str]],
+    effect_call_positions: Sequence[tuple[int, str]],
     start: int,
     end: int,
     exclude: Sequence[tuple[int, int]] = (),
@@ -1009,7 +1012,7 @@ def _ast_line_facts(
         and owned(fact.start)
     )
     calls = frozenset(
-        name.lower() for line, name in call_lines if owned(line)
+        name.lower() for line, name in effect_call_positions if owned(line)
     )
     effect_ops = statement_effect_ops()
     effects = tuple(
@@ -1028,7 +1031,7 @@ def _ast_line_facts(
 
 def _ast_entry_line(
     statements: Sequence[StatementFact],
-    call_lines: Sequence[tuple[int, str]],
+    effect_call_positions: Sequence[tuple[int, str]],
     branches: Sequence[Branch],
     termination_rows: Sequence[tuple[int, str, str]],
     table_ops: Sequence[tuple[int, str, str]] = (),
@@ -1041,7 +1044,9 @@ def _ast_entry_line(
     termination_lines = {line for line, _, _ in termination_rows}
     candidates = [
         fact.start for fact in statements if fact.label == _AST_ASSIGN_LABEL
-    ] + [line for line, _ in call_lines] + [line for line, _op, _t in table_ops]
+    ] + [line for line, _ in effect_call_positions] + [
+        line for line, _op, _t in table_ops
+    ]
     effect_lines = sorted(
         line for line in candidates
         if line not in termination_lines
@@ -1157,7 +1162,7 @@ def _build_effect_region(
     preceding: Branch | None,
     split: SplitSource,
     statements: Sequence[StatementFact],
-    call_lines: Sequence[tuple[int, str]],
+    effect_call_positions: Sequence[tuple[int, str]],
     table_ops: Sequence[tuple[int, str, str]],
     termination_rows: Sequence[tuple[int, str, str]],
     lang: str,
@@ -1174,7 +1179,7 @@ def _build_effect_region(
     exclusions = tuple((line, line) for line in sorted(termination_lines))
     returns, assignments, calls, effects = _ast_line_facts(
         statements,
-        call_lines,
+        effect_call_positions,
         start,
         end,
         exclusions,
@@ -1196,7 +1201,7 @@ def _build_effect_region(
         and fact.label in effect_labels
     ]
     effect_lines.extend(
-        line for line, name in call_lines
+        line for line, _name in effect_call_positions
         if start <= line <= end
         and line not in termination_lines
     )
@@ -1263,7 +1268,6 @@ def build_inventory(
     lang: str,
     *,
     statements: Sequence[StatementFact],
-    call_lines: Sequence[tuple[int, str]] = (),
     call_occurrences: Sequence[CallOccurrenceFact] = (),
     table_ops: Sequence[tuple[int, str, str]] = (),
     split: SplitSource | None = None,
@@ -1300,9 +1304,6 @@ def build_inventory(
         split=split,
         line_offset=line_offset,
     )
-    raw_ast_calls: tuple[tuple[int, str], ...] = tuple(
-        (line, name) for line, name in call_lines if _live_line(line)
-    )
     ast_call_occurrences = tuple(
         occurrence for occurrence in call_occurrences
         if _live_line(occurrence.line)
@@ -1310,43 +1311,12 @@ def build_inventory(
     occurrence_ids = [item.call_id for item in ast_call_occurrences]
     if len(occurrence_ids) != len(set(occurrence_ids)):
         raise ValueError("parser call occurrences require unique call_id values")
-    call_population = {
-        (line, name.lower()) for line, name in raw_ast_calls
-    }
-    missing_occurrences = [
-        (item.call_id, item.line, item.callee)
+    effect_call_positions = tuple(
+        (item.line, item.callee)
         for item in ast_call_occurrences
-        if item.context_role in {"condition", "effect"}
-        if (item.line, item.callee.lower()) not in call_population
-    ]
-    if missing_occurrences:
-        raise ValueError(
-            "parser call occurrence absent from call-line population: "
-            f"{missing_occurrences[:5]}"
-        )
-    if ast_call_occurrences:
-        occurrence_population = Counter(
-            (item.line, item.callee.lower()) for item in ast_call_occurrences
-            if item.context_role in {"condition", "effect"}
-        )
-        call_population = Counter(
-            (line, name.lower()) for line, name in raw_ast_calls
-        )
-        if occurrence_population != call_population:
-            raise ValueError(
-                "parser call occurrence population differs from call lines: "
-                f"occurrences={sum(occurrence_population.values())}, "
-                f"lines={sum(call_population.values())}"
-            )
-        ast_calls = tuple(
-            (item.line, item.callee)
-            for item in ast_call_occurrences
-            if item.context_role == "effect"
-        )
-    else:
-        # CodeNode-call adapters (for example DBMS CALL) already provide only statement
-        # callsites.  They are a distinct structural producer, not a source-text fallback.
-        ast_calls = raw_ast_calls
+        if item.structural_role == "effect"
+        if item.presence_status == "active"
+    )
     # DML 효과 좌표도 같은 live/blank 경계를 공유한다 — 비활성 구간의 DML 은 의무가 아니다.
     ast_table_ops: tuple[tuple[int, str, str], ...] = tuple(
         (line, op, table) for line, op, table in table_ops if _live_line(line)
@@ -1380,7 +1350,11 @@ def build_inventory(
         # 조건식에 인용된 호출은 효과가 아니다 — parser 소유 조건 문자열 안의
         # 이름만 제외한다(소스 재탐색 아님).
         returns, assignments, call_names, statement_effects = _ast_line_facts(
-            ast_statements, ast_calls, node.start, node.end, child_ranges,
+            ast_statements,
+            effect_call_positions,
+            node.start,
+            node.end,
+            child_ranges,
             ast_table_ops,
         )
         branch = Branch(
@@ -1414,7 +1388,11 @@ def build_inventory(
     )
     declared = {value.strip().lower() for value in declared_values if value and value.strip()}
     declared |= {v for value in declared_values for v in literal_values(value or "", lang)}
-    termination = _ast_termination_rows(ast_statements, ast_calls, handler_markers)
+    termination = _ast_termination_rows(
+        ast_statements,
+        effect_call_positions,
+        handler_markers,
+    )
     function_returns = frozenset(
         " ".join(fact.expression.split())
         for fact in ast_statements
@@ -1463,7 +1441,8 @@ def build_inventory(
             _build_effect_region(
                 start=ranges[0].start, end=ranges[0].end, owner=branch,
                 preceding=ranges[0].preceding, split=split, statements=ast_statements,
-                call_lines=ast_calls, table_ops=ast_table_ops,
+                effect_call_positions=effect_call_positions,
+                table_ops=ast_table_ops,
                 termination_rows=termination, lang=lang, line_offset=line_offset,
                 entry_label=ranges[0].entry_label,
                 unresolved_reachability=unresolved_jump,
@@ -1500,7 +1479,8 @@ def build_inventory(
             region = _build_effect_region(
                 start=sequence.start, end=sequence.end, owner=branch,
                 preceding=sequence.preceding, split=split, statements=ast_statements,
-                call_lines=ast_calls, table_ops=ast_table_ops,
+                effect_call_positions=effect_call_positions,
+                table_ops=ast_table_ops,
                 termination_rows=termination, lang=lang, line_offset=line_offset,
                 entry_label=sequence.entry_label,
                 unresolved_reachability=unresolved_jump,
@@ -1521,7 +1501,8 @@ def build_inventory(
         first_region = _build_effect_region(
             start=first_sequence.start, end=first_sequence.end, owner=None,
             preceding=first_sequence.preceding, split=split, statements=ast_statements,
-            call_lines=ast_calls, table_ops=ast_table_ops,
+            effect_call_positions=effect_call_positions,
+            table_ops=ast_table_ops,
             termination_rows=termination, lang=lang, line_offset=line_offset,
             entry_label=first_sequence.entry_label,
             unresolved_reachability=unresolved_jump,
@@ -1537,7 +1518,8 @@ def build_inventory(
             region = _build_effect_region(
                 start=sequence.start, end=sequence.end, owner=None,
                 preceding=sequence.preceding, split=split, statements=ast_statements,
-                call_lines=ast_calls, table_ops=ast_table_ops,
+                effect_call_positions=effect_call_positions,
+                table_ops=ast_table_ops,
                 termination_rows=termination, lang=lang, line_offset=line_offset,
                 entry_label=sequence.entry_label,
                 unresolved_reachability=unresolved_jump,
@@ -1548,7 +1530,9 @@ def build_inventory(
             if _region_has_effect(region):
                 continuations.append(region)
     entry = entry_region.start if entry_region is not None else None
-    function_callees = frozenset(name.lower() for _line, name in ast_calls)
+    function_callees = frozenset(
+        name.lower() for _line, name in effect_call_positions
+    )
     return BranchInventory(
         lang=lang,
         roots=roots,
@@ -1569,7 +1553,7 @@ def build_inventory(
         entry_line=entry,
         source_lines=tuple(split.live_lines),
         ast_statements=ast_statements,
-        ast_call_lines=ast_calls,
+        effect_call_positions=effect_call_positions,
         ast_call_occurrences=ast_call_occurrences,
         ast_table_ops=ast_table_ops,
         entry_region=entry_region,

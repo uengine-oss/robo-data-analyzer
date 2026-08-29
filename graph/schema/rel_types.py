@@ -10,7 +10,6 @@ from __future__ import annotations
 
 # 코드 구조 (antlr JSON 에서 도출)
 CALLS = "CALLS"              # CodeNode → CodeNode
-HAS_CALL_OCCURRENCE = "HAS_CALL_OCCURRENCE"  # routine → grammar-owned call evidence
 PARENT_OF = "PARENT_OF"      # 부모 노드 → 중첩 자식 노드 (AST 트리 — 구문 중첩·중첩함수)
 HAS_MEMBER = "HAS_MEMBER"    # 그릇(FILE/CLASS/PACKAGE/DataType) → 멤버 (루틴/변수/상수/필드)
                              #   "가지다" — 멤버 종류는 노드 라벨로 구분. 구문은 멤버 아님(PARENT_OF/NEXT 만).
@@ -32,11 +31,9 @@ FK = "FK"                    # Table → Table
 # Example Mapping (analyze_code 3분할 → EM 그래프)
 HAS_RULE = "HAS_RULE"            # CodeNode → Rule
 HAS_EXAMPLE = "HAS_EXAMPLE"      # Rule → Example
-HAS_QUESTION = "HAS_QUESTION"    # CodeNode → Question
 AFFECTS_TABLE = "AFFECTS_TABLE"  # Example → Table
 
-# 외부 파일 연결 (spec 078)
-REFER_TO = "REFER_TO"            # METHOD/FUNCTION → EXTERNAL_CHUNK (exact occurrence)
-HAS_CHUNK = "HAS_CHUNK"          # PROJECT_FILE → EXTERNAL_CHUNK
+# 외부 원문 연결
+REFER_TO = "REFER_TO"            # 사용자 작성 루틴 → 공개된 외부 원문 레코드
 
 # 컴포넌트 멤버십은 관계가 아니라 FUNCTION.component_id 속성 (build_components_step) — 합성 엣지 없음.

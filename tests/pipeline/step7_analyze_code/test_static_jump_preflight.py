@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from graph.schema.graph_nodes import CodeNode
+from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.models.analysis_context import AnalysisContext, StatementFact
 from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
 from scripts.evidence_preflight import _Corpus
 from shared.files.cache import SourceFileCache
+from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
 class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
@@ -49,6 +51,7 @@ class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
                         "strategy": SimpleNamespace(
                             name="framework", code_analyzer=code_analyzer,
                         ),
+                        "analysis_handoff": AnalysisHandoff(PrioritySemaphore(1)),
                     }},
                 )
 

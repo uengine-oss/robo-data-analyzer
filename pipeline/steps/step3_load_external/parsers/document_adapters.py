@@ -1,9 +1,11 @@
-"""Bounded optional document adapters with a killable subprocess boundary.
+"""Complete optional document adapters with a killable subprocess boundary.
 
 Heavy parsers are never imported when Analyzer starts.  The parent process
-checks file size and dependency availability, then runs the parser in a child
-process that is killed on timeout.  Every successful adapter emits Markdown so
-the existing document hierarchy parser remains the single graph-model owner.
+checks dependency availability, then runs the parser in a child process.  No
+file, page, row, cell, or output-size ceiling silently changes the supported
+input domain.  Cancellation kills the child.  Every successful adapter emits
+complete Markdown so the document hierarchy parser remains the single model
+owner.
 """
 from __future__ import annotations
 
@@ -28,22 +30,6 @@ _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", "
 DOCUMENT_ADAPTER_SUFFIXES = frozenset().union(
     _PDF_SUFFIXES, _XLSX_SUFFIXES, _DOCX_SUFFIXES, _HWP_SUFFIXES, _IMAGE_SUFFIXES,
 )
-
-
-@dataclass(frozen=True)
-class DocumentLimits:
-    max_file_bytes: int = 64 * 1024 * 1024
-    max_output_chars: int = 2_000_000
-    max_pages: int = 500
-    max_sheets: int = 100
-    max_rows_per_sheet: int = 10_000
-    max_total_cells: int = 250_000
-    timeout_seconds: float = 120.0
-
-    def __post_init__(self) -> None:
-        for name, value in asdict(self).items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-                raise ValueError(f"{name} must be positive")
 
 
 @dataclass(frozen=True)
@@ -72,15 +58,7 @@ class OptionalDependencyMissing(DocumentAdapterError):
     pass
 
 
-class DocumentLimitExceeded(DocumentAdapterError):
-    pass
-
-
 class DocumentEncrypted(DocumentAdapterError):
-    pass
-
-
-class DocumentTimeout(DocumentAdapterError):
     pass
 
 
@@ -128,13 +106,8 @@ def adapter_status(extension: str) -> AdapterStatus:
     )
 
 
-def _bounded(markdown: str, limits: DocumentLimits) -> str:
-    normalized = markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if len(normalized) > limits.max_output_chars:
-        raise DocumentLimitExceeded(
-            f"document output exceeds {limits.max_output_chars} characters"
-        )
-    return normalized
+def _normalize_markdown(markdown: str) -> str:
+    return markdown.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 def _cell_text(value: object) -> str:
@@ -158,58 +131,35 @@ def _markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
-def _extract_xlsx(path: Path, openpyxl_module, limits: DocumentLimits) -> ExtractedDocument:
+def _extract_xlsx(path: Path, openpyxl_module) -> ExtractedDocument:
     workbook = openpyxl_module.load_workbook(
         filename=path, read_only=True, data_only=True, keep_links=False,
     )
     try:
-        sheets = list(workbook.worksheets)
-        if len(sheets) > limits.max_sheets:
-            raise DocumentLimitExceeded(f"workbook exceeds {limits.max_sheets} sheets")
         blocks = [f"# {path.stem}"]
-        total_cells = 0
-        for sheet in sheets:
-            if int(sheet.max_row or 0) > limits.max_rows_per_sheet:
-                raise DocumentLimitExceeded(
-                    f"sheet {sheet.title!r} exceeds {limits.max_rows_per_sheet} rows"
-                )
+        for sheet in workbook.worksheets:
             rows: list[list[str]] = []
-            for index, values in enumerate(sheet.iter_rows(values_only=True), 1):
-                if index > limits.max_rows_per_sheet:
-                    raise DocumentLimitExceeded(
-                        f"sheet {sheet.title!r} exceeds {limits.max_rows_per_sheet} rows"
-                    )
+            for values in sheet.iter_rows(values_only=True):
                 row = [_cell_text(value) for value in values]
                 while row and not row[-1]:
                     row.pop()
                 if not row:
                     continue
-                total_cells += len(row)
-                if total_cells > limits.max_total_cells:
-                    raise DocumentLimitExceeded(
-                        f"workbook exceeds {limits.max_total_cells} populated cells"
-                    )
                 rows.append(row)
             blocks.extend((f"## {_cell_text(sheet.title)}", _markdown_table(rows) or "(empty sheet)"))
-        return ExtractedDocument(_bounded("\n\n".join(blocks), limits), "openpyxl")
+        return ExtractedDocument(_normalize_markdown("\n\n".join(blocks)), "openpyxl")
     finally:
         workbook.close()
 
 
-def _extract_docx(path: Path, docx_module, limits: DocumentLimits) -> ExtractedDocument:
+def _extract_docx(path: Path, docx_module) -> ExtractedDocument:
     document = docx_module.Document(path)
     blocks = [f"# {path.stem}"]
-    total_cells = 0
     for block in document.iter_inner_content():
         if hasattr(block, "rows"):
             rows: list[list[str]] = []
             for row in block.rows:
                 values = [_cell_text(cell.text) for cell in row.cells]
-                total_cells += len(values)
-                if total_cells > limits.max_total_cells:
-                    raise DocumentLimitExceeded(
-                        f"document exceeds {limits.max_total_cells} table cells"
-                    )
                 rows.append(values)
             table = _markdown_table(rows)
             if table:
@@ -218,11 +168,10 @@ def _extract_docx(path: Path, docx_module, limits: DocumentLimits) -> ExtractedD
             text = _cell_text(getattr(block, "text", ""))
             if text:
                 blocks.append(text)
-        _bounded("\n\n".join(blocks), limits)
-    return ExtractedDocument(_bounded("\n\n".join(blocks), limits), "python-docx")
+    return ExtractedDocument(_normalize_markdown("\n\n".join(blocks)), "python-docx")
 
 
-def _extract_pdf(path: Path, pymupdf_module, limits: DocumentLimits) -> ExtractedDocument:
+def _extract_pdf(path: Path, pymupdf_module) -> ExtractedDocument:
     document = pymupdf_module.open(path)
     try:
         if bool(document.needs_pass):
@@ -230,8 +179,6 @@ def _extract_pdf(path: Path, pymupdf_module, limits: DocumentLimits) -> Extracte
         page_count = int(document.page_count)
         if page_count <= 0:
             raise DocumentMalformed("PDF contains no pages")
-        if page_count > limits.max_pages:
-            raise DocumentLimitExceeded(f"PDF exceeds {limits.max_pages} pages")
         blocks: list[str] = []
         blank_pages = 0
         pages = None if hasattr(document, "load_page") else list(document.__iter__())
@@ -242,8 +189,7 @@ def _extract_pdf(path: Path, pymupdf_module, limits: DocumentLimits) -> Extracte
                 blocks.extend((f"## Page {index + 1}", text))
             else:
                 blank_pages += 1
-            _bounded("\n\n".join(blocks), limits)
-        markdown = _bounded("\n\n".join(blocks), limits)
+        markdown = _normalize_markdown("\n\n".join(blocks))
         return ExtractedDocument(
             markdown,
             "pymupdf",
@@ -254,7 +200,7 @@ def _extract_pdf(path: Path, pymupdf_module, limits: DocumentLimits) -> Extracte
         document.close()
 
 
-def _extract_hwp(path: Path, hwpxkit_module, limits: DocumentLimits) -> ExtractedDocument:
+def _extract_hwp(path: Path, hwpxkit_module) -> ExtractedDocument:
     document = hwpxkit_module.parse_file(str(path))
     if hasattr(document, "to_markdown"):
         body = str(document.to_markdown())
@@ -262,10 +208,10 @@ def _extract_hwp(path: Path, hwpxkit_module, limits: DocumentLimits) -> Extracte
         body = str(document.get_text())
     else:
         raise DocumentMalformed("hwpxkit document exposes neither to_markdown nor get_text")
-    return ExtractedDocument(_bounded(f"# {path.stem}\n\n{body}", limits), "hwpxkit")
+    return ExtractedDocument(_normalize_markdown(f"# {path.stem}\n\n{body}"), "hwpxkit")
 
 
-def _extract_ocr(path: Path, paddleocr_module, limits: DocumentLimits) -> ExtractedDocument:
+def _extract_ocr(path: Path, paddleocr_module) -> ExtractedDocument:
     # v1.5 is the validated contract for this feature.  `use_queues=False`
     # keeps all model-owned workers inside the killable adapter process.
     pipeline = paddleocr_module.PaddleOCRVL(pipeline_version="v1.5", use_queues=False)
@@ -274,8 +220,6 @@ def _extract_ocr(path: Path, paddleocr_module, limits: DocumentLimits) -> Extrac
         results = list(pipeline.predict(input=str(path)))
         if not results:
             raise DocumentMalformed("PaddleOCR-VL produced no page results")
-        if len(results) > limits.max_pages:
-            raise DocumentLimitExceeded(f"OCR output exceeds {limits.max_pages} pages")
         pages: list[str] = []
         for index, result in enumerate(results, 1):
             page_dir = output_dir / f"page-{index:04d}"
@@ -286,59 +230,52 @@ def _extract_ocr(path: Path, paddleocr_module, limits: DocumentLimits) -> Extrac
                 raise DocumentMalformed("PaddleOCR-VL produced no Markdown result")
             page_text = "\n\n".join(file.read_text(encoding="utf-8") for file in files).strip()
             pages.extend((f"## Page {index}", page_text))
-            _bounded("\n\n".join(pages), limits)
         return ExtractedDocument(
-            _bounded("\n\n".join(pages), limits),
+            _normalize_markdown("\n\n".join(pages)),
             "PaddleOCR-VL-1.5",
             page_count=len(results),
             used_ocr=True,
         )
 
 
-def _load_and_extract(path: Path, extension: str, limits: DocumentLimits) -> ExtractedDocument:
+def _load_and_extract(path: Path, extension: str) -> ExtractedDocument:
     suffix = extension.lower()
     if suffix in _PDF_SUFFIXES:
-        result = _extract_pdf(path, importlib.import_module("pymupdf"), limits)
+        result = _extract_pdf(path, importlib.import_module("pymupdf"))
         if result.requires_ocr:
             ocr_status = adapter_status(".png")
             if ocr_status.state != "available":
                 raise OptionalDependencyMissing(
                     f"image-only PDF requires optional dependency: {ocr_status.dependency}"
                 )
-            return _extract_ocr(path, importlib.import_module("paddleocr"), limits)
+            return _extract_ocr(path, importlib.import_module("paddleocr"))
         return result
     if suffix in _XLSX_SUFFIXES:
         importlib.import_module("defusedxml")
-        return _extract_xlsx(path, importlib.import_module("openpyxl"), limits)
+        return _extract_xlsx(path, importlib.import_module("openpyxl"))
     if suffix in _DOCX_SUFFIXES:
-        return _extract_docx(path, importlib.import_module("docx"), limits)
+        return _extract_docx(path, importlib.import_module("docx"))
     if suffix in _HWP_SUFFIXES:
-        return _extract_hwp(path, importlib.import_module("hwpxkit"), limits)
+        return _extract_hwp(path, importlib.import_module("hwpxkit"))
     if suffix in _IMAGE_SUFFIXES:
-        return _extract_ocr(path, importlib.import_module("paddleocr"), limits)
+        return _extract_ocr(path, importlib.import_module("paddleocr"))
     raise DocumentMalformed(f"unsupported document extension: {extension}")
 
 
 _ERROR_TYPES = {
     cls.__name__: cls for cls in (
         OptionalDependencyMissing,
-        DocumentLimitExceeded,
         DocumentEncrypted,
-        DocumentTimeout,
         DocumentMalformed,
     )
 }
 
 
-async def _communicate_with_timeout(
-    process: asyncio.subprocess.Process, timeout_seconds: float,
+async def _communicate_until_cancelled(
+    process: asyncio.subprocess.Process,
 ) -> tuple[bytes, bytes]:
     try:
-        return await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-    except asyncio.TimeoutError as error:
-        process.kill()
-        await process.wait()
-        raise DocumentTimeout(f"document adapter exceeded {timeout_seconds:g} seconds") from error
+        return await process.communicate()
     except asyncio.CancelledError:
         process.kill()
         await process.wait()
@@ -348,35 +285,30 @@ async def _communicate_with_timeout(
 async def extract_document(
     path: Path,
     extension: str,
-    *,
-    limits: DocumentLimits | None = None,
+    sealed_source_bytes: bytes,
 ) -> ExtractedDocument:
-    limits = limits or DocumentLimits()
     path = Path(path)
-    size = path.stat().st_size
-    if size > limits.max_file_bytes:
-        raise DocumentLimitExceeded(
-            f"document size {size} exceeds {limits.max_file_bytes} bytes"
-        )
     status = adapter_status(extension)
     if status.state == "unsupported":
         raise DocumentMalformed(status.reason)
     if status.state == "missing":
         raise OptionalDependencyMissing(status.reason)
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        __name__,
-        "--worker",
-        str(path),
-        extension,
-        json.dumps(asdict(limits), separators=(",", ":")),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await _communicate_with_timeout(process, limits.timeout_seconds)
-    if len(stdout) > limits.max_output_chars * 4 + 4096:
-        raise DocumentLimitExceeded("document adapter protocol output exceeded bound")
+    # Third-party adapters require a filesystem path. Materialize the bytes already
+    # read and sealed by the run cache; never reopen the mutable project path here.
+    with tempfile.TemporaryDirectory(prefix="robo-document-") as temp:
+        sealed_path = Path(temp) / path.name
+        sealed_path.write_bytes(sealed_source_bytes)
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            __name__,
+            "--worker",
+            str(sealed_path),
+            extension,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await _communicate_until_cancelled(process)
     try:
         payload = json.loads(stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -387,20 +319,19 @@ async def extract_document(
     return ExtractedDocument(**payload["document"])
 
 
-def _worker(path: str, extension: str, limits_json: str) -> int:
+def _worker(path: str, extension: str) -> int:
     try:
-        limits = DocumentLimits(**json.loads(limits_json))
         # Third-party libraries may print progress on stdout.  Keep stdout a
         # closed JSON protocol; dependency chatter is discarded with stderr by
         # the parent process.
         with redirect_stdout(sys.stderr):
-            document = _load_and_extract(Path(path), extension, limits)
+            document = _load_and_extract(Path(path), extension)
         payload = {"ok": True, "document": asdict(document)}
     except Exception as error:
         payload = {
             "ok": False,
             "error_type": type(error).__name__,
-            "message": str(error)[:500],
+            "message": str(error),
         }
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0
@@ -411,11 +342,10 @@ def _main() -> int:
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("path")
     parser.add_argument("extension")
-    parser.add_argument("limits")
     args = parser.parse_args()
     if not args.worker:
         return 2
-    return _worker(args.path, args.extension, args.limits)
+    return _worker(args.path, args.extension)
 
 
 if __name__ == "__main__":

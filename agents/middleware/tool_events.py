@@ -191,7 +191,6 @@ def _summarize_result(tool_name: str, result: Any) -> dict:
     - ``list_code_nodes`` → 함수수
     - ``list_skills``  → SKILL수
     - ``read_skill``   → 줄수
-    - ``write_todos``  → 갱신 (status counts)
     그 외: ``줄수`` 만.
     """
     content = _extract_content(result)
@@ -222,9 +221,6 @@ def _summarize_result(tool_name: str, result: Any) -> dict:
         return {"SKILL": lines}
     if tool_name == "read_skill":
         return {"줄수": lines}
-    if tool_name == "write_todos":
-        # 결과는 보통 "Todos updated" 또는 todo 본문. status counts 는 args 에서 이미 emit.
-        return {"결과": "갱신완료"}
     # 그 밖의 도구 (verify_table_regex 등) — 결과 줄 수만.
     return {"줄수": lines}
 

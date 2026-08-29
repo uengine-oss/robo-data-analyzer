@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
 
 from search.corpus.corpus import Corpus, _CORPUS_QUERY
 from search.corpus.embed_material import FETCH_MATERIAL, compose_embed_text
-from search.query import judge as judge_module
 from search.ranking.recall import _structural
 from search.ranking.rerank import passage
 
@@ -59,34 +57,13 @@ class SummaryOnlyContractTest(unittest.TestCase):
             ),
             _row("other", "completely unrelated"),
         ]
-        corpus = Corpus(rows, {}, "run:test")
+        corpus = Corpus(rows, {}, "scope:test", "run:test")
         scores = corpus.bm25.get_scores(["needle"])
         self.assertGreater(scores[0], scores[1])
         self.assertEqual([("summary-hit", 1.0)], _structural(corpus, "needle", 10))
 
     def test_cross_encoder_passage_is_exactly_summary(self) -> None:
         self.assertEqual("needle facts", passage(_row("a", " needle facts ")))
-
-    def test_llm_judge_sees_summary_but_no_other_metadata(self) -> None:
-        node = _row(
-            "a",
-            "needle facts",
-            name="SECRET_NAME",
-            stereotype="SECRET_ROLE",
-        )
-        judge_module._cache.clear()
-        with patch.object(
-            judge_module.query_llm,
-            "chat_json",
-            return_value={"relevant": [1]},
-        ) as chat_json:
-            self.assertEqual({0}, judge_module.judge("needle", [node]))
-
-        prompt = chat_json.call_args.args[0]
-        self.assertIn("needle facts", prompt)
-        self.assertNotIn("SECRET_NAME", prompt)
-        self.assertNotIn("SECRET_ROLE", prompt)
-
 
 if __name__ == "__main__":
     unittest.main()

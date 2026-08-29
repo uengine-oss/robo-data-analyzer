@@ -4,7 +4,8 @@
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/steps/step7_analyze_code``: SummaryOutput / TableInsightsOutput 및 결정론 Rule projection
+- ``pipeline/steps/step7_analyze_code``: SummaryOutput / FunctionTableUsagesOutput 및
+  결정론 Rule projection
 - ``pipeline/steps/step8_post_processing``: TableDescription
 
 호출 모드 (단일 진실):
@@ -36,6 +37,7 @@ from pipeline.models.rule_expression import (
     RULE_LEAF_PATTERN,
 )
 from pipeline.models.semantic_frame import SemanticFrame
+from pipeline.models.function_table_usage import FunctionTableUsage
 
 
 def _normalize_summary_format(v: str) -> str:
@@ -93,10 +95,6 @@ class SummaryOutput(BaseModel):
         default_factory=list,
         description="partial/insufficient 판단을 해소하는 데 필요한 구체적 근거",
     )
-    questions: list["QuestionItem"] = Field(
-        default_factory=list,
-        description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
-    )
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
     @field_validator("summary")
@@ -115,37 +113,7 @@ class SummaryOutput(BaseModel):
         return self
 
 
-# ── 3 분할 #2: code_table_insights ────────────────────
-
-
-class ColumnUsageSourceLine(BaseModel):
-    """Deterministically selected absolute source line for one column use."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    line: int = Field(..., gt=0)
-    text: str = Field(..., min_length=1)
-    source_id: str = Field("", description="이 줄을 문법적으로 소유한 full code node id")
-    ownership: str = Field("", description="qualified/lexical/derived def-use 근거 종류")
-
-
-class ColumnInsight(BaseModel):
-    """Deterministic code-node → physical-column coordinate evidence.
-
-    Column meaning is generated only once by the final TABLE/COLUMN concern.  The intermediate
-    table-use model never writes ``usage_summary``; identity, ownership, coordinates and source
-    lines are attached by the deterministic response normalizer.
-    """
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(..., min_length=1, description="DDL 컬럼명 정확히")
-    usage_summary: str = Field(
-        "",
-        description="호환 필드. 중간 단계에서는 비우고 최종 TABLE/COLUMN 모델이 원문에서 의미 생성",
-    )
-    ownership: Literal["qualified", "sole_direct_table", "ddl_unique_in_scope"]
-    evidence_lines: list[int] = Field(..., min_length=1)
-    source_lines: list[ColumnUsageSourceLine] = Field(..., min_length=1)
+# ── 3 분할 #2: function-table access meaning ───────────────
 
 
 class GroundedColumnDescription(BaseModel):
@@ -155,7 +123,7 @@ class GroundedColumnDescription(BaseModel):
     name: str
     logical_name: str = ""
     description: str = ""
-    evidence_status: EvidenceStatus
+    evidence_status: Literal["sufficient", "insufficient"]
     missing_context: list[str] = Field(default_factory=list)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
@@ -164,51 +132,21 @@ class GroundedColumnDescription(BaseModel):
         has_meaning = bool(self.logical_name.strip() or self.description.strip())
         if self.evidence_status == "sufficient" and (not has_meaning or self.missing_context):
             raise ValueError("sufficient column meaning requires evidence text and no missing_context")
-        if self.evidence_status == "partial" and (not has_meaning or not self.missing_context):
-            raise ValueError("partial column meaning requires evidence text and missing_context")
         if self.evidence_status == "insufficient" and (has_meaning or not self.missing_context):
             raise ValueError("insufficient column meaning must stay empty and name missing context")
         return self
 
 
-class TableInsightItem(BaseModel):
-    """코드노드가 한 테이블에 대해 갖는 직접 역할 + 결정론 컬럼 좌표."""
+class FunctionTableUsagesOutput(BaseModel):
+    """Access-specific function-to-table meanings projected from one response."""
+
     model_config = ConfigDict(extra="forbid")
 
-    table: str = Field(..., description="db.schema.table fqn 또는 table 이름")
-    role: Literal[
-        "READ-only",
-        "WRITE-only",
-        "READ_WRITE",
-        "append-only",
-        "lookup",
-        "upsert",
-    ] = Field(..., description="직접 R/W로 확정하는 폐쇄형 테이블 접근 역할")
-    usage_summary: str = Field(
-        ...,
-        min_length=1,
-        description="현재 코드노드가 이 테이블에 직접 수행하는 조회·쓰기·판단 효과 한 줄. 다른 테이블 효과 금지",
-    )
-    columns: list[ColumnInsight] = Field(
-        default_factory=list,
-        description="LLM 의미가 아닌 주입된 해당 테이블 컬럼의 결정론 좌표 근거",
-    )
-
-
-class TableInsightsOutput(BaseModel):
-    table_insights: list[TableInsightItem] = Field(default_factory=list)
+    function_table_usages: list[FunctionTableUsage] = Field(default_factory=list)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 결정론 Rule/Example projection ──
-
-
-class QuestionItem(BaseModel):
-    """Meaning-critical missing context emitted only by the summary concern."""
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(..., description="한 줄 질문")
-    reason: str = Field(..., description="코드 근거 부재 사유")
 
 
 # ── 구조화 Rule·Example — JSON 봉투 + 파이썬 표현식 leaf (spec 116 3단계) ──
@@ -234,18 +172,17 @@ class ExampleItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["satisfy"]
-    given: list[_ExampleLeafStr] = Field(
+    given_conditions: list[_ExampleLeafStr] = Field(
         default_factory=list,
-        description="파이썬 등식 목록 — cond 를 만족시키는 한 경로",
+        description="이 예시에서 참이어야 하는 업무 조건 목록",
     )
-    then: list[_ExampleLeafStr] = Field(
-        default_factory=list, description="그때의 효과 호출문 목록"
+    expected_effects: list[_ExampleLeafStr] = Field(
+        default_factory=list, description="조건이 참일 때 발생해야 하는 업무 효과 목록"
     )
 
 
 class RuleItem(BaseModel):
-    """Canonical parser-owned Rule with deterministic condition/effects."""
+    """Structural Rule facts plus the independently bounded business-meaning layer."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -253,17 +190,21 @@ class RuleItem(BaseModel):
         ..., strict=True, gt=0,
         description="분기표의 절대 파일 행 좌표",
     )
-    cond: _RuleLeafStr | None = Field(
+    structural_condition: _RuleLeafStr | None = Field(
         None,
         description='파이썬 불리언 표현식 leaf. 분기 아님(직선 코드)이면 null',
     )
-    then: list[_RuleLeafStr] = Field(
+    structural_effects: list[_RuleLeafStr] = Field(
         default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
     )
-    # Rule prose는 생성하지 않는다. 검색/화면은 cond/then을 구조적으로 렌더한다.
-    nl: Literal[""] = Field("", description="빈 호환 필드 — 의미 정본이 아님")
-
-
+    business_condition: _RuleLeafStr | None = Field(
+        None,
+        description="Analyzer가 구조와 atom 의미를 결합한 Strategy-B Python 조건",
+    )
+    business_effects: list[_RuleLeafStr] = Field(
+        default_factory=list,
+        description="Analyzer가 구조와 atom 의미를 결합한 Strategy-B Python 효과",
+    )
 class RulesExamplesOutput(BaseModel):
     """Deterministic Rule collection; finite by branch-inventory obligations."""
 
@@ -272,11 +213,9 @@ class RulesExamplesOutput(BaseModel):
     rules: list[RuleItem] = Field(default_factory=list)
 
 
-# ── DBMS 배치 3분할 (🅕 — 같은 유효부모 형제 N 노드를 관심사별 1콜) ──
-# 3관심사(요약/테이블/비즈니스로직)를 각각 배치(노드 리스트)로 호출 → 각 콜은
-# "한 관심사 × N 노드"의 평탄 리스트 = 깊은 중첩 0 (한 콜에 4중첩 합본 → 폭주 차단).
-# framework per-node 3분할과 동일 관심사·동일 항목(RuleItem/
-# TableInsightItem 재사용), 다른 점은 노드 리스트로 묶어 던지는 것뿐. node_key(줄범위)로 분배.
+# ── DBMS 3분할 결과 ──
+# Summary는 정확한 노드 원문마다 한 번 생성한다. Rule과 TABLE 의미만 같은 부모의 형제를
+# 평탄한 node_key map으로 묶으며, 세 관심사를 한 응답에 합치지 않는다.
 
 
 class BatchSummaryItem(BaseModel):
@@ -293,10 +232,6 @@ class BatchSummaryItem(BaseModel):
     missing_context: list[str] = Field(
         default_factory=list,
         description=SummaryOutput.model_fields["missing_context"].description,
-    )
-    questions: list[QuestionItem] = Field(
-        default_factory=list,
-        description="코드와 제공 근거만으로 답할 수 없는 실제 질문",
     )
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
@@ -316,11 +251,6 @@ class BatchSummaryItem(BaseModel):
         return self
 
 
-class BatchSummaryOutput(BaseModel):
-    """요약 배치 결과 — 입력 노드와 1:1; 키 불일치 후보는 concern finding으로 격리된다."""
-    nodes: list[BatchSummaryItem] = Field(default_factory=list)
-
-
 class BatchRulesItem(BaseModel):
     """One DBMS node's deterministically assigned routine Rule rows."""
     model_config = ConfigDict(extra="forbid")
@@ -329,15 +259,20 @@ class BatchRulesItem(BaseModel):
     rules: list[RuleItem] = Field(default_factory=list)
 
 
-class BatchTableInsightsItem(BaseModel):
-    """배치 테이블 분할 — 노드 1개의 테이블 인사이트 (DML 노드만 대상)."""
+class BatchFunctionTableUsagesItem(BaseModel):
+    """One DBMS node's access-specific function-to-table meanings."""
+
+    model_config = ConfigDict(extra="forbid")
+
     node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
-    table_insights: list[TableInsightItem] = Field(default_factory=list)
+    function_table_usages: list[FunctionTableUsage] = Field(default_factory=list)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
-class BatchTableInsightsOutput(BaseModel):
-    nodes: list[BatchTableInsightsItem] = Field(default_factory=list)
+class BatchFunctionTableUsagesOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[BatchFunctionTableUsagesItem] = Field(default_factory=list)
 
 
 # ── 테이블 description 통합 (enrich_table_description_step) ──
@@ -351,13 +286,12 @@ class TableDescription(BaseModel):
     name: str
     logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
     description: str
-    evidence_status: EvidenceStatus
+    evidence_status: Literal["sufficient", "insufficient"]
     missing_context: list[str] = Field(default_factory=list)
     columns: list[GroundedColumnDescription] = Field(
         ...,
         description="입력 허용 컬럼별 통합 논리명·설명. 이름은 입력 컬럼을 정확히 한 번씩 보존",
     )
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
     column_semantic_frames: dict[str, SemanticFrame] = Field(default_factory=dict, exclude=True)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
@@ -366,8 +300,6 @@ class TableDescription(BaseModel):
         has_meaning = bool(self.logical_name.strip() or self.description.strip())
         if self.evidence_status == "sufficient" and (not has_meaning or self.missing_context):
             raise ValueError("sufficient table meaning requires evidence text and no missing_context")
-        if self.evidence_status == "partial" and (not has_meaning or not self.missing_context):
-            raise ValueError("partial table meaning requires evidence text and missing_context")
         if self.evidence_status == "insufficient" and (has_meaning or not self.missing_context):
             raise ValueError("insufficient table meaning must stay empty and name missing context")
         return self

@@ -2,8 +2,8 @@
 
 용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/steps/step7_analyze_code`` (code_summary / code_table_insights /
-  code_summary/code_table_insights)
+- ``pipeline/steps/step7_analyze_code`` (code_summary /
+  code_table_usage_meanings)
 - ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
 
 yaml 형식 (단순)::
@@ -42,7 +42,6 @@ evidence에 기록한다. provider SDK의 streaming ``parsed`` 타입과 내부 
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from pathlib import Path
@@ -73,59 +72,14 @@ T = TypeVar("T", bound=BaseModel)
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
 from llm.runners.prompt_values import _extract_target_and_sort
 from llm.runners.invocation import _write_error_record
-from llm.runners.transport_retry import (
-    MAX_TRANSPORT_ATTEMPTS,
-    TRANSPORT_RETRY_DELAYS,
-    is_transient_transport_error,
-)
 from llm.runners.model_output_error import (
-    ModelGenerationDeadlineExceeded,
     ModelOutputError,
     model_output_kind,
 )
 
 def _resolve_usage_log_path() -> Path:
-    """현재 분석 run의 usage 장부. 독립 호출은 설정 루트를 fallback으로 쓴다."""
-    return get_run_dir(fallback=SETTINGS.run_output.dir) / "usage.jsonl"
-
-
-def _repair_invalid_json_string_escapes(content: str) -> str:
-    """Escape only non-JSON backslashes occurring inside JSON strings.
-
-    Code-oriented narratives legitimately contain source spellings such as ``\\0``.
-    A model can copy that spelling into a JSON string without doubling the slash even
-    under a provider schema.  The bytes then contain the intended text but are not
-    valid JSON.  Doubling only escape prefixes that JSON does not define preserves the
-    literal text; it does not complete truncated JSON or alter valid escapes.
-    """
-    output: list[str] = []
-    in_string = False
-    index = 0
-    while index < len(content):
-        char = content[index]
-        if not in_string:
-            output.append(char)
-            if char == '"':
-                in_string = True
-            index += 1
-            continue
-        if char == '"':
-            output.append(char)
-            in_string = False
-            index += 1
-            continue
-        if char != "\\" or index + 1 >= len(content):
-            output.append(char)
-            index += 1
-            continue
-        following = content[index + 1]
-        if following in '"\\/bfnrtu':
-            output.extend((char, following))
-            index += 2
-            continue
-        output.append("\\\\")
-        index += 1
-    return "".join(output)
+    """Return the active run's usage ledger; every model call must have an owner."""
+    return get_run_dir() / "usage.jsonl"
 
 
 async def run_yaml_rule(
@@ -154,18 +108,6 @@ async def run_yaml_rule(
     """
     rule = _load_rule(prompts_dir, rule_name)
 
-    wall_timeout = rule.get("wall_timeout_seconds")
-    if (
-        isinstance(wall_timeout, bool)
-        or not isinstance(wall_timeout, (int, float))
-        or wall_timeout <= 0
-    ):
-        if wall_timeout is not None:
-            raise ValueError(
-                f"wall_timeout_seconds must be a positive number: {rule_name}"
-            )
-        wall_timeout = None
-
     system_prompt = rule.get("system", "")
     model = model_override or rule.get("model")
 
@@ -180,20 +122,44 @@ async def run_yaml_rule(
         rule.get("structured_output_method") or cfg.structured_output_method
     )
 
-    # 콘텐츠 해시 캐시 — 같은 입력이면 서버를 다시 부르지 않는다(재현성 + 재실행 비용).
-    # 키가 프롬프트 전체라서 코드·프롬프트가 바뀌면 자동으로 미적중된다.
-    cache_model = model or cfg.model
-    cache_start = time.monotonic()
-    cache_key = response_cache.make_key(
-        rule_name=rule_name,
-        system_prompt=system_prompt,
-        user_content=user_content,
-        model=cache_model,
-        max_tokens=rule.get("max_tokens"),
-        structured_output_method=structured_output_method,
-        response_model=response_model,
+    guard_on = SETTINGS.analysis_llm.repetition_guard
+    messages = apply_cache_friendly_filters(
+        [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content),
+        ],
+        provider=cfg.provider,
     )
-    cached = response_cache.load(cache_key, response_model)
+
+    # 영속 응답 캐시 — 봉인된 실행환경과 실제 전송 설정이 모두 같을 때만 조회한다.
+    # 지문이 없으면 정확성을 위해 cache miss가 아니라 cache 자체를 사용하지 않는다.
+    cache_model = model or cfg.model
+    cache_key: str | None = None
+    cached = None
+    cache_start = time.monotonic()
+    if response_cache.is_enabled():
+        requested_max_tokens = rule.get("max_tokens")
+        effective_max_tokens = (
+            cfg.max_tokens if requested_max_tokens is None else requested_max_tokens
+        )
+        cache_key = response_cache.make_key(
+            rule_name=rule_name,
+            system_prompt=str(messages[0].content),
+            user_content=str(messages[1].content),
+            runtime_sha256=SETTINGS.analysis_llm.model_runtime_capabilities_sha256,
+            provider=cfg.provider,
+            api_base=cfg.api_base,
+            model=cache_model,
+            max_tokens=effective_max_tokens,
+            temperature=cfg.sampling.temperature,
+            top_p=cfg.sampling.top_p,
+            reasoning_effort=cfg.reasoning_effort,
+            extra_body=cfg.extra_body,
+            repetition_guard=guard_on,
+            structured_output_method=structured_output_method,
+            response_model=response_model,
+        )
+        cached = response_cache.load(cache_key, response_model)
     if cached is not None:
         lookup_ms = int((time.monotonic() - cache_start) * 1000)
         # 적중도 LLM 호출이다 — 적재를 건너뛰면 "모든 LLM 호출을 usage.jsonl 에 적재"
@@ -218,7 +184,8 @@ async def run_yaml_rule(
             response={
                 "raw": None,
                 "parsed": (
-                    cached.model_dump() if hasattr(cached, "model_dump") else cached
+                    cached.model_dump(by_alias=True)
+                    if hasattr(cached, "model_dump") else cached
                 ),
             },
             metadata={
@@ -239,7 +206,6 @@ async def run_yaml_rule(
         log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}", elapsed_ms=lookup_ms)
         return cached
     # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
-    guard_on = SETTINGS.analysis_llm.repetition_guard
     llm = build_llm_client(
         model=model, max_tokens=rule.get("max_tokens"), streaming=guard_on
     )
@@ -250,15 +216,6 @@ async def run_yaml_rule(
         else bind_structured_output(
             llm, response_schema, method=structured_output_method
         )
-    )
-
-    # 캐시 친화 필터 — 단순 LLM 호출에도 미들웨어와 동일 로직 적용
-    messages = apply_cache_friendly_filters(
-        [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_content),
-        ],
-        provider=cfg.provider,
     )
 
     # silent 차단 — cost_tracking 미들웨어 안 거치는 진입점이라 직접 wrap.
@@ -273,97 +230,54 @@ async def run_yaml_rule(
 
     start = time.monotonic()
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            invocation = runnable.ainvoke(messages, config=invoke_config)
-            if wall_timeout is None:
-                result = await invocation
-            else:
-                try:
-                    result = await asyncio.wait_for(
-                        invocation, timeout=float(wall_timeout),
-                    )
-                except TimeoutError as error:
-                    raise ModelGenerationDeadlineExceeded(
-                        float(wall_timeout)
-                    ) from error
-            break
-        except Exception as e:  # noqa: BLE001 — explicit retry/failure boundary
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            streamed_partial = (
-                repetition_guard.detector.tail_text
-                if repetition_guard is not None else ""
-            )
-            # SDK의 stream-idle timeout은 두 종류다. 첫 chunk조차 없으면 전송 실패라
-            # 제한 재시도할 수 있지만, 이미 model tool arguments를 받은 뒤 멎은 응답은
-            # 불완전한 모델 출력이다. 후자를 같은 content로 재시도하면 120초 stall을
-            # 최대 3번 반복하고도 신뢰 가능한 의미는 얻지 못한다.
-            partial_stream_stall = (
-                type(e).__name__ == "StreamChunkTimeoutError"
-                and bool(streamed_partial)
-            )
-            if (
-                is_transient_transport_error(e)
-                and not partial_stream_stall
-                and attempt < MAX_TRANSPORT_ATTEMPTS
-            ):
-                _write_error_record(
-                    rule_name, system_prompt, user_content, user_values, e, elapsed_ms,
-                    response_schema, structured_output_method,
-                    streamed_partial=streamed_partial,
-                )
-                delay = TRANSPORT_RETRY_DELAYS[attempt - 1]
-                log_warning(
-                    "llm.runners.yaml_llm_runner",
-                    "transport_retry",
-                    "전송 실패로 동일 요청을 제한 재시도",
-                    rule_name=rule_name,
-                    attempt=attempt,
-                    next_attempt=attempt + 1,
-                    delay_sec=delay,
-                    error=f"{type(e).__name__}: {e}",
-                )
-                await asyncio.sleep(delay)
-                continue
-            event = (
-                "repetition_guard_abort"
-                if isinstance(e, RepetitionLoopAborted)
-                else "model_error"
-            )
-            log_warning(
-                "llm.runners.yaml_llm_runner",
-                event,
-                f"LLM 호출 중단 — {type(e).__name__}: {e}",
+    try:
+        result = await runnable.ainvoke(messages, config=invoke_config)
+    except Exception as e:  # noqa: BLE001 — explicit single-attempt failure boundary
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        streamed_partial = (
+            repetition_guard.detector.tail_text
+            if repetition_guard is not None else ""
+        )
+        partial_stream_stall = (
+            type(e).__name__ == "StreamChunkTimeoutError"
+            and bool(streamed_partial)
+        )
+        event = (
+            "repetition_guard_abort"
+            if isinstance(e, RepetitionLoopAborted)
+            else "model_error"
+        )
+        log_warning(
+            "llm.runners.yaml_llm_runner",
+            event,
+            f"LLM 호출 중단 — {type(e).__name__}: {e}",
+            rule_name=rule_name,
+            attempts=1,
+            elapsed_ms=elapsed_ms,
+        )
+        _write_error_record(
+            rule_name, system_prompt, user_content, user_values, e, elapsed_ms,
+            response_schema, structured_output_method,
+            streamed_partial=streamed_partial,
+        )
+        if partial_stream_stall:
+            raise ModelOutputError(
                 rule_name=rule_name,
-                attempts=attempt,
-                elapsed_ms=elapsed_ms,
-            )
-            _write_error_record(
-                rule_name, system_prompt, user_content, user_values, e, elapsed_ms,
-                response_schema, structured_output_method,
-                streamed_partial=streamed_partial,
-            )
-            if partial_stream_stall:
-                raise ModelOutputError(
-                    rule_name=rule_name,
-                    kind="stalled",
-                    detail=str(e),
-                    original_type=type(e).__name__,
-                ) from e
-            output_kind = model_output_kind(e)
-            if output_kind is not None:
-                raise ModelOutputError(
-                    rule_name=rule_name,
-                    kind=output_kind,
-                    detail=str(e),
-                    original_type=type(e).__name__,
-                ) from e
-            raise
+                kind="stalled",
+                detail=str(e),
+                original_type=type(e).__name__,
+            ) from e
+        output_kind = model_output_kind(e)
+        if output_kind is not None:
+            raise ModelOutputError(
+                rule_name=rule_name,
+                kind=output_kind,
+                detail=str(e),
+                original_type=type(e).__name__,
+            ) from e
+        raise
     latency_ms = int((time.monotonic() - start) * 1000)
 
-    json_escape_repaired = False
     if response_model is None:
         raw_msg, parsed, parsing_error = result, result.content, None
     else:
@@ -379,18 +293,9 @@ async def run_yaml_rule(
                 try:
                     complete_payload = json.loads(raw_content)
                 except json.JSONDecodeError:
-                    repaired_content = _repair_invalid_json_string_escapes(raw_content)
-                    if repaired_content == raw_content:
-                        if parsing_error is not None:
-                            raise parsing_error
-                        raise
-                    try:
-                        complete_payload = json.loads(repaired_content)
-                    except json.JSONDecodeError:
-                        if parsing_error is not None:
-                            raise parsing_error
-                        raise
-                    json_escape_repaired = True
+                    if parsing_error is not None:
+                        raise parsing_error
+                    raise
                 if parsed is not None and complete_payload != parsed:
                     raise ValueError(
                         "provider parsed payload differs from complete raw JSON"
@@ -430,8 +335,6 @@ async def run_yaml_rule(
             structured_output_method if response_schema is not None else None
         ),
     }
-    if json_escape_repaired:
-        metadata["json_escape_repaired"] = True
     if parsing_error is not None:
         metadata["parsing_error"] = f"{type(parsing_error).__name__}: {parsing_error}"
     if raw_msg is not None:
@@ -462,6 +365,8 @@ async def run_yaml_rule(
         # MTP 등 서버 변화가 조용한 절단을 유발하면 여기 비율이 급증한다(finish_reason=length grep).
         # 구조화 출력은 length 시 파싱 실패로 예외 경로를 타지만, 성공 콜에도 실어 분포를 남긴다.
         finish_reason = response_meta.get("finish_reason")
+        if finish_reason:
+            metadata["finish_reason"] = finish_reason
 
         # analyzer.log 한 줄 — `tail -f` 로 LLM 호출 진행 보임.
         log_info(
@@ -501,7 +406,8 @@ async def run_yaml_rule(
                 # 둘 다 보존해야 parser 전 모델 응답과 parsed 결과를 구분해 감사할 수 있다.
                 "raw": serialize_response(raw_msg),
                 "parsed": (
-                    parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+                    parsed.model_dump(by_alias=True)
+                    if hasattr(parsed, "model_dump") else parsed
                 ),
             },
             metadata=metadata,
@@ -519,6 +425,17 @@ async def run_yaml_rule(
         raise RuntimeError(
             f"prompt evidence write failed for rule {rule_name!r}"
         ) from e
+
+    if finish_reason == "length":
+        detail = "provider stopped generation at the configured output-token boundary"
+        if parsing_error is not None:
+            detail = f"{detail}; {type(parsing_error).__name__}: {parsing_error}"
+        raise ModelOutputError(
+            rule_name=rule_name,
+            kind="length",
+            detail=detail,
+            original_type="LengthFinishReason",
+        )
 
     if parsed is None:
         reason = (
@@ -545,5 +462,6 @@ async def run_yaml_rule(
                 type(parsing_error).__name__ if parsing_error is not None else "MissingParsedPayload"
             ),
         )
-    response_cache.store(cache_key, parsed)
+    if cache_key is not None:
+        response_cache.store(cache_key, parsed)
     return parsed

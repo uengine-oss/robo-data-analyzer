@@ -1,6 +1,6 @@
 import unittest
 
-from pipeline.strategies import DBMS_PIPELINE
+from pipeline.strategies import DBMS_PIPELINE, FRAMEWORK_PIPELINE
 
 
 class DbmsPipelineContractTest(unittest.TestCase):
@@ -26,6 +26,18 @@ class DbmsPipelineContractTest(unittest.TestCase):
 
     def test_dbms_does_not_reingest_catalogs_derived_lineage_view(self) -> None:
         self.assertNotIn("enrich_lineage_from_catalog_step", self._all_step_names())
+
+    def test_framework_and_dbms_use_one_parser_call_resolution_step(self) -> None:
+        def call_steps(pipeline) -> list[str]:
+            return [
+                member.__name__
+                for step in pipeline.steps
+                for member in (step if isinstance(step, tuple) else (step,))
+                if "link" in member.__name__ and "call" in member.__name__
+            ]
+
+        self.assertEqual(["link_parser_calls_step"], call_steps(FRAMEWORK_PIPELINE))
+        self.assertEqual(["link_parser_calls_step"], call_steps(DBMS_PIPELINE))
 
 
 if __name__ == "__main__":

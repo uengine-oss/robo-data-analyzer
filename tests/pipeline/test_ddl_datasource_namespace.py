@@ -16,19 +16,19 @@ class DdlDatasourceNamespaceTest(unittest.IsolatedAsyncioTestCase):
             (root / "schema.sql").write_text("CREATE TABLE sample(id int);", encoding="utf-8")
             codebase = SimpleNamespace(root=root, ddl_dir=root, datasource="shopmall")
             config = {"codebase": codebase, "neo_client": object(), "stream": None}
-            async_functions = (
-                "upsert_schemas", "upsert_tables", "upsert_columns", "upsert_has_column",
-                "upsert_belongs_to", "upsert_fk",
-            )
             with ExitStack() as stack:
                 stack.enter_context(patch.object(subject, "step_config", return_value=config))
                 parser = stack.enter_context(
                     patch.object(subject, "parse_ddl_file", return_value=DDLParseResult())
                 )
-                for name in async_functions:
+                for name in ("emit_nodes", "emit_edges"):
                     stack.enter_context(patch.object(subject, name, new=AsyncMock()))
                 await subject.parse_ddl_step({})
             self.assertEqual(parser.call_args.kwargs["db"], "shopmall")
+            self.assertEqual(
+                b"CREATE TABLE sample(id int);",
+                parser.call_args.kwargs["sealed_source_bytes"],
+            )
 
 
 if __name__ == "__main__":

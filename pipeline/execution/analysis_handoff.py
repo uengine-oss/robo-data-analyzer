@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 from typing import Iterable, Optional
 
-from graph.schema.graph_nodes import CodeNode, Module
+from graph.schema.graph_nodes import CodeNode
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 # 슬롯 우선순위 — 낮을수록 먼저. step7 이 임계경로라 항상 앞선다.
@@ -32,7 +32,8 @@ STEP7_PRIORITY = 0
 POSTPROCESS_PRIORITY = 1
 SUMMARY_WAKE_PRIORITY = -10_000_000
 SUMMARY_LANE = "summary"
-INSIGHTS_LANE = "insights"
+TABLE_USAGE_MEANINGS_LANE = "table_usage_meanings"
+RULES_LANE = "rules"
 POSTPROCESS_LANE = "postprocess"
 
 # Smooth weighted fairness protects dependency-unlocking summaries without starving
@@ -40,7 +41,8 @@ POSTPROCESS_LANE = "postprocess"
 # shares under contention, not reservations: an idle lane lends all capacity.
 ANALYSIS_LLM_LANE_WEIGHTS = {
     SUMMARY_LANE: 4,
-    INSIGHTS_LANE: 1,
+    TABLE_USAGE_MEANINGS_LANE: 1,
+    RULES_LANE: 1,
     POSTPROCESS_LANE: 1,
 }
 
@@ -62,18 +64,11 @@ class AnalysisHandoffAborted(RuntimeError):
 
 
 def handoff_of(cfg: dict) -> "AnalysisHandoff":
-    """config 의 인계 채널. 미주입이면 **이미 열린** 채널을 만들어 준다.
-
-    단독 호출·테스트처럼 step7 과 겹칠 상대가 없는 실행에서 게이트가 교착이 되면 안 된다.
-    그런 실행은 이미 step7 이 끝난 뒤에 후처리를 부르는 것이므로 "전부 준비됨"이 참이다.
-    """
+    """Return the one run-scoped handoff; a missing channel is a contract error."""
     existing = cfg.get("analysis_handoff")
-    if existing is not None:
-        return existing
-    opened = AnalysisHandoff(analysis_llm_slots())
-    opened.close()
-    opened.publish_modules([])   # 소비자는 빈 목록을 보고 state 의 모듈로 폴백한다
-    return opened
+    if not isinstance(existing, AnalysisHandoff):
+        raise ValueError("analysis_handoff is required for the analysis pipeline")
+    return existing
 
 
 class AnalysisHandoff:
@@ -90,10 +85,8 @@ class AnalysisHandoff:
         self._pending_summary: set[str] = set()
         self._pending_node: set[str] = set()
         self._published: dict[str, CodeNode] = {}
-        self._modules: Optional[list[Module]] = None
         self._summaries_ready = asyncio.Event()
         self._analysis_ready = asyncio.Event()
-        self._modules_ready = asyncio.Event()
         self._error: Optional[BaseException] = None
         self._expect_called = False
 
@@ -139,19 +132,6 @@ class AnalysisHandoff:
         if self._error is None:
             self._error = error
         self.close()
-        self._modules_ready.set()
-
-    # ── 생산자(모듈 요약) ────────────────────────────────────────
-
-    def publish_modules(self, modules: list[Module]) -> None:
-        """모듈 요약 결과 인계 — 모듈 결과를 직접 소비하는 후처리에 전달한다."""
-        self._modules = list(modules)
-        self._modules_ready.set()
-
-    @property
-    def modules_published(self) -> bool:
-        """모듈 인계가 이미 이뤄졌는지 — 생산자의 ``finally`` 안전망이 판단에 쓴다."""
-        return self._modules_ready.is_set()
 
     # ── 소비자(후처리) ──────────────────────────────────────────
 
@@ -164,11 +144,6 @@ class AnalysisHandoff:
         """step7 노드 전체 완료까지 대기 → 공개된 코드노드 목록."""
         await self._wait(self._analysis_ready)
         return list(self._published.values())
-
-    async def modules(self) -> list[Module]:
-        """모듈 요약 확정까지 대기. 요약 step 이 결과를 못 내면 빈 목록."""
-        await self._wait(self._modules_ready)
-        return list(self._modules or [])
 
     def merge(self, code_nodes: list[CodeNode]) -> list[CodeNode]:
         """state 의 코드노드 목록에서 분석된 노드를 **공개된 객체로 치환**한 목록.
@@ -188,8 +163,6 @@ class AnalysisHandoff:
             self._summaries_ready.set()
         if not self._pending_node:
             self._analysis_ready.set()
-            if self._modules is None and self._error is not None:
-                self._modules_ready.set()
 
     async def _wait(self, event: asyncio.Event) -> None:
         await event.wait()

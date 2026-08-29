@@ -10,8 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from graph.schema.graph_nodes import CodeNode, Constant, Module, Variable
-from graph.nodes.module import to_item as module_to_item
-from pipeline.models.analysis_context import AnalysisContext, dump_referenced_symbols
+from pipeline.models.analysis_context import AnalysisContext
 from pipeline.steps.step2_load_ast.node_builders import _make_module
 from pipeline.steps.step2_load_ast.token_matcher import link_references
 from pipeline.steps.step6_build_context.referenced_symbols import _build_reference_context
@@ -70,8 +69,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("BaseService<Order, Item>", module.extends_type)
         self.assertEqual("OrderPort, Audited", module.implements_types)
-        self.assertEqual("BaseService<Order, Item>", module_to_item(module)["extends_type"])
-        self.assertEqual("OrderPort, Audited", module_to_item(module)["implements_types"])
 
     async def test_listener_ast_closes_ancestor_beyond_three_hops_without_source_reparse(self):
         """Listener-owned parent fields are authoritative and the finite graph has no depth cap."""
@@ -89,7 +86,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("Level4.check", "Level4", p, 5, 5)],
             variables=[],
             constants=[_const("Base.ROOT_LIMIT", "Base", "ROOT_LIMIT", p)],
-            import_refs=[],
             modules=[
                 _module("Base", "Base", p, 1),
                 _module("Level1", "Level1", p, 2, extends_type="Base"),
@@ -109,7 +105,7 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             "references_edges": refs,
             "init_by_edges": [],
         })["Level4.check"])
-        self.assertIn("ROOT_LIMIT", dump_referenced_symbols(symbols))
+        self.assertIn("ROOT_LIMIT", {symbol.name for symbol in symbols})
         context = AnalysisContext(
             id="Level4.check",
             signature="check()",
@@ -140,7 +136,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("Service.run", "Service", p, 3, 3)],
             variables=[],
             constants=[_const("Contract.POLICY", "Contract", "POLICY", p)],
-            import_refs=[],
             modules=[
                 _module("Contract", "Contract", p, 1),
                 _module("Audited", "Audited", p, 2),
@@ -165,7 +160,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("A.run", "A", p, 1, 1)],
             variables=[],
             constants=[_const("B.B_POLICY", "B", "B_POLICY", p)],
-            import_refs=[],
             modules=[
                 _module("A", "A", p, 1, extends_type="B"),
                 _module("B", "B", p, 2, extends_type="A"),
@@ -193,7 +187,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("Order.check", "Order", p, 5, 7)],
             variables=[],
             constants=[_const("Base.MAX_QTY", "Base", "MAX_QTY", p)],
-            import_refs=[],
             modules=[_module("Base", "Base", p, 1),
                      _module("Order", "Order", p, 4, extends_type="Base")],
         )
@@ -217,7 +210,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             variables=[],
             constants=[_const("Base.MAX", "Base", "MAX", p),
                        _const("Order.MAX", "Order", "MAX", p)],
-            import_refs=[],
             modules=[_module("Base", "Base", p, 1),
                      _module("Order", "Order", p, 4, extends_type="Base")],
         )
@@ -238,7 +230,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("Svc.run", "Svc", p, 4, 5)],
             variables=[],
             constants=[_const("Base.DEFAULT_CFG", "Base", "DEFAULT_CFG", p)],
-            import_refs=[],
             modules=[_module("Base", "Base", p, 1),
                      _module("Svc", "Svc", p, 3, extends_type="Base")],
         )
@@ -262,7 +253,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
                 _const("Root.POLICY", "Root", "POLICY", p, "'root'"),
                 _const("Right.POLICY", "Right", "POLICY", p, "'right'"),
             ],
-            import_refs=[],
             modules=[
                 _module("Root", "Root", p, 1),
                 _module("Left", "Left", p, 2, extends_type="Root"),
@@ -287,7 +277,7 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "inconsistent Python C3"):
             await link_references(
-                code_nodes=[], variables=[], constants=[], import_refs=[], modules=modules,
+                code_nodes=[], variables=[], constants=[], modules=modules,
             )
 
     async def test_declared_own_field_regression(self):
@@ -306,7 +296,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             variables=[Variable(id="Svc.cfg", owner_id="Svc", name="cfg", file_path=p,
                                 start_line=2, end_line=2, label="FIELD")],
             constants=[],
-            import_refs=[],
             modules=[_module("Svc", "Svc", p, 1)],
         )
         self.assertIn("Svc.cfg", {r.target_id for r in refs})
@@ -325,7 +314,6 @@ class JavaInheritanceTest(unittest.IsolatedAsyncioTestCase):
             code_nodes=[_fn("C.f", "C", p, 7, 7)],
             variables=[],
             constants=[_const("Base1.K", "Base1", "K", p), _const("Base2.K", "Base2", "K", p)],
-            import_refs=[],
             modules=[_module("Base1", "Base", p, 1), _module("Base2", "Base", p, 4),
                      _module("C", "C", p, 6, extends_type="Base")],
         )

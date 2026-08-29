@@ -5,9 +5,7 @@ import json
 import pytest
 
 from pipeline.models.data_object_usage import (
-    DataObjectUsageEvidence,
     dump_data_object_usages,
-    object_reference_id,
 )
 from pipeline.models.data_object_usage import usages_from_parser_ast
 from pipeline.steps.step2_load_ast.node_builders import _make_code_node
@@ -132,21 +130,6 @@ def test_quoted_physical_identifiers_are_preserved_as_case_sensitive_evidence() 
     assert usages[0].qualified_columns[0].name_quoted is True
 
 
-def test_quoted_unresolved_object_reference_ids_preserve_exact_case_identity() -> None:
-    upper = DataObjectUsageEvidence(
-        source_id="select:quoted", raw_reference='"App"."Foo"', schema="App",
-        schema_quoted=True, name="Foo", name_quoted=True, access="READ",
-        evidence_file="p.sql", evidence_line=3,
-    )
-    lower = DataObjectUsageEvidence(
-        source_id="select:quoted", raw_reference='"App"."foo"', schema="App",
-        schema_quoted=True, name="foo", name_quoted=True, access="READ",
-        evidence_file="p.sql", evidence_line=4,
-    )
-
-    assert object_reference_id("shop", upper) != object_reference_id("shop", lower)
-
-
 def test_parser_evidence_v3_preserves_database_link_component_identity() -> None:
     node = _make_code_node(
         {
@@ -177,7 +160,13 @@ def test_parser_evidence_v3_preserves_database_link_component_identity() -> None
     usages = node.extra["data_object_usages"]
     assert usages[0].database_link_components[0].role == "database"
     assert usages[0].database_link_components[0].name_quoted is True
-    assert object_reference_id("shop", usages[0]) != object_reference_id("shop", usages[1])
+    assert (
+        usages[0].database_link_components[0].name,
+        usages[0].database_link_components[0].name_quoted,
+    ) != (
+        usages[1].database_link_components[0].name,
+        usages[1].database_link_components[0].name_quoted,
+    )
     assert json.loads(dump_data_object_usages(usages))[0]["database_link_components"] == [{
         "role": "database", "name": '"Link"', "name_quoted": True,
     }]
@@ -211,7 +200,9 @@ def test_parser_evidence_v4_preserves_catalog_component_identity() -> None:
     usages = node.extra["data_object_usages"]
     assert usages[0].catalog == '"Warehouse"'
     assert usages[0].catalog_quoted is True
-    assert object_reference_id("shop", usages[0]) != object_reference_id("shop", usages[1])
+    assert (usages[0].catalog, usages[0].catalog_quoted) != (
+        usages[1].catalog, usages[1].catalog_quoted,
+    )
     assert json.loads(dump_data_object_usages(usages))[0]["catalog"] == '"Warehouse"'
 
 

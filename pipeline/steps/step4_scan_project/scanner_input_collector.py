@@ -1,60 +1,76 @@
-"""scanner_input_collector — Scan Agent 입력 단서 수집.
+"""Build the Scan Agent's complete, compact project inventory.
 
-매니페스트 + 확장자 빈도 + 카테고리별 파일 목록 수집.
-
-Plan §4 M2 명세:
-- ``extensions_count``: 상위 20개
-- ``manifest_content``: 우선순위 1위 매니페스트의 앞 60줄
-- ``scanner_categories``: 카테고리당 최대 50개
-
-★ 제거: ``representative_file`` (자바 식 가정 — 범용 X. Agent 가 도구로 직접 탐색)
-★ 제거: 코드노드 시그니처 인덱스 / Import 빈도 (Agent 가 ``list_code_nodes`` / ``grep`` 로 직접 봄)
+The prompt receives counts and manifest paths, never an arbitrarily truncated
+file body or a partial path list.  The Agent reads relevant manifests and source
+through the existing paginated filesystem tools.
 """
 from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import Iterable
 
 from pipeline.languages import scanner_hints
 
 
-def collect_scanner_input(project_root: Path) -> dict:
-    """프로젝트 디렉토리 → Scan Agent 입력 단서.
+def collect_scanner_input(
+    project_root: Path,
+    *,
+    selected_source_paths: Iterable[Path] = (),
+) -> dict:
+    """Return complete counts and discoverable manifest paths for one upload.
 
     Returns:
         {
-            "project_root": str,
-            "extensions_count": {ext: count},          # 상위 20개
-            "manifest_content": "...앞 60줄",
-            "scanner_categories": {cat: [path, ...]},  # 카테고리당 최대 50개
+            "extension_counts": {extension_without_dot: complete_count},
+            "manifest_paths": [project_relative_path, ...],
+            "scanner_category_file_counts": {category: complete_count},
         }
     """
     ext_counter: Counter = Counter()
     manifests, category_extensions = scanner_hints()
-    categories: dict[str, list[str]] = {k: [] for k in category_extensions}
+    category_file_counts: dict[str, int] = {
+        category: 0 for category in category_extensions
+    }
 
-    for f in sorted(project_root.rglob("*")):
+    root = project_root.resolve()
+    selected = tuple(sorted(Path(path).resolve() for path in selected_source_paths))
+    if selected:
+        for path in selected:
+            try:
+                path.relative_to(root)
+            except ValueError as error:
+                raise ValueError(
+                    f"scanner selected source is outside project root: {path}"
+                ) from error
+            if not path.is_file():
+                raise ValueError(f"scanner selected source is not a file: {path}")
+        source_files = selected
+    else:
+        source_files = tuple(
+            sorted(path for path in root.rglob("*") if path.is_file())
+        )
+
+    for f in source_files:
         if not f.is_file():
             continue
         ext = f.suffix.lower()
         if ext:
             ext_counter[ext.lstrip(".")] += 1
         for cat, exts in category_extensions.items():
-            if ext in exts and len(categories[cat]) < 50:
-                categories[cat].append(str(f.relative_to(project_root)))
+            if ext in exts:
+                category_file_counts[cat] += 1
 
-    # 매니페스트 앞 60줄
-    manifest_content = ""
+    manifest_paths: list[str] = []
     for m in manifests:
-        m_path = project_root / m
+        m_path = root / m
         if m_path.is_file():
-            lines = m_path.read_text(encoding="utf-8").splitlines()
-            manifest_content = "\n".join(lines[:60])
-            break
+            manifest_paths.append(str(m_path.relative_to(root)))
 
     return {
-        "project_root": str(project_root),
-        "extensions_count": dict(ext_counter.most_common(20)),
-        "manifest_content": manifest_content,
-        "scanner_categories": categories,
+        "extension_counts": dict(sorted(
+            ext_counter.items(), key=lambda item: (-item[1], item[0]),
+        )),
+        "manifest_paths": manifest_paths,
+        "scanner_category_file_counts": category_file_counts,
     }

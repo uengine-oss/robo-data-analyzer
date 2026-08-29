@@ -25,7 +25,7 @@ def _fn(rules: list[dict]) -> CodeNode:
         id="code:a.c:b100", signature="b100(itf)", file_path="a.c",
         start_line=1, end_line=9, label="FUNCTION", name="b100",
     )
-    node.extra = {"rules": rules, "questions": [{"text": "q?", "reason": "r"}]}
+    node.extra = {"rules": rules}
     return node
 
 
@@ -34,12 +34,18 @@ class StructuredRuleTransportContract(unittest.TestCase):
         rules = [
             RuleItem(
                 anchor_line=5,
-                cond='F("a") == "1"',
-                then=['set(F("dst"), "0000")', 'select("zord_acnt")', 'ret("rc")'],
+                structural_condition='F("a") == "1"',
+                structural_effects=[
+                    'set(F("dst"), "0000")', 'select("zord_acnt")', 'ret("rc")'
+                ],
+                business_condition='meaning_when("a == 1", "처리 대상이다")',
+                business_effects=[
+                    'meaning_set(F("dst"), F("0000"), "정상 코드를 설정한다")',
+                ],
             ),
         ]
         serialized, unresolved = serialize_rules(
-            rules, "b100(itf)", reads=["table:PUB.ZORD_ACNT"], writes=[],
+            rules, reads=["table:PUB.ZORD_ACNT"], writes=[],
             table_op={"table:PUB.ZORD_ACNT": "READ"},
         )
         return serialized, unresolved
@@ -52,23 +58,26 @@ class StructuredRuleTransportContract(unittest.TestCase):
         self.assertEqual(1, len(result.rules))
         rule = result.rules[0]
         self.assertEqual("code:a.c:b100::R-5", rule.id)
-        self.assertEqual("R-5", rule.rule_id)
         self.assertEqual(5, rule.anchor_line)
-        self.assertEqual('F("a") == "1"', rule.cond)
-        self.assertEqual("b100(itf)", rule.when)
+        self.assertEqual('F("a") == "1"', rule.structural_condition)
+        self.assertEqual(
+            'meaning_when("a == 1", "처리 대상이다")',
+            rule.business_condition,
+        )
         # EXAMPLE 은 LLM 이 아니라 cond/then 에서 결정론 합성된다 (spec 116 §21) —
         # 규칙을 만족하는 한 시나리오만 함께 실린다. 형제 else 규칙과 중복되는
         # 조건 불만족 산출물은 계약에서 제거됐다.
-        self.assertEqual(["satisfy"], [e.kind for e in result.examples])
-        self.assertEqual(["F('a') == '1'"], list(result.examples[0].given))
+        self.assertEqual(1, len(result.examples))
+        self.assertEqual(
+            ["meaning_when('a == 1', '처리 대상이다')"],
+            list(result.examples[0].given_conditions),
+        )
         # 규칙 단위 AFFECTS(결정론 귀속: select → READ, 권위 op=SCANNER)
         self.assertEqual(1, len(result.affects_table))
         affect = result.affects_table[0]
         self.assertEqual("table:PUB.ZORD_ACNT", affect.target_id)
         self.assertEqual("READ", affect.op)
         self.assertEqual("SCANNER", affect.op_source)
-        # Question 경로도 함께 생존
-        self.assertEqual(1, len(result.questions))
 
     def test_unknown_transport_shape_fails_loudly(self):
         with self.assertRaisesRegex(ValueError, "unknown rule transport"):
@@ -78,10 +87,22 @@ class StructuredRuleTransportContract(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "rule transport entry"):
             build_example_mapping([_fn(["not-an-object"])])
 
-    def test_nonempty_rule_prose_fails_loudly(self):
+    def test_structure_only_candidate_cannot_cross_product_graph_boundary(self):
+        with self.assertRaisesRegex(ValueError, "validated business condition or effect"):
+            build_example_mapping([_fn([{
+                "anchor_line": 5,
+                "structural_condition": 'F("ready")',
+                "structural_effects": ['call("work", None, [])'],
+                "business_condition": "",
+                "business_effects": [],
+                "examples": [],
+                "affected_tables": [],
+            }])])
+
+    def test_removed_rule_prose_field_is_not_forwarded(self):
         serialized, _ = self._serialized()
         serialized[0]["nl"] = "조건을 해석한 문장"
-        with self.assertRaisesRegex(ValueError, "Rule.nl must be the empty"):
+        with self.assertRaisesRegex(ValueError, "unknown rule transport fields"):
             build_example_mapping([_fn(serialized)])
 
     def test_invalid_derived_example_fails_loudly(self):
@@ -89,13 +110,6 @@ class StructuredRuleTransportContract(unittest.TestCase):
         serialized[0]["examples"] = ["not-an-object"]
         with self.assertRaisesRegex(TypeError, "example transport entry"):
             build_example_mapping([_fn(serialized)])
-
-    def test_invalid_question_fails_loudly(self):
-        serialized, _ = self._serialized()
-        fn = _fn(serialized)
-        fn.extra["questions"] = [{"text": "", "reason": "missing"}]
-        with self.assertRaisesRegex(ValueError, "empty question transport"):
-            build_example_mapping([fn])
 
     def test_legacy_statement_shape_fails_loudly(self):
         # 자연어 statement 형식은 계약에서 삭제됐다 — 되살아나면 조용한 RULE 0 이 아니라

@@ -14,11 +14,12 @@ import regex
 import yaml
 
 from shared.files.paths import resolve_within
+from shared.files.run_cache_context import read_run_text
 
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _EXTENSION = re.compile(r"^\.[a-z0-9][a-z0-9._+-]*$")
-_RULE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RULE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 _UNSAFE = (
     re.compile(r"\([^)]*[+*][^)]*\)\s*(?:[+*]|\{\d)") ,
     re.compile(r"\\[1-9]"),
@@ -30,9 +31,8 @@ class ExternalExtractionRule(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
-    pattern: Annotated[str, Field(min_length=1, max_length=2000)]
+    pattern: Annotated[str, Field(min_length=1)]
     key_group: str
-    value_group: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -48,23 +48,11 @@ class ExternalExtractionRule(BaseModel):
             raise ValueError("key_group must be a named capture group")
         return value
 
-    @field_validator("value_group")
-    @classmethod
-    def _valid_value_group(cls, value: str | None) -> str | None:
-        if value is not None and not _RULE_NAME.fullmatch(value):
-            raise ValueError("value_group must be a named capture group")
-        return value
-
-
-class ExternalSkill(BaseModel):
+class _ExternalRuleSet(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
-    extensions: tuple[str, ...]
-    content_signatures: tuple[Annotated[str, Field(min_length=1, max_length=120)], ...] = Field(...)
     rules: tuple[ExternalExtractionRule, ...]
-    explanation: Annotated[str, Field(max_length=500)] = Field(...)
-    provenance: Annotated[str, Field(max_length=500)] = Field(...)
 
     @field_validator("name")
     @classmethod
@@ -73,24 +61,34 @@ class ExternalSkill(BaseModel):
             raise ValueError("skill name must be a lowercase slug")
         return value
 
-    @field_validator("extensions")
-    @classmethod
-    def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(value.lower() for value in values)
-        if not normalized or len(normalized) > 12 or any(not _EXTENSION.fullmatch(value) for value in normalized):
-            raise ValueError("extensions must contain 1..12 normalized suffixes")
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("extensions must be unique")
-        return normalized
-
     @model_validator(mode="after")
-    def _bounded_unique_rules(self) -> "ExternalSkill":
-        if not self.rules or len(self.rules) > 12:
-            raise ValueError("rules must contain 1..12 entries")
+    def _unique_rules(self) -> "_ExternalRuleSet":
+        if not self.rules:
+            raise ValueError("rules must contain at least one entry")
         names = [rule.name for rule in self.rules]
         if len(names) != len(set(names)):
             raise ValueError("rule names must be unique")
         return self
+
+
+class ExternalSkillProposal(_ExternalRuleSet):
+    """The model-owned reusable format name and already verified extraction rules."""
+
+
+class ExternalSkill(_ExternalRuleSet):
+    """Analyzer-owned reusable skill with the learned extension assignment."""
+
+    extensions: tuple[str, ...]
+
+    @field_validator("extensions")
+    @classmethod
+    def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.lower() for value in values)
+        if any(not _EXTENSION.fullmatch(value) for value in normalized):
+            raise ValueError("extensions must contain normalized suffixes")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("extensions must be unique")
+        return normalized
 
 
 @dataclass(frozen=True)
@@ -120,10 +118,12 @@ def _effective_timeout(text_length: int) -> float:
     고정 50ms 는 두 가지 실측 문제를 냈다: ① MB 급 실물 파일은 선형 패턴도 초과,
     ② 로컬 LLM 이 같은 머신 CPU 를 점유하면 프로세스 선점만으로 수십 ms 가 튄다
     (동일 skill 이 검증은 통과하고 적용에서 죽는 비결정 거부). 선형 스캔 여유
-    (≈1MB/s)+고정 여유로 두되, 상한 5초는 파국적 백트래킹(초과 시간)을 여전히
-    걸러낸다. 호출자가 timeout_seconds 를 명시하면 그 값이 그대로 쓰인다.
+    (≈1MB/s)+고정 여유를 입력 전체 크기에 비례해 준다. 고정 천장을 두면 큰 정상
+    파일이 내용과 무관하게 거부되므로 사용하지 않는다. 파국적 백트래킹은 입력 비례
+    시간을 넘으면 계속 거부한다. 호출자가 timeout_seconds 를 명시하면 그 값이 그대로
+    쓰인다.
     """
-    return min(5.0, 0.25 + text_length * 1e-6)
+    return 0.25 + text_length * 1e-6
 
 
 def _compiled_rule(rule: ExternalExtractionRule):
@@ -134,7 +134,7 @@ def _compiled_rule(rule: ExternalExtractionRule):
         compiled = regex.compile(rule.pattern, regex.MULTILINE)
     except regex.error as error:
         raise ExternalSkillValidationError(f"regex compile failed for {rule.name}: {error}") from error
-    required = {rule.key_group, *([rule.value_group] if rule.value_group else [])}
+    required = {rule.key_group}
     missing = sorted(group for group in required if group not in compiled.groupindex)
     if missing:
         raise ExternalSkillValidationError(f"missing named capture groups for {rule.name}: {missing}")
@@ -146,14 +146,9 @@ def _apply_rule(
     text: str,
     *,
     timeout_seconds: float | None,
-    max_matches: int | None,
 ) -> list[ExternalRuleMatch]:
     compiled = _compiled_rule(rule)
     timeout = timeout_seconds if timeout_seconds is not None else _effective_timeout(len(text))
-    if max_matches is None:
-        # 매치 상한도 크기 비례 — 고정 1000 이면 레코드 1,000건 초과 실물 파일이
-        # 형식과 무관하게 영구 미분석이 된다. 라인 수를 넘는 매치는 여전히 폭주다.
-        max_matches = max(1000, text.count("\n") + 1)
     output: list[ExternalRuleMatch] = []
     try:
         for match in compiled.finditer(text, timeout=timeout):
@@ -164,17 +159,8 @@ def _apply_rule(
                 raise ExternalSkillValidationError(f"rule {rule.name} produced a zero-width span")
             line = text.count("\n", 0, match.start()) + 1
             output.append(ExternalRuleMatch(key, match.start(), match.end(), line, rule.name))
-            if len(output) > max_matches:
-                raise ExternalSkillValidationError(f"rule {rule.name} exceeded match limit {max_matches}")
     except TimeoutError as error:
         raise ExternalSkillValidationError(f"rule {rule.name} exceeded regex timeout") from error
-    unique_keys = {item.key for item in output}
-    line_count = text.count("\n") + 1
-    # key 반복 자체는 정상 데이터다(중복 key 는 링킹에서 무연결 처리) — 폭주는
-    # "줄 수를 넘는 매치"와 결합할 때만 판정한다. 유일 key 가 몇 종뿐인 형식
-    # (등급/코드류)이 101번째 매치에서 죽던 가정을 제거.
-    if output and len(output) > max(100, len(unique_keys) * 20) and len(output) > line_count:
-        raise ExternalSkillValidationError(f"rule {rule.name} caused duplicate explosion")
     return output
 
 
@@ -184,7 +170,6 @@ def probe_extraction_rule(
     text: str,
     *,
     timeout_seconds: float | None = None,
-    max_matches: int | None = None,
 ) -> list[ExternalRuleMatch]:
     """Run one candidate rule against one text with the production engine.
 
@@ -196,7 +181,7 @@ def probe_extraction_rule(
         rule = ExternalExtractionRule(name="candidate", pattern=pattern, key_group=key_group)
     except Exception as error:
         raise ExternalSkillValidationError(f"invalid rule fields: {error}") from error
-    return _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
+    return _apply_rule(rule, text, timeout_seconds=timeout_seconds)
 
 
 def _fingerprint(skill: ExternalSkill) -> str:
@@ -210,7 +195,6 @@ def validate_external_skill(
     *,
     negative_samples: list[str] | None = None,
     timeout_seconds: float | None = None,
-    max_matches: int | None = None,
 ) -> ValidatedExternalSkill:
     """Validate safety and exact non-whitespace source coverage.
 
@@ -225,7 +209,7 @@ def validate_external_skill(
     for sample_index, text in enumerate(positive_samples):
         sample_matches: list[ExternalRuleMatch] = []
         for rule in skill.rules:
-            matches = _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
+            matches = _apply_rule(rule, text, timeout_seconds=timeout_seconds)
             all_matches.extend(matches)
             sample_matches.extend(matches)
         _require_exact_source_coverage(text, sample_matches, sample_index=sample_index)
@@ -237,7 +221,7 @@ def validate_external_skill(
                 raise ExternalSkillValidationError("skill pattern enumerates an extracted customer key")
     for text in negative_samples or []:
         for rule in skill.rules:
-            if _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches):
+            if _apply_rule(rule, text, timeout_seconds=timeout_seconds):
                 raise ExternalSkillValidationError(f"rule {rule.name} matched a negative sample")
     return ValidatedExternalSkill(skill=skill, fingerprint=_fingerprint(skill))
 
@@ -279,14 +263,13 @@ def apply_validated_external_skill(
     text: str,
     *,
     timeout_seconds: float | None = None,
-    max_matches: int | None = None,
 ) -> list[ExternalRuleMatch]:
     if not validated.is_validated or validated.fingerprint != _fingerprint(validated.skill):
         raise ExternalSkillValidationError("external skill validation fingerprint mismatch")
     output = [
         match
         for rule in validated.skill.rules
-        for match in _apply_rule(rule, text, timeout_seconds=timeout_seconds, max_matches=max_matches)
+        for match in _apply_rule(rule, text, timeout_seconds=timeout_seconds)
     ]
     seen: set[tuple[str, int, int]] = set()
     unique: list[ExternalRuleMatch] = []
@@ -315,6 +298,10 @@ def parse_external_skill(document: str) -> ExternalSkill:
 
 
 def persist_external_skill(skill: ExternalSkill, root: Path) -> Path:
+    if not skill.extensions:
+        raise ExternalSkillValidationError(
+            "extensionless external skill is run-only and cannot be persisted"
+        )
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     skill_dir = resolve_within(root, skill.name)
@@ -336,12 +323,6 @@ def load_external_skills(root: Path) -> list[ExternalSkill]:
     if not root.is_dir():
         return []
     return [
-        parse_external_skill(path.read_text(encoding="utf-8"))
+        parse_external_skill(read_run_text(path, encoding="utf-8"))
         for path in sorted(root.glob("*/SKILL.md"))
     ]
-
-
-def skill_matches_file(skill: ExternalSkill, extension: str, text: str) -> bool:
-    return extension.lower() in skill.extensions and (
-        not skill.content_signatures or all(signature in text for signature in skill.content_signatures)
-    )

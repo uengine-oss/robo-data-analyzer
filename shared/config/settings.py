@@ -2,7 +2,7 @@
 
 설계 원칙
 ─────────
-- 모든 경계 상수 (임계값 / 배치 크기 / max_calls / URI / 비용 한도) 는
+- 모든 경계 상수 (임계값 / 배치 크기 / URI / 비용 한도) 는
   ``ROBO_<영역>_<이름>`` 환경변수로 외부화. 코드에 매직 넘버 박지 X.
 - 이 파일이 **유일한 진입점**. 모든 step / 모든 미들웨어가 여기를 import.
 - 영역별 prefix: LLM / CACHE / AGENT / BUDGET / NEO4J / PIPELINE / CATALOG / LOG / DATA.
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,10 +102,22 @@ class AnalysisLlmSettings:
     repetition_guard: bool = field(
         default_factory=lambda: _getenv_bool("ROBO_LLM_REPETITION_GUARD", True)
     )
-    # 콘텐츠 해시 응답 캐시 (llm/response_cache.py). 같은 입력이면 서버를 다시 부르지 않아
-    # 재실행이 빨라지고, 서버 배치 비결정성(같은 입력·다른 출력)이 클라이언트에서 끝난다.
+    # 영속 응답 캐시 (llm/response_cache.py). 실행환경 지문이 봉인됐을 때만 안전하게
+    # 재사용할 수 있으므로 기본 OFF다.
     response_cache: bool = field(
-        default_factory=lambda: _getenv_bool("ROBO_LLM_RESPONSE_CACHE", True)
+        default_factory=lambda: _getenv_bool("ROBO_LLM_RESPONSE_CACHE", False)
+    )
+    # 모델 weights/revision·tokenizer·quantization·serving runtime·provider hard limit을
+    # 함께 봉인한 외부 capability 문서의 SHA-256. 모델 이름이나 endpoint만으로 대체 금지.
+    model_runtime_capabilities_sha256: str = field(
+        default_factory=lambda: _getenv_str(
+            "ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_SHA256", "",
+        ).strip().lower()
+    )
+    model_runtime_capabilities_ref: str = field(
+        default_factory=lambda: _getenv_str(
+            "ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_REF", "",
+        ).strip()
     )
     # 응답 캐시 용량 상한(MB). 키가 프롬프트 전체라서 프롬프트·코드를 고칠 때마다 옛 항목이
     # 다시는 안 읽히는 채로 남는다 — 상한이 없으면 코퍼스 옆에서 무한히 쌓인다.
@@ -112,6 +125,15 @@ class AnalysisLlmSettings:
     response_cache_max_mb: int = field(
         default_factory=lambda: _getenv_int("ROBO_LLM_RESPONSE_CACHE_MAX_MB", 512)
     )
+
+    def __post_init__(self) -> None:
+        if (
+            self.model_runtime_capabilities_sha256
+            and re.fullmatch(r"[0-9a-f]{64}", self.model_runtime_capabilities_sha256) is None
+        ):
+            raise ValueError(
+                "ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_SHA256 must be a lowercase SHA-256 hex digest"
+            )
 
 
 @dataclass(frozen=True)
@@ -136,9 +158,6 @@ class EmbeddingSettings:
     char_budget: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_CHAR_BUDGET", 700))
     max_retries: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_MAX_RETRIES", 6))
     timeout_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_EMBED_TIMEOUT_SECONDS", 180.0))
-    # 서버 텍스트 한도(≈2084자, 부하 의존) 근처. 초과 텍스트만 절단+경고(손실 방지 최후수단 —
-    # 정상 길이 노드는 무변경, 절단은 벡터 의미를 바꾸므로 조용히 하지 않는다).
-    max_chars: int = field(default_factory=lambda: _getenv_int("ROBO_EMBED_MAX_CHARS", 2000))
 
     def __post_init__(self) -> None:
         _require_non_blank("EmbeddingSettings.provider", self.provider)
@@ -149,12 +168,11 @@ class EmbeddingSettings:
         _require_finite_number(
             "EmbeddingSettings.timeout_seconds", self.timeout_seconds, minimum=0, inclusive=False
         )
-        _require_positive_int("EmbeddingSettings.max_chars", self.max_chars)
 
 
 @dataclass(frozen=True)
 class SemanticSearchSettings:
-    """ROBO_SEARCH_* — 검색용 생성 LLM(질의 번역·심판) + dense 채널 (spec 044).
+    """ROBO_SEARCH_* — 검색용 생성 LLM(질의 번역) + dense 채널 (spec 044).
 
     분석용 LLM 과 별도 — 검색은 판단 품질이 중요해 gpt-5.4-mini 를 쓴다(사용자 결정).
     사내 GPU 전환은 TODO(전환 시 심판·번역 승자 구성의 성적 재측정 필수).
@@ -162,7 +180,7 @@ class SemanticSearchSettings:
     ``dense_impl`` = ``index``(Neo4j 벡터 인덱스) | ``scan``(전량 코사인). SC-002 리콜 미달 시
     ``scan`` 으로 원복하기 위한 단일 스위치 — 두 경로가 한 곳에서 교체된다.
     """
-    # GPU 통일(사용자 결정 2026-07-11): 심판·번역도 사내 Qwen(GPU)으로 — 기밀 유지·과금 0,
+    # GPU 통일(사용자 결정 2026-07-11): 질의 번역도 사내 Qwen(GPU)으로 — 기밀 유지·과금 0,
     # 죽은 OpenAI 키 의존 제거. gpt-5 로 되돌리려면 환경변수 `ROBO_SEARCH_LLM_CONFIG=gpt54_mini_openai`.
     llm_config: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_CONFIG", "qwen36_sglang_local"))
     llm_api_key: str = field(default_factory=lambda: _getenv_str("ROBO_SEARCH_LLM_API_KEY", ""))
@@ -177,47 +195,6 @@ class SemanticSearchSettings:
                 f"got {self.dense_impl!r}"
             )
         _require_positive_int("SemanticSearchSettings.fetch_k", self.fetch_k)
-
-
-@dataclass(frozen=True)
-class LlmResponseCacheSettings:
-    """ROBO_CACHE_* — SQLite LLM 응답 캐시 (운영기 OFF)."""
-    enabled: bool = field(default_factory=lambda: _getenv_bool("ROBO_CACHE_ENABLED", False))
-
-
-@dataclass(frozen=True)
-class AnalysisAgentSettings:
-    """ROBO_AGENT_* — 도구형 Agent 호출 한도와 검증 임계."""
-    scan_max_calls: int = field(default_factory=lambda: _getenv_int("ROBO_AGENT_SCAN_MAX_CALLS", 30))
-    # Scan Agent 의 table_access_patterns 검증 — 매치된 call site 중 op_token 이
-    # op_mappings 에 인식된 비율의 최소 통과선. 틀린 정규식(op_token 이 변수명)은 0 → 탈락.
-    scan_regex_min_op_ratio: float = field(
-        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MIN_OP_RATIO", 0.5)
-    )
-    # 검문소 3지표 (spec 114) — 완전한 entity 매치인데 단어장(DDL∪실DB)에 없는 비율 상한.
-    # 넘으면 "넓게 오탐하는 규칙"으로 탈락 (운 좋은 엣지 1개 통과 차단).
-    scan_regex_max_contradiction_ratio: float = field(
-        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MAX_CONTRADICTION_RATIO", 0.8)
-    )
-    # entity 가 단어장에서 복수 해석(fallback prefix 등)되는 매치 비율 상한.
-    scan_regex_max_ambiguity_ratio: float = field(
-        default_factory=lambda: _getenv_float("ROBO_AGENT_SCAN_REGEX_MAX_AMBIGUITY_RATIO", 0.2)
-    )
-    def __post_init__(self) -> None:
-        _require_positive_int("AnalysisAgentSettings.scan_max_calls", self.scan_max_calls)
-        _require_finite_number(
-            "AnalysisAgentSettings.scan_regex_min_op_ratio",
-            self.scan_regex_min_op_ratio,
-            minimum=0,
-            inclusive=True,
-        )
-        if self.scan_regex_min_op_ratio > 1:
-            raise ValueError("AnalysisAgentSettings.scan_regex_min_op_ratio must be <= 1")
-        for name in ("scan_regex_max_contradiction_ratio", "scan_regex_max_ambiguity_ratio"):
-            value = getattr(self, name)
-            _require_finite_number(f"AnalysisAgentSettings.{name}", value, minimum=0, inclusive=True)
-            if value > 1:
-                raise ValueError(f"AnalysisAgentSettings.{name} must be <= 1")
 
 
 @dataclass(frozen=True)
@@ -270,26 +247,9 @@ class AnalysisPipelineSettings:
     llm_max_concurrency: int = field(
         default_factory=lambda: _getenv_int("ROBO_PIPELINE_LLM_MAX_CONCURRENCY", 32)
     )
-    # Output-heavy Rule calls saturate the current GPU before the shared pool does.
-    # Keep other lanes on the global pool while bounding only Rule in-flight work.
-    # (옛 file_concurrency 삭제 — 소비처 0건. spec 046 FR-010.)
-    big_context_threshold_tokens: int = field(
-        default_factory=lambda: _getenv_int("ROBO_PIPELINE_BIG_CONTEXT_THRESHOLD_TOKENS", 1000)
-    )
-    # 잔여 패턴 루프 — 한 라운드 에이전트에 보내는 미해결 샘플 수 / 루프 반복 상한.
-    residual_sample_size: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_SAMPLE_SIZE", 30))
-    residual_max_rounds: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_RESIDUAL_MAX_ROUNDS", 3))
     # DBMS step7 배치(🅕) — 같은 부모 형제를 한 LLM 콜로 묶을 때의 입력 토큰 상한.
     # 작게(기본 1500) 잡아 출력 폭주 차단 — 한 노드가 이 한도 초과면 단독 배치.
     batch_max_tokens: int = field(default_factory=lambda: _getenv_int("ROBO_PIPELINE_BATCH_MAX_TOKENS", 1500))
-    # 부모 SOURCE의 자식 원문을 모델 요약으로 치환하는 별도 상한. 배치 묶음 상한과
-    # 의미 손실 압축 상한은 목적이 다르다. 둘을 1500으로 공유하면 모델 context에 충분히
-    # 들어가는 중간 크기 루틴도 하위 LLM 문장으로 대체되어 오류가 상위로 전파된다.
-    source_compaction_threshold_tokens: int = field(
-        default_factory=lambda: _getenv_int(
-            "ROBO_PIPELINE_SOURCE_COMPACTION_THRESHOLD_TOKENS", 12000,
-        )
-    )
     # 임베딩 step on/off — Framework/DBMS 공통. 기본 ON (운영=full 동작).
     # 테스트/디버그 시 .env 로 off (느린 모델 로드 회피).
     # 모델 자체는 LLM 영역 (llm/embedder.py) 책임 — analysis_pipeline 설정에는 두지 않는다.
@@ -299,11 +259,7 @@ class AnalysisPipelineSettings:
         for name in (
             "max_concurrency",
             "llm_max_concurrency",
-            "big_context_threshold_tokens",
-            "residual_sample_size",
-            "residual_max_rounds",
             "batch_max_tokens",
-            "source_compaction_threshold_tokens",
         ):
             _require_positive_int(f"AnalysisPipelineSettings.{name}", getattr(self, name))
 
@@ -437,8 +393,6 @@ class AnalyzerSettings:
     analysis_llm: AnalysisLlmSettings = field(default_factory=AnalysisLlmSettings)
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     semantic_search: SemanticSearchSettings = field(default_factory=SemanticSearchSettings)
-    llm_response_cache: LlmResponseCacheSettings = field(default_factory=LlmResponseCacheSettings)
-    analysis_agents: AnalysisAgentSettings = field(default_factory=AnalysisAgentSettings)
     run_budget: AnalysisRunBudgetSettings = field(default_factory=AnalysisRunBudgetSettings)
     graph_database: AnalysisGraphDatabaseSettings = field(default_factory=AnalysisGraphDatabaseSettings)
     analysis_pipeline: AnalysisPipelineSettings = field(default_factory=AnalysisPipelineSettings)

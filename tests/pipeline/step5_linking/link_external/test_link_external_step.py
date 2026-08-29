@@ -13,10 +13,13 @@ class LinkExternalStepTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_completed_inputs_are_valid(self) -> None:
         result = await link_external_step(
-            {"code_nodes": [], "has_member_edges": [], "external_chunks": []},
+            {"call_sites": [], "external_source_records": []},
             {"configurable": {}},
         )
-        self.assertEqual({"external_edges": []}, result)
+        self.assertEqual([], result["resolved_external_reference_links"])
+        self.assertEqual(
+            [], result["external_reference_ledger"]["occurrences"],
+        )
 
     def test_link_step_precedes_context_in_both_strategies(self) -> None:
         # 그룹(튜플) 구성원은 그룹 위치를 공유한다 — 순서 비교는 그룹 인덱스 기준.

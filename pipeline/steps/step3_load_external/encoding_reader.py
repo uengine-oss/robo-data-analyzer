@@ -21,7 +21,6 @@ class DecodedText:
     text: str
     encoding: str
     had_bom: bool = False
-    confidence: float = 1.0
 
 
 class TextDecodeError(UnicodeError):
@@ -45,11 +44,10 @@ def is_binary_bytes(raw: bytes) -> bool:
     """Conservatively identify binary payloads without decoding them as text."""
     if not raw:
         return False
-    sample = raw[:8192]
-    if b"\x00" in sample:
+    if b"\x00" in raw:
         return True
-    controls = sum(byte < 32 and byte not in (9, 10, 12, 13) for byte in sample)
-    return controls / len(sample) > 0.10
+    controls = sum(byte < 32 and byte not in (9, 10, 12, 13) for byte in raw)
+    return controls / len(raw) > 0.10
 
 
 def _clean_text(text: str) -> bool:
@@ -59,26 +57,33 @@ def _clean_text(text: str) -> bool:
         return True
     controls = sum(
         unicodedata.category(ch) == "Cc" and ch not in "\t\n\r\f"
-        for ch in text[:8192]
+        for ch in text
     )
-    return controls / min(len(text), 8192) <= 0.02
+    return controls / len(text) <= 0.02
 
 
 def decode_bytes(raw: bytes) -> DecodedText:
-    if is_binary_bytes(raw):
-        raise TextDecodeError("binary payload cannot be decoded as project text")
     if not raw:
         return DecodedText("", "utf-8")
     for bom, encoding in _BOMS:
         if raw.startswith(bom):
             try:
-                return DecodedText(raw.decode(encoding), encoding, had_bom=True)
+                text = raw.decode(encoding)
             except UnicodeDecodeError as error:
                 raise TextDecodeError(f"invalid {encoding} BOM payload") from error
+            if not _clean_text(text):
+                raise TextDecodeError(f"invalid control characters in {encoding} text")
+            return DecodedText(text, encoding, had_bom=True)
+    if is_binary_bytes(raw):
+        raise TextDecodeError("binary payload cannot be decoded as project text")
     try:
-        return DecodedText(raw.decode("utf-8"), "utf-8")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
+    else:
+        if not _clean_text(text):
+            raise TextDecodeError("invalid control characters in utf-8 text")
+        return DecodedText(text, "utf-8")
 
     candidate = from_bytes(raw).best()
     if candidate is not None and candidate.encoding:
@@ -87,7 +92,7 @@ def decode_bytes(raw: bytes) -> DecodedText:
         if normalized in _SAFE_DETECTED or coherence >= 0.20:
             text = str(candidate)
             if _clean_text(text):
-                return DecodedText(text, candidate.encoding, confidence=max(0.0, min(1.0, coherence)))
+                return DecodedText(text, candidate.encoding)
 
     for encoding in ("cp949", "euc-kr"):
         try:
@@ -95,7 +100,7 @@ def decode_bytes(raw: bytes) -> DecodedText:
         except UnicodeDecodeError:
             continue
         if _clean_text(text):
-            return DecodedText(text, encoding, confidence=0.50)
+            return DecodedText(text, encoding)
     raise TextDecodeError("unsupported or low-confidence text encoding")
 
 

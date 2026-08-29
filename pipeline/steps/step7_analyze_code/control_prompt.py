@@ -43,7 +43,6 @@ def build_control_inventory(
             and symbol.declared_value
         ),
         statements=statements,
-        call_lines=ctx.extra.get("ast_call_lines") or (),
         call_occurrences=ctx.extra.get("ast_call_occurrences") or (),
         # DBMS DML 효과 좌표 (spec 119). framework 는 키가 없어 빈 튜플이다.
         table_ops=ctx.extra.get("ast_table_ops") or (),

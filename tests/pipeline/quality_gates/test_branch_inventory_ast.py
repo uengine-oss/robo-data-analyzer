@@ -19,6 +19,7 @@ from pipeline.quality_gates.rule_prompt_evidence import (
     rule_evidence,
 )
 from pipeline.quality_gates.rule_obligations import required_rule_rows
+from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 _SOURCE = "\n".join([
     "long f(long x) {",          # 1
@@ -53,7 +54,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
             _SOURCE, _SUBTREE, "c",
             handler_markers=("PFM_CATCH",),
             statements=_STATEMENTS,
-            call_lines=_CALL_LINES,
+            call_occurrences=parser_call_occurrences(_CALL_LINES),
         )
 
     def test_termination_rows_come_from_ast_not_source_tokens(self):
@@ -96,7 +97,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         )]
         index = build_inventory(
             source, tree, "c", statements=(),
-            call_lines=((3, "work"), (5, "fallback")),
+            call_occurrences=parser_call_occurrences(((3, "work"), (5, "fallback"))),
         ).branch_index()
         decision = next(line for line in index.splitlines() if "[decision]" in line)
         self.assertNotIn("[implicit_false]", decision)
@@ -149,7 +150,6 @@ class BranchInventoryAstContractTest(unittest.TestCase):
             [ControlSubtreeNode("if@3", "IF", 3, 6, expression="flag")],
             "c",
             statements=(StatementFact("r7", "RETURN", 7, 7, expression="0"),),
-            call_lines=((2, "copy"), (4, "copy"), (5, "copy")),
             call_occurrences=occurrences,
         )
 
@@ -169,12 +169,14 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         )
         rules = materialize_rule_items(evidence, (2, 3))
         examples = synthesize_examples(rules)
-        self.assertEqual(rules[1].then, examples[3][0]["then"])
-        self.assertEqual([
-            'call("copy", None, [F("dst1"), F("src1")])',
-            'call("copy", None, [F("dst2"), F("src2")])',
-        ], rules[1].then)
-
+        self.assertEqual(
+            [
+                'call("copy", None, [F("dst1"), F("src1")])',
+                'call("copy", None, [F("dst2"), F("src2")])',
+            ],
+            rules[1].structural_effects,
+        )
+        self.assertEqual([], examples[3])
     def test_exit_row_direct_evidence_from_ast(self):
         inventory = self._build()
         _source, returns, assignments = inventory.direct_evidence(10)
@@ -209,7 +211,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                               expression="1", target="result", operator="="),
                 StatementFact("r8", "RETURN", 8, 8, expression="0"),
             ),
-            call_lines=((7, "audit"),),
+            call_occurrences=parser_call_occurrences(((7, "audit"),)),
         )
 
         self.assertEqual(2, inventory.entry_line)
@@ -259,7 +261,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                               expression="1", target="state", operator="="),
                 StatementFact("l4", "LABEL", 4, 4, target="done"),
             ),
-            call_lines=((5, "audit"),),
+            call_occurrences=parser_call_occurrences(((5, "audit"),)),
         )
 
         rows = {row["line"]: row for row in inventory.table_rows()}
@@ -341,7 +343,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
             statements=(
                 StatementFact("c2", "CONTINUE", 2, 2, target="continue"),
             ),
-            call_lines=((3, "work"),),
+            call_occurrences=parser_call_occurrences(((3, "work"),)),
         )
 
         rows = {row["line"]: row for row in inventory.table_rows()}
@@ -376,7 +378,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                     expression="MASK", target="flags", operator="|=",
                 ),
             ),
-            call_lines=(),
+            call_occurrences=(),
         )
         _source, _returns, assignments = inventory.direct_evidence(1)
         self.assertEqual(
@@ -396,7 +398,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                 StatementFact("s5", "THROW", 5, 5,
                               expression="new IllegalStateException(x)"),
             ),
-            call_lines=(),
+            call_occurrences=(),
         )
         self.assertEqual({3, 5}, {l for l, k, _ in java.termination_rows if k == "exit"})
         self.assertEqual(
@@ -413,7 +415,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                 StatementFact("s3", "RETURN", 3, 3, expression="x + 1"),
                 StatementFact("s4", "RAISE", 4, 4, expression="ValueError(x)"),
             ),
-            call_lines=(),
+            call_occurrences=(),
         )
         self.assertEqual({3, 4}, {l for l, k, _ in python.termination_rows if k == "exit"})
         self.assertEqual(frozenset({"x + 1"}), python.at_line(2).return_expressions)
@@ -431,7 +433,7 @@ class BranchInventoryAstContractTest(unittest.TestCase):
                 StatementFact("s4", "RETURN", 4, 4, expression="'OK'"),
                 StatementFact("s6", "RETURN", 6, 6, expression="'NG'"),
             ),
-            call_lines=(),
+            call_occurrences=(),
         )
         self.assertEqual({4, 6}, {l for l, k, _ in sql.termination_rows if k == "exit"})
         branch = sql.at_line(2)
@@ -486,7 +488,7 @@ class FinallyWithConsumptionTest(unittest.TestCase):
             source, tree, "java",
             statements=(StatementFact("a6", "ASSIGNMENT", 6, 6,
                                       expression="1", target="r", operator="="),),
-            call_lines=((3, "a"), (9, "close")),
+            call_occurrences=parser_call_occurrences(((3, "a"), (9, "close"))),
         )
         rows = {r["line"]: r for r in inventory.table_rows()}
         self.assertEqual("controller", rows[8]["role"])
@@ -513,7 +515,7 @@ class FinallyWithConsumptionTest(unittest.TestCase):
                               expression="fh.read()", target="data", operator="="),
                 StatementFact("r4", "RETURN", 4, 4, expression="data"),
             ),
-            call_lines=((2, "open"), (3, "fh.read")),
+            call_occurrences=parser_call_occurrences(((2, "open"), (3, "fh.read"))),
         )
         rows = {r["line"]: r for r in inventory.table_rows()}
         self.assertEqual("controller", rows[2]["role"])
@@ -579,7 +581,8 @@ class LabelHandlerRowTest(unittest.TestCase):
     def test_label_form_marker_creates_handler_row(self):
         inventory = build_inventory(
             self.SOURCE, [], "c", handler_markers=("PFM_CATCH",),
-            statements=self.STATEMENTS, call_lines=((2, "a"),),
+            statements=self.STATEMENTS,
+            call_occurrences=parser_call_occurrences(((2, "a"),)),
         )
         rows = {line: kind for line, kind, _ in inventory.termination_rows}
         self.assertEqual({3: "exit", 4: "handler"}, rows)
@@ -597,7 +600,7 @@ class LabelHandlerRowTest(unittest.TestCase):
                 StatementFact("l5", "LABEL", 5, 5, target="PFM_CATCH"),
                 StatementFact("r7", "RETURN", 7, 7, expression="1"),
             ),
-            call_lines=((2, "a"),),
+            call_occurrences=parser_call_occurrences(((2, "a"),)),
         )
         self.assertEqual(
             [], [line for line, kind, _ in inventory.termination_rows if kind == "handler"])
@@ -609,7 +612,7 @@ class LabelHandlerRowTest(unittest.TestCase):
                 StatementFact("r3", "RETURN", 3, 3, expression="0"),
                 StatementFact("r5", "RETURN", 5, 5, expression="1"),
             ),
-            call_lines=((2, "a"),),
+            call_occurrences=parser_call_occurrences(((2, "a"),)),
         )
         self.assertEqual(
             [], [line for line, kind, _ in inventory.termination_rows if kind == "handler"],
@@ -641,7 +644,7 @@ class ConsecutiveCaseLabelTest(unittest.TestCase):
                 StatementFact("b4", "BREAK", 4, 4, target="break"),
                 StatementFact("r6", "RETURN", 6, 6, expression="RC_ERR"),
             ),
-            call_lines=(),
+            call_occurrences=(),
         )
 
         rows = {row["line"]: row for row in inventory.table_rows()}
@@ -665,7 +668,7 @@ class InactiveRegionStatementFactTest(unittest.TestCase):
         return build_inventory(
             _INACTIVE_SOURCE, _INACTIVE_SUBTREE, "c",
             statements=_INACTIVE_STATEMENTS,
-            call_lines=_INACTIVE_CALLS,
+            call_occurrences=parser_call_occurrences(_INACTIVE_CALLS),
         )
 
     def test_inactive_exit_rows_are_not_obligations(self):

@@ -74,8 +74,7 @@ def test_consolidated_result_requires_exact_column_set():
     )
     assert blank == [{
         "id": "db:unknown.opaque", "logical_name": "", "analyzed_description": "",
-        "semantic_evidence_status": "insufficient",
-        "semantic_missing_context": ("컬럼 업무 의미 근거",),
+        "meaning_status": "insufficient",
     }]
 
 

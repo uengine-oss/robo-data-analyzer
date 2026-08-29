@@ -1,50 +1,51 @@
 """관심사 fan-out 헬퍼 — ``analyze_code_step`` 이 코드노드당 1회 호출.
 
-코드노드 1개당 LLM 호출 (병렬, 1~2 번):
-- ``code_summary``        → canonical summary + stereotype + questions (항상)
-- ``code_table_insights`` → table_insights (R/W 테이블 있을 때만 — 없으면 skip)
+코드노드 1개당 서로 다른 LLM 관심사(병렬, 정상 경로 1~3회):
+- ``code_summary`` → canonical summary + stereotype (항상)
+- ``code_rule_meanings`` → Analyzer가 지정한 condition/effect atom 의미와 Rule 여부
+  (Rule row와 atom이 있을 때만 — 없으면 skip)
+- ``code_table_usage_meanings`` → access-specific function-table meanings
+  (R/W 테이블이 있을 때만 — 없으면 skip)
 
-Rule/Example은 parser-owned branch evidence에서 결정론으로 물질화한다(LLM 0).
-모델 concern은 summary와 direct table insight뿐이며, 각 concern은 필요한 증거만 받는다.
+Rule의 구조와 좌표는 parser-owned branch evidence에서 결정론으로 만들고, 모델은 배정된 atom의
+업무 의미만 채운다. Example은 검증된 Rule을 결정론적으로 투영하므로 별도 LLM 호출이 없다.
+각 관심사는 자기 근거만 한 번 받는다.
 
 **KV 캐시 흐름**:
 서버 KV cache는 동작하지만 API cached-token 필드는 0만 보고한다. 저장 prompt의 실제
-바이트를 대조하면 두 LLM concern은 공통 system prefix만 공유하고 user prompt는 concern별로
+바이트를 대조하면 세 LLM concern은 공통 system prefix만 공유하고 user prompt는 concern별로
 갈라진다. 따라서 첫 summary 한 번으로 전역 system prefix를 워밍하되, 이후 코드노드에서
-summary를 기다려도 node-specific prefix는 늘지 않는다. summary/table insight는 독립 실행하고
-Rule은 같은 inventory에서 즉시 결정론 물질화한다. summary가 끝나는 즉시 caller 의존만 조기 해제한다.
+summary를 기다려도 node-specific prefix는 늘지 않는다. summary/rule/table-usage meaning은
+독립 실행하고 summary가 끝나는 즉시 caller 의존만 조기 해제한다.
 
-DBMS 부모 range 는 본문이 ``compact_body`` (자식 구간 → 자식 summary 치환) — 자식이
-먼저 분석되어 그 결과가 부모 입력으로 합류. Framework 는 평면이라 raw 본문.
+Framework와 DBMS 모두 현재 TARGET의 정확한 원문을 사용한다. 자식 원문을 생성 요약으로
+치환하지 않으며, 필요한 direct callee 결과만 별도 구조화 문맥으로 한 번 전달한다.
 
 각 호출은 Pydantic ``response_format`` 강제 — 자유 텍스트 응답 차단.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from pipeline.steps.step7_analyze_code.range_body import (
-    ancestor_context,
-    body_for,
-    raw_body_for,
-)
+from pipeline.steps.step7_analyze_code.source_body import exact_source_body
 from pipeline.steps.step7_analyze_code.rw_table_filter import (
     serialize_rules,
 )
-from pipeline.steps.step7_analyze_code.table_prompt_context import dump_table_refs
-from pipeline.models.data_object_usage import dump_data_object_usages, exact_direct_table_ids
+from pipeline.steps.step7_analyze_code.table_prompt_context import (
+    dump_linked_table_descriptions,
+)
+from pipeline.models.data_object_usage import exact_direct_table_ids
 from pipeline.steps.step7_analyze_code.summary_quality import (
     copied_callee_summary_id,
     missing_structural_summary_identities,
     normalize_canonical_summary,
     unsupported_code_comparison_claims,
 )
-from pipeline.models.analysis_context import AnalysisContext, dump_external_evidence, dump_referenced_symbols
+from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.analysis_finding import AnalysisFinding
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import (
@@ -63,6 +64,7 @@ from pipeline.models.semantic_frame import (
     merge_semantic_frames,
     normalize_semantic_frame_response,
     profile_prompt_json,
+    semantic_evidence_wire_bindings,
     slot_specs_json,
 )
 from pipeline.models.semantic_frame_projection import project_summary
@@ -70,350 +72,183 @@ from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
-from pipeline.models.table_insight_response_schema import (
-    frame_table_insights_response_model,
-    normalize_frame_table_insights_response,
+from pipeline.models.function_table_usage_response_schema import (
+    function_table_usage_prompt_assignments,
+    function_table_usages_response_model,
+    normalize_function_table_usages_response,
+)
+from pipeline.models.rule_meaning_frame import (
+    build_rule_meaning_packet,
+    project_rule_meanings,
+    rule_meaning_response_model,
 )
 from pipeline.quality_gates.rule_obligations import required_rule_rows
-from pipeline.steps.step7_analyze_code.rule_row_batching import materialize_and_validate_rules
+from pipeline.steps.step7_analyze_code.rule_row_batching import (
+    apply_rule_meaning_projections,
+    mark_rule_meanings_unavailable,
+    materialize_and_validate_rules,
+)
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.model_output_error import ModelOutputError
 from shared.events.runtime_logger import log_info, log_warning
 from shared.events.processing_events import track_processing
 from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
-from shared.config.settings import SETTINGS
 from pipeline.execution.analysis_handoff import (
-    INSIGHTS_LANE,
+    TABLE_USAGE_MEANINGS_LANE,
+    RULES_LANE,
     SUMMARY_LANE,
     SUMMARY_WAKE_PRIORITY,
 )
+from pipeline.execution.semantic_artifacts import persist_function_semantic_frame
 from pipeline.steps.step7_analyze_code.control_prompt import build_control_inventory
 from pipeline.steps.step7_analyze_code.branch_audit import (
     persist_branch_table,
     persist_coverage,
 )
 from pipeline.quality_gates.rule_audit_artifact import persist_rule_audit
-from pipeline.steps.step7_analyze_code.quality_findings import apply_analysis_findings
+from pipeline.steps.step7_analyze_code.function_meaning import finalize_function_meaning
+from pipeline.steps.step7_analyze_code.quality_findings import record_code_analysis_findings
 
 _STEP = "step7.analyze_code.three_split"
 
 
-def _summary_slot_batches(
+def _assigned_external_source_texts(
+    profile,
     slot_specs,
-    *,
-    profile=None,
-    common: dict | None = None,
-    max_input_tokens: int | None = None,
-):
-    """Return the complete target-owned summary assignment without a semantic cap.
-
-    The five FUNCTION roles are a closed taxonomy, not a limit on evidence-anchored
-    obligations.  Transport-sized partitioning is applied with the exact profile/source
-    closure at invocation time; this helper only proves exact-once assignment.
-    """
+    external_by_chunk: dict,
+) -> dict[str, str]:
+    """Map request-local evidence keys to their exact external source text."""
     specs = tuple(slot_specs)
-    if not specs:
-        raise ValueError("summary concern requires at least one semantic slot")
-    primary = tuple(spec for spec in specs if spec.family in {"FUNCTION", "STATEMENT"})
-    remaining = tuple(spec for spec in specs if spec not in primary)
-    ordered = (*primary, *remaining)
-    if (profile is None) != (common is None):
-        raise ValueError("summary batching requires profile and common together")
-    if profile is None:
-        batches = (tuple(ordered),)
-    else:
-        limit = max_input_tokens or SETTINGS.analysis_pipeline.batch_max_tokens
-        if limit <= 0:
-            raise ValueError("summary batch input token budget must be positive")
-        groups: list[tuple] = []
-        pending: list = []
-        for spec in ordered:
-            candidate = (*pending, spec)
-            values = _summary_batch_values(profile, candidate, common or {})
-            variable_tokens = _estimate_prompt_tokens("\n".join(
-                str(values[name]) for name in (
-                    "structural_profile", "applicable_slots", "code_body",
-                    "referenced_symbols", "external_evidence",
-                    "data_object_usages", "branch_index",
-                )
-            ))
-            if pending and variable_tokens > limit:
-                groups.append(tuple(pending))
-                pending = [spec]
-            else:
-                pending.append(spec)
-        if pending:
-            groups.append(tuple(pending))
-        batches = tuple(groups)
-    assigned = [spec.slot_id for spec in ordered]
-    if len(assigned) != len(set(assigned)) or set(assigned) != {
-        spec.slot_id for spec in specs
-    }:
-        raise ValueError("summary slot batching lost or duplicated a slot")
-    return batches
-
-
-def _estimate_prompt_tokens(text: str) -> int:
-    """Conservative deterministic estimate used only to split exact input closures."""
-    ascii_count = sum(1 for char in text if ord(char) < 128)
-    other_count = len(text) - ascii_count
-    return (ascii_count + 3) // 4 + (other_count * 2 + 2) // 3
-
-
-def _summary_batch_values(profile, batch_specs, common: dict) -> dict:
-    """Build one model packet from only its assigned evidence and exact source lines."""
-    specs = tuple(batch_specs)
     assigned_refs = {
         ref
         for spec in specs
         for ref in (spec.target_ref, *spec.evidence_refs)
     }
-    facts = [profile.evidence[ref] for ref in sorted(assigned_refs)]
-    source_text = str(common.get("raw_code_body") or "")
-    external_by_chunk = dict(common.get("_external_evidence_by_chunk") or {})
-    public_common = {
-        key: value for key, value in common.items() if not str(key).startswith("_")
+    evidence_bindings = semantic_evidence_wire_bindings(specs)
+    source_texts: dict[str, str] = {}
+    for ref in sorted(assigned_refs):
+        fact = profile.evidence[ref]
+        if fact.kind != "EXTERNAL":
+            continue
+        chunk_id = str(fact.attributes.get("chunk_id") or "")
+        source_text = external_by_chunk.get(chunk_id)
+        if source_text is None:
+            raise ValueError(
+                f"assigned external evidence payload is missing: {chunk_id or fact.id}"
+            )
+        source_texts[evidence_bindings[ref]] = str(source_text)
+    return source_texts
+
+
+def _direct_callee_outcomes_by_id(
+    ctx: AnalysisContext,
+    contexts: dict[str, AnalysisContext],
+) -> dict[str, dict[str, str]]:
+    """Return the direct callee outcomes that source and CALL facts cannot recover."""
+    meanings: dict[str, dict[str, str]] = {}
+    for callee_id in ctx.callees:
+        callee = contexts.get(callee_id)
+        if callee is None:
+            continue
+        meaning = (callee.summary or "").strip()
+        if not meaning:
+            continue
+        meanings[callee_id] = {
+            "callee": callee.signature or callee_id,
+            "meaning": meaning,
+        }
+    return meanings
+
+
+def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
+    """Build one model packet from only its assigned evidence and exact source lines."""
+    specs = tuple(slot_specs)
+    assigned_refs = {
+        ref
+        for spec in specs
+        for ref in (spec.target_ref, *spec.evidence_refs)
     }
+    source_text = str(analysis_inputs.get("raw_source_code") or "")
+    external_by_chunk = dict(analysis_inputs.get("external_source_text_by_id") or {})
     # Split only on LF so CR and a trailing empty physical line remain exact payload data.
     source_lines = source_text.split("\n") if source_text else []
     target_start = max(int(profile.target.start_line), 1)
-    owns_whole_target = any(
+    if not any(
         (spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY")
         or spec.family in {"STATEMENT", "CALL"}
         for spec in specs
-    )
-    if owns_whole_target:
-        selected_indexes = set(range(len(source_lines)))
-    else:
-        selected_indexes: set[int] = set()
-        for fact in facts:
-            if fact.kind in {"TARGET", "EXTERNAL"} or fact.start_line <= 0:
-                continue
-            start = max(fact.start_line - target_start, 0)
-            stop = min(fact.end_line - target_start + 1, len(source_lines))
-            selected_indexes.update(range(start, stop))
-    source_records = [
-        {"line": target_start + index, "text": source_lines[index]}
-        for index in sorted(selected_indexes)
-    ]
-    source_packet = json.dumps(
-        {
-            "schema": "source-closure/v1",
-            "target_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
-            "lines": source_records,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    ):
+        raise ValueError("summary assignment lacks a whole-target owner slot")
+    source_packet = "\n".join(
+        f"{target_start + index} | {source_lines[index]}"
+        for index in range(len(source_lines))
     )
 
-    by_kind: dict[str, list[dict]] = {}
-    for fact in facts:
-        by_kind.setdefault(fact.kind, []).append(
-            fact.model_dump(mode="json")
-        )
-    data_facts = by_kind.get("DATA_OBJECT", [])
-    external_payloads: list[dict] = []
-    for fact in by_kind.get("EXTERNAL", []):
-        chunk_id = str(fact["attributes"].get("chunk_id") or "")
-        payload = external_by_chunk.get(chunk_id)
-        if payload is None:
-            raise ValueError(
-                f"assigned external evidence payload is missing: {chunk_id or fact['id']}"
-            )
-        external_payloads.append(dict(payload))
-    reads = [
-        fact for fact in data_facts
-        if str(fact["attributes"].get("access") or "").upper() == "READ"
-    ]
-    writes = [
-        fact for fact in data_facts
-        if str(fact["attributes"].get("access") or "").upper() == "WRITE"
-    ]
-    table_ops = {
-        str(fact["attributes"].get("table_id") or ""): fact["attributes"].get("operation")
-        for fact in data_facts
-        if str(fact["attributes"].get("table_id") or "")
-    }
-
+    external_source_texts = _assigned_external_source_texts(
+        profile,
+        specs,
+        external_by_chunk,
+    )
+    callee_meanings_by_id = dict(analysis_inputs.get("callee_outcomes_by_id") or {})
+    callee_contexts = list(callee_meanings_by_id.values())
     def _dump(value: object) -> str:
         return json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
-    selected_text = "\n".join(record["text"] for record in source_records)
     return {
-        **public_common,
-        "id": profile.target.id,
-        "signature": str(
-            profile.evidence[next(
-                ref for ref in assigned_refs
-                if profile.evidence[ref].kind == "TARGET"
-            )].attributes.get("signature") or ""
-        ),
-        "source_file": profile.target.file,
-        "source_range": f"{profile.target.start_line}-{profile.target.end_line}",
         "code_body": source_packet,
-        "raw_code_body": selected_text,
-        "numbered_raw_code_body": source_packet,
         "structural_profile": profile_prompt_json(profile, specs),
         "applicable_slots": slot_specs_json(specs),
-        "reads": _dump(reads),
-        "writes": _dump(writes),
-        "direct_reads": _dump(reads),
-        "direct_writes": _dump(writes),
-        "table_ops": _dump(table_ops),
-        "data_object_usages": _dump(data_facts),
-        "column_usage_candidates": "{}",
-        "referenced_symbols": _dump(by_kind.get("SYMBOL", [])),
-        "external_evidence": _dump(external_payloads),
-        "callee_summaries": _dump(by_kind.get("CALL", [])),
-        "branch_index": _dump([
-            *by_kind.get("CONTROL", []), *by_kind.get("RULE", []),
-        ]),
-        "api_contracts": "[]",
-        "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
-        "ancestor_context": "(없음: 현재 evidence closure 밖)",
+        "callee_contexts": _dump(callee_contexts),
+        "external_evidence": _dump(external_source_texts),
     }
 
 
-async def _run_bounded_frame_summary(
-    *, profile, slot_specs, strategy_name: str, common: dict, invoke,
-    max_input_tokens: int | None = None,
+def _table_usage_meaning_values(
+    profile,
+    slot_specs,
+    direct_reads,
+    direct_writes,
+    table_descriptions: dict,
+    analysis_inputs: dict,
+) -> dict:
+    """Build one non-redundant Table meaning packet."""
+    specs = tuple(slot_specs)
+    return {
+        "assigned_table_usages": json.dumps(
+            function_table_usage_prompt_assignments(
+                profile, specs, direct_reads, direct_writes,
+            ),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "table_contexts": dump_linked_table_descriptions(
+            tuple(dict.fromkeys((*direct_reads, *direct_writes))),
+            table_descriptions,
+        ),
+        "code_body": analysis_inputs["numbered_source_code"],
+    }
+
+
+async def _run_frame_summary(
+    *, profile, slot_specs, strategy_name: str, analysis_inputs: dict, invoke,
 ) -> SummaryOutput:
-    stereotype_owners = tuple(
-        spec for spec in slot_specs
-        if spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+    specs = tuple(slot_specs)
+    if not specs:
+        raise ValueError("summary concern requires at least one semantic slot")
+    values = _summary_prompt_values(profile, specs, analysis_inputs)
+    output = await invoke(
+        values,
+        frame_summary_response_model(strategy_name, specs),
     )
-    if len(stereotype_owners) > 1:
-        raise ValueError(
-            "summary stereotype has multiple FUNCTION.RESPONSIBILITY owners"
-        )
-    stereotype_owner_id = (
-        stereotype_owners[0].slot_id
-        if stereotype_owners else tuple(slot_specs)[0].slot_id
+    frame = normalize_semantic_frame_response(output, profile, specs)
+    return project_summary(
+        frame,
+        summary=str(output.summary),
+        stereotype=str(output.stereotype),
     )
-
-    async def _collect(batch_specs, batch_label):
-        owns_stereotype = any(
-            spec.slot_id == stereotype_owner_id for spec in batch_specs
-        )
-        values = _summary_batch_values(profile, batch_specs, common)
-        try:
-            output = await invoke(
-                values,
-                frame_summary_response_model(
-                    strategy_name,
-                    batch_specs,
-                    include_stereotype=owns_stereotype,
-                ),
-                batch_label,
-            )
-        except ModelOutputError as error:
-            # A deadline after partial generation is not safe to retry unchanged.  A
-            # repetition abort can also be isolated to one slot in a multi-slot forced
-            # response.  Splitting changes both the required schema and prompt evidence
-            # closure, so each smaller request is independently validated.  A failing
-            # singleton remains an explicit model-output failure.
-            if error.kind not in {"deadline", "length", "repetition"} or len(batch_specs) == 1:
-                raise
-            midpoint = len(batch_specs) // 2
-            return (
-                *await _collect(batch_specs[:midpoint], f"{batch_label}a"),
-                *await _collect(batch_specs[midpoint:], f"{batch_label}b"),
-            )
-        frame = normalize_semantic_frame_response(output, profile, batch_specs)
-        return ((frame, str(getattr(output, "stereotype", ""))),)
-
-    collected = []
-    for batch_index, batch_specs in enumerate(_summary_slot_batches(
-        slot_specs,
-        profile=profile,
-        common=common,
-        max_input_tokens=max_input_tokens,
-    ), start=1):
-        collected.extend(await _collect(batch_specs, str(batch_index)))
-    frames = [frame for frame, _stereotype in collected]
-    stereotypes = [value for _frame, value in collected if value]
-    if len(stereotypes) != 1:
-        raise ValueError(
-            "summary stereotype must be produced exactly once across slot batches"
-        )
-    stereotype = stereotypes[0]
-    merged = merge_semantic_frames(
-        *frames,
-        required_slot_ids=(spec.slot_id for spec in slot_specs),
-    )
-    return project_summary(merged, stereotype=stereotype)
-
-
-async def run_summary(
-    code_id: str,
-    contexts: dict[str, AnalysisContext],
-    code_by_id: dict[str, CodeNode],
-    strategy: Any,
-    cost_budget: Optional[CostBudget] = None,
-    table_descriptions: Optional[dict[str, dict]] = None,
-    source_cache: Optional[SourceFileCache] = None,
-    llm_slots: Optional[PrioritySemaphore] = None,
-) -> SummaryOutput | ModelOutputError:
-    """#1 summary 단독 호출 — Round 첫 코드노드의 cache 워밍용.
-
-    ``analyze_code_step`` 가 Round 시작 시 첫 코드노드에 대해 호출 → cache 에
-    [공통지침 + 첫 코드노드 입력값] 올림. 결과를 ``precomputed_summary`` 로 첫 코드노드의
-    ``analyze_code_three_split`` 에 다시 전달해 #1 중복 호출 방지.
-
-    track_processing 이 start/done/failed 자동 emit (stream 인자 chain X).
-
-    실패는 runner가 원인·prompt를 기록한 뒤 그대로 전파한다.
-    """
-    if llm_slots is None:
-        raise ValueError("run_summary requires the run-scoped LLM semaphore")
-    ctx = contexts.get(code_id)
-    fn = code_by_id.get(code_id)
-    if ctx is None or fn is None:
-        log_warning(
-            _STEP, "warmup_input_missing",
-            "워밍 요약 입력 부재 — 이 Round 는 캐시 프리픽스 워밍 없이 진행한다.",
-            code_id=code_id, ctx_missing=ctx is None, node_missing=fn is None,
-        )
-        raise KeyError(
-            f"summary 입력 누락: code_id={code_id!r}, "
-            f"ctx_missing={ctx is None}, node_missing={fn is None}"
-        )
-
-    common, _inventory = _build_user_values(
-        ctx, fn, contexts, code_by_id,
-        table_descriptions or {},
-        source_cache or SourceFileCache(),
-    )
-    async def _call() -> SummaryOutput:
-        async with track_processing("CodeNode", code_id, sub_action="warmup_summary"):
-            profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
-            slot_specs = concerns["summary"]
-
-            async def _invoke(values, response_model, _batch_label):
-                async with llm_slots.at(SUMMARY_WAKE_PRIORITY, SUMMARY_LANE):
-                    return await run_yaml_rule(
-                        prompts_dir=Path(strategy.prompts_dir),
-                        rule_name="code_summary",
-                        user_values=values,
-                        response_model=response_model,
-                        budget=cost_budget,
-                    )
-
-            return await _run_bounded_frame_summary(
-                profile=profile,
-                slot_specs=slot_specs,
-                strategy_name=strategy.name,
-                common=common,
-                invoke=_invoke,
-            )
-
-    try:
-        return await _call()
-    except ModelOutputError as error:
-        return error
 
 
 async def analyze_code_three_split(
@@ -426,20 +261,25 @@ async def analyze_code_three_split(
     source_cache: Optional[SourceFileCache] = None,
     precomputed_summary: Optional[SummaryOutput | ModelOutputError] = None,
     precomputed_summary_supplied: bool = False,
+    summary_warm_event: asyncio.Event | None = None,
+    is_summary_warmup: bool = False,
     on_summary_ready: Optional[Callable[[str], None]] = None,
     llm_slots: Optional[PrioritySemaphore] = None,
 ) -> CodeNode:
     """코드노드 1개의 관심사 분석 결과를 ``CodeNode``에 적용해 반환.
 
-    흐름: summary/table insight LLM과 결정론 Rule 물질화를 독립 실행한다.
+    흐름: summary/rule-atom/table-usage meaning LLM을 독립 실행하고 Example은 검증 Rule에서 투영한다.
     ``precomputed_summary``가 있으면 summary만 재호출하지 않는다. 확정된 callee summary는
-    summary/table 입력에 남고 Rule은 parser-owned inventory만 사용한다.
+    summary와 Rule 입력에는 각 concern이 직접 소비하는 callee 결과만 한 번 남는다.
 
     Args:
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
-        precomputed_summary: Round 첫 코드노드의 워밍 결과.
+        precomputed_summary: 테스트나 명시적 호출자가 이미 얻은 Summary 결과.
         precomputed_summary_supplied: 워밍 호출이 이미 끝났는지 표시. 워밍 실패(None)도
-            여기서 다시 호출하지 않아 concern 최대 2회 계약을 지킨다.
+            여기서 같은 summary를 다시 호출하지 않아 exact-once 관심사 계약을 지킨다.
+        summary_warm_event: 첫 Summary 완료 뒤 다른 Summary를 시작시키는 run-scoped 신호.
+            Rule과 Table concern은 이 신호를 기다리지 않는다.
+        is_summary_warmup: 이 노드의 Summary가 신호를 여는 첫 호출인지 표시.
         on_summary_ready: summary 확정(경계 검사 후) 직후 호출되는 스케줄러 신호 —
             caller를 table concern 완료를 기다리지 않고 조기 투입하게 한다.
 
@@ -465,9 +305,11 @@ async def analyze_code_three_split(
 
     # 대상 사실의 한 정의처. 각 LLM concern template은 자기 책임 필드만 선택하고,
     # inventory는 Rule 물질화·감사의 구조 정답지다.
-    common, inventory = _build_user_values(
-        ctx, fn, contexts, code_by_id,
-        table_descriptions or {},
+    analysis_inputs, inventory = _prepare_analysis_inputs(
+        ctx,
+        fn,
+        contexts,
+        code_by_id,
         source_cache or SourceFileCache(),
     )
     prompts_dir = Path(strategy.prompts_dir)
@@ -501,8 +343,8 @@ async def analyze_code_three_split(
                 )
                 return await invoke()
 
-    # Server logs confirm KV caching, but recorded prompt bytes show that summary/table
-    # share only the global system prompt; their user prompts diverge after 3 chars.
+    # Server logs confirm KV caching, but recorded prompt bytes show that the three
+    # concerns share only the global system prompt; their user prompts diverge immediately.
     # The one global warmup remains, while per-node concerns can start independently.
     async def _collect_summary():
         if precomputed_summary_supplied:
@@ -510,12 +352,14 @@ async def analyze_code_three_split(
             if summary_out is None:
                 raise RuntimeError(f"precomputed summary missing: {code_id}")
         else:
+            if summary_warm_event is not None and not is_summary_warmup:
+                await summary_warm_event.wait()
             try:
                 profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
                 slot_specs = concerns["summary"]
-                async def _invoke(values, response_model, batch_label):
+                async def _invoke(values, response_model):
                     return await _track_split(
-                        f"split_summary_{batch_label}",
+                        "split_summary",
                         lambda: run_yaml_rule(
                             prompts_dir=prompts_dir,
                             rule_name="code_summary",
@@ -528,19 +372,21 @@ async def analyze_code_three_split(
                         payload_chars=sum(len(str(value)) for value in values.values()),
                     )
 
-                summary_out = await _run_bounded_frame_summary(
+                summary_out = await _run_frame_summary(
                     profile=profile,
                     slot_specs=slot_specs,
                     strategy_name=strategy.name,
-                    common=common,
+                    analysis_inputs=analysis_inputs,
                     invoke=_invoke,
                 )
             except ModelOutputError as error:
                 summary_out = error
 
+        if is_summary_warmup and summary_warm_event is not None:
+            summary_warm_event.set()
+
         findings: list[AnalysisFinding] = []
         if isinstance(summary_out, ModelOutputError):
-            fn.extra["questions"] = []
             findings.append(AnalysisFinding(
                 concern="summary",
                 status="unavailable",
@@ -550,14 +396,9 @@ async def analyze_code_three_split(
             ))
         else:
             _publish_semantic_frame(fn, ctx, summary_out)
-            fn.extra["summary_evidence_status"] = summary_out.evidence_status
-            fn.extra["summary_missing_context"] = list(summary_out.missing_context)
-            ctx.extra["summary_evidence_status"] = summary_out.evidence_status
-            ctx.extra["summary_missing_context"] = list(summary_out.missing_context)
             if summary_out.evidence_status == "insufficient":
                 fn.summary = None
                 fn.stereotype = None
-                fn.extra["questions"] = [q.model_dump() for q in summary_out.questions]
                 ctx.summary = ""
                 ctx.extra["summary_status"] = "needs_context"
                 findings.append(AnalysisFinding(
@@ -572,12 +413,12 @@ async def analyze_code_three_split(
                     on_summary_ready(code_id)
                 return findings
             summary_out.summary = normalize_canonical_summary(summary_out.summary)
-            callee_items = _callee_interface_items(ctx, contexts)
+            callee_outcomes = _direct_callee_outcomes_by_id(ctx, contexts)
             copied_from = copied_callee_summary_id(
                 summary_out.summary,
                 (
-                    (item["callee_id"], item["summary"])
-                    for item in callee_items
+                    (callee_id, item["meaning"])
+                    for callee_id, item in callee_outcomes.items()
                 ),
             )
             if copied_from is not None:
@@ -585,7 +426,6 @@ async def analyze_code_three_split(
                 # to display/search or to a caller's callee-summary input.
                 fn.summary = None
                 fn.stereotype = None
-                fn.extra["questions"] = []
                 ctx.summary = ""
                 ctx.extra["summary_status"] = "rejected"
                 _degrade_summary_semantic_frame(
@@ -612,7 +452,6 @@ async def analyze_code_three_split(
                 if missing_identities:
                     fn.summary = None
                     fn.stereotype = None
-                    fn.extra["questions"] = []
                     ctx.summary = ""
                     ctx.extra["summary_status"] = "rejected"
                     _degrade_summary_semantic_frame(
@@ -637,8 +476,8 @@ async def analyze_code_three_split(
                     unsupported_comparisons = unsupported_code_comparison_claims(
                         summary_out.summary,
                         "\n".join((
-                            common["raw_code_body"],
-                            common["branch_index"],
+                            analysis_inputs["raw_source_code"],
+                            analysis_inputs["control_branch_index"],
                             fn.expression or "",
                         )),
                         ctx.referenced_symbols,
@@ -646,7 +485,6 @@ async def analyze_code_three_split(
                     if unsupported_comparisons:
                         fn.summary = None
                         fn.stereotype = None
-                        fn.extra["questions"] = []
                         ctx.summary = ""
                         ctx.extra["summary_status"] = "rejected"
                         _degrade_summary_semantic_frame(
@@ -693,7 +531,7 @@ async def analyze_code_three_split(
     collection = materialize_and_validate_rules(
         inventory=inventory,
         target_scope=code_id,
-        source=common["raw_code_body"],
+        source=analysis_inputs["raw_source_code"],
         allowed_tables=sorted(set(ctx.reads) | set(ctx.writes)),
         read_tables=sorted(set(ctx.reads)),
         write_tables=sorted(set(ctx.writes)),
@@ -702,46 +540,103 @@ async def analyze_code_three_split(
         condition_bundle=fn.extra.get("_resolved_rule_condition_bundle"),
     )
 
+    async def _collect_rule_meanings():
+        conditions = collection.evidence.get("conditions") or {}
+        effects = collection.evidence.get("effects") or {}
+        rows = collection.evidence.get("rows") or {}
+        if not collection.rules:
+            return collection
+        if not conditions and not effects:
+            return mark_rule_meanings_unavailable(
+                collection,
+                target_scope=code_id,
+                reason="Rule row has no condition/effect atom from which to derive business meaning",
+                count_call=False,
+            )
+        packet = build_rule_meaning_packet(
+            collection.evidence,
+            numbered_source=analysis_inputs["numbered_source_code"],
+            referenced_symbols=ctx.referenced_symbols,
+            callee_outcomes_by_id=_direct_callee_outcomes_by_id(ctx, contexts),
+            table_descriptions=table_descriptions or {},
+            api_contracts=tuple(ctx.extra.get("api_contracts") or ()),
+        )
+        values = {
+            "rule_packet": json.dumps(
+                packet,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        try:
+            output = await _track_split(
+                "split_rules",
+                lambda: run_yaml_rule(
+                    prompts_dir=prompts_dir,
+                    rule_name="code_rule_meanings",
+                    user_values=values,
+                    response_model=rule_meaning_response_model(
+                        conditions, effects, rows,
+                    ),
+                    budget=cost_budget,
+                ),
+                lane=RULES_LANE,
+                payload_chars=len(values["rule_packet"]),
+            )
+        except ModelOutputError as error:
+            return mark_rule_meanings_unavailable(
+                collection,
+                target_scope=code_id,
+                reason=str(error),
+            )
+        return apply_rule_meaning_projections(
+            collection,
+            project_rule_meanings(output, collection.evidence),
+            target_scope=code_id,
+        )
+
     gather_map: dict[str, Any] = {
         "summary": _collect_summary(),
+        "rules": _collect_rule_meanings(),
     }
-    insight_reads = exact_direct_table_ids(ctx, "READ")
-    insight_writes = exact_direct_table_ids(ctx, "WRITE")
-    if insight_reads or insight_writes:
+    usage_reads = exact_direct_table_ids(ctx, "READ")
+    usage_writes = exact_direct_table_ids(ctx, "WRITE")
+    if usage_reads or usage_writes:
         profile, _all_specs, concerns = ctx.extra["_semantic_frame_plan"]
-        insight_specs = concerns["insights"]
-        insight_model = frame_table_insights_response_model(
-            profile,
-            insight_specs,
-            insight_reads,
-            insight_writes,
-            ctx.extra.get("table_op") or {},
+        usage_specs = concerns["table_usage_meanings"]
+        usage_model = function_table_usages_response_model(
+            profile, usage_specs, usage_reads, usage_writes,
         )
-        async def _collect_insights():
+        async def _collect_table_usage_meanings():
             try:
-                insight_values = {
-                    **common,
-                    "structural_profile": profile_prompt_json(profile, insight_specs),
-                    "applicable_slots": slot_specs_json(insight_specs),
-                }
+                usage_values = _table_usage_meaning_values(
+                    profile,
+                    usage_specs,
+                    usage_reads,
+                    usage_writes,
+                    table_descriptions or {},
+                    analysis_inputs,
+                )
                 output = await _track_split(
-                    "split_insights",
+                    "split_table_usage_meanings",
                     lambda: run_yaml_rule(
-                        prompts_dir=prompts_dir, rule_name="code_table_insights",
-                        user_values=insight_values,
-                        response_model=insight_model,
+                        prompts_dir=prompts_dir,
+                        rule_name="code_table_usage_meanings",
+                        user_values=usage_values,
+                        response_model=usage_model,
                         budget=cost_budget,
                     ),
                     payload_chars=sum(
-                        len(str(value)) for value in insight_values.values()
+                        len(str(value)) for value in usage_values.values()
                     ),
-                    lane=INSIGHTS_LANE,
+                    lane=TABLE_USAGE_MEANINGS_LANE,
                 )
                 return output, None
             except ModelOutputError as error:
                 return None, error
 
-        gather_map["insights"] = _collect_insights()
+        gather_map["table_usage_meanings"] = _collect_table_usage_meanings()
 
     gather_tasks = {
         name: asyncio.create_task(coroutine)
@@ -759,25 +654,25 @@ async def analyze_code_three_split(
         raise
     done = dict(zip(gather_tasks, results))
     quality_findings: list[AnalysisFinding] = done["summary"]
-    insights_result = done.get("insights")
-    insights_out = insights_result[0] if insights_result is not None else None
-    if insights_result is not None and insights_result[1] is not None:
-        error = insights_result[1]
+    collection = done["rules"]
+    usage_result = done.get("table_usage_meanings")
+    usage_output = usage_result[0] if usage_result is not None else None
+    if usage_result is not None and usage_result[1] is not None:
+        error = usage_result[1]
         quality_findings.append(AnalysisFinding(
-            concern="table_insights",
+            concern="function_table_usage_meanings",
             status="unavailable",
             target_id=code_id,
             reasons=(str(error),),
             evidence_rule=error.rule_name,
         ))
-    if insights_out is not None:
-        insights_out = normalize_frame_table_insights_response(
-            insights_out,
+    if usage_output is not None:
+        usage_output = normalize_function_table_usages_response(
+            usage_output,
             profile,
-            insight_specs,
-            insight_reads,
-            insight_writes,
-            ctx.extra.get("column_usage_candidates") or {},
+            usage_specs,
+            usage_reads,
+            usage_writes,
         )
 
     obligation_rows = len(required_rule_rows(inventory))
@@ -785,20 +680,29 @@ async def analyze_code_three_split(
     # fan-in 머지 → CodeNode 에 적용 (#1 의미 + 결정론 검색 필드는 이미 확정됐다).
     # 자연어 규칙 시절의 품질·근거성 사후 관측은 은퇴 — 결정론 채점(grade_rules)이
     # 생성 시점에 행 단위로 대체했다(spec 116).
-    fn.extra["table_insights"] = (
-        [t.model_dump() for t in insights_out.table_insights] if insights_out else []
+    function_table_usages = (
+        [item.model_dump() for item in usage_output.function_table_usages]
+        if usage_output else []
     )
-    fn.extra["_insight_semantic_frame"] = (
-        insights_out.semantic_frame if insights_out else None
+    if function_table_usages:
+        fn.extra["function_table_usages"] = function_table_usages
+    else:
+        fn.extra.pop("function_table_usages", None)
+    direct_column_evidence = dict(
+        ctx.extra.get("column_usage_candidates") or {}
     )
+    if direct_column_evidence:
+        fn.extra["direct_column_usage_evidence_by_table"] = direct_column_evidence
+    else:
+        fn.extra.pop("direct_column_usage_evidence_by_table", None)
     serialized, unresolved_tables = serialize_rules(
-        collection.rules, fn.signature or fn.id, ctx.reads, ctx.writes,
+        collection.rules, ctx.reads, ctx.writes,
         ctx.extra.get("table_op"), ctx.extra.get("table_identity_aliases") or {},
     )
     fn.extra["rules"] = serialized
     quality_findings.extend(collection.findings)
     try:
-        _finalize_semantic_frame(fn, ctx, insights_out)
+        _finalize_semantic_frame(fn, ctx, usage_output)
     except ValueError as error:
         quality_findings.append(AnalysisFinding(
             concern="semantic_frame",
@@ -807,12 +711,11 @@ async def analyze_code_three_split(
             reasons=(str(error),),
             evidence_rule="semantic-frame/v1",
         ))
-        fn.extra.pop("semantic_frame", None)
-        fn.extra.pop("semantic_frame_schema", None)
-        ctx.extra.pop("semantic_frame", None)
-        ctx.extra.pop("semantic_frame_schema", None)
+        fn.extra.pop("semantic_frame_artifact_hash", None)
+        ctx.extra.pop("semantic_frame_artifact_hash", None)
     finding_records = [finding.to_dict() for finding in quality_findings]
-    apply_analysis_findings(fn, quality_findings, component=_STEP)
+    record_code_analysis_findings(fn, quality_findings, component=_STEP)
+    finalize_function_meaning(fn, quality_findings)
     fn.extra["rule_grading"] = {
         "obligation_rows": obligation_rows,
         "accepted_rows": [rule.anchor_line for rule in collection.rules],
@@ -829,7 +732,6 @@ async def analyze_code_three_split(
     # ctx 에 나머지 분석 결과 부착 — 부모(PARENT_OF)의 table 입력.
     # (summary 는 자기 concern 완료 시 즉시 공개됨 — CALLS 의존 조기 해제.)
     ctx.extra["rules"] = fn.extra["rules"]
-    ctx.extra["questions"] = fn.extra["questions"]
     return fn
 
 
@@ -841,7 +743,7 @@ def _apply_summary_fields(
 ) -> AnalysisFinding | None:
     """#1 summary 에서만 나오는 코드노드 필드를 확정한다 (spec 096).
 
-    #2(insights)·#3(rules)는 이 의미/검색 필드를 읽지도 쓰지도 않는다. 그래서 노드 완료가
+    #2(table usage)·#3(rules)는 이 의미/검색 필드를 읽지도 쓰지도 않는다. 그래서 노드 완료가
     아니라 #1 확정 시점에 넣어도 값이 같고, 후처리는 그만큼 일찍 시작할 수 있다.
     stereotype 은 ontology_roles.yaml 풀과 검증 (없으면 빈 문자열로 강제).
     """
@@ -857,9 +759,6 @@ def _apply_summary_fields(
         )
     fn.summary = summary_out.summary
     fn.stereotype = stereotype or None
-    fn.extra["questions"] = [q.model_dump() for q in summary_out.questions]
-    fn.extra["summary_evidence_status"] = summary_out.evidence_status
-    fn.extra["summary_missing_context"] = list(summary_out.missing_context)
     if not violation:
         return None
     return AnalysisFinding(
@@ -893,55 +792,39 @@ def _degrade_summary_semantic_frame(
     degraded = mark_semantic_frame_insufficient(frame, (reason,))
     fn.extra["_summary_semantic_frame"] = degraded
     ctx.extra["_summary_semantic_frame"] = degraded
-    fn.extra["summary_evidence_status"] = "insufficient"
-    fn.extra["summary_missing_context"] = [reason]
-    ctx.extra["summary_evidence_status"] = "insufficient"
-    ctx.extra["summary_missing_context"] = [reason]
 
 
 def _finalize_semantic_frame(
     fn: CodeNode,
     ctx: AnalysisContext,
-    insights_out: object | None,
+    usage_output: object | None,
 ) -> None:
     plan = ctx.extra.get("_semantic_frame_plan")
     if plan is None:
         raise ValueError(f"semantic frame plan missing: {fn.id}")
     _profile, all_specs, _concerns = plan
     frames = [fn.extra.get("_summary_semantic_frame")]
-    if insights_out is not None:
-        frames.append(getattr(insights_out, "semantic_frame", None))
+    if usage_output is not None:
+        frames.append(getattr(usage_output, "semantic_frame", None))
     merged = merge_semantic_frames(
         *frames,
         required_slot_ids=(spec.slot_id for spec in all_specs),
     )
-    payload = merged.model_dump(mode="json", by_alias=True)
-    fn.extra["semantic_frame_schema"] = merged.schema_version
-    fn.extra["semantic_frame"] = payload
-    ctx.extra["semantic_frame_schema"] = merged.schema_version
-    ctx.extra["semantic_frame"] = payload
+    artifact_hash = persist_function_semantic_frame(merged)
+    fn.extra["semantic_frame_artifact_hash"] = artifact_hash
+    ctx.extra["semantic_frame_artifact_hash"] = artifact_hash
 
 
-def _build_user_values(
+def _prepare_analysis_inputs(
     ctx: AnalysisContext,
     fn: CodeNode,
     contexts: dict[str, AnalysisContext],
     code_by_id: dict[str, CodeNode],
-    table_descriptions: dict[str, dict],
     cache: SourceFileCache,
 ) -> tuple[dict, object]:
-    """3 yaml 공통 ``user_template`` 의 치환 값 ([공통 context]) + 분기 대장.
-
-    DBMS 부모 range 는 ``code_body`` 가 compact (자식 구간 → 자식 summary 치환).
-    ``ancestor_context`` 는 조상 range 골격 (Framework 는 평면이라 "(없음)").
-    ``reads`` / ``writes`` 는 테이블 fqn + DDL 설명 — LLM 이 테이블 의미를 알고 분석.
-
-    분기 대장(BranchInventory)은 프롬프트 branch_index 와 행 채점·배칭이 **같은
-    정의처**를 공유해야 하므로 여기서 1회 만들어 함께 돌려준다 (spec 116).
-    """
+    """Prepare one canonical source/context packet and its branch inventory."""
     excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
-    raw_body = raw_body_for(ctx, contexts, cache)
-    prompt_body = body_for(ctx, contexts, cache)
+    raw_body = exact_source_body(ctx, cache)
     inventory = build_control_inventory(fn, ctx, cache)
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
@@ -965,102 +848,12 @@ def _build_user_values(
     concerns = semantic_concern_slots(slot_specs)
     ctx.extra["_semantic_frame_plan"] = (profile, slot_specs, concerns)
     values = {
-        "id": fn.id,
-        "signature": fn.signature,
-        "code_body": prompt_body,
-        "raw_code_body": raw_body,
-        "numbered_raw_code_body": excerpt.numbered_text,
-        "source_file": fn.file_path,
-        "source_range": f"{ctx.start_line}-{ctx.end_line}",
-        "source_status": excerpt.status,
-        "coordinate_system": excerpt.coordinate_system,
-        "module_intent": "(없음: 파생 prose는 의미 근거로 전달하지 않음)",
-        "referenced_symbols": dump_referenced_symbols(ctx.referenced_symbols),
-        "external_evidence": dump_external_evidence(ctx.external_evidence),
-        "_external_evidence_by_chunk": {
-            item.id: item.as_exact_prompt_dict()
-            for item in ctx.external_evidence
+        "raw_source_code": raw_body,
+        "numbered_source_code": excerpt.numbered_text,
+        "external_source_text_by_id": {
+            item.id: item.text for item in ctx.external_evidence
         },
-        "callee_summaries": _format_callee_summaries(ctx, contexts),
-        "ancestor_context": ancestor_context(ctx, contexts, cache),
-        "reads": dump_table_refs(ctx.reads, table_descriptions, include_columns=False),
-        "writes": dump_table_refs(ctx.writes, table_descriptions, include_columns=False),
-        "direct_reads": dump_table_refs(
-            exact_direct_table_ids(ctx, "READ"),
-            table_descriptions,
-            include_columns=False,
-        ),
-        "direct_writes": dump_table_refs(
-            exact_direct_table_ids(ctx, "WRITE"),
-            table_descriptions,
-            include_columns=False,
-        ),
-        "table_ops": json.dumps(
-            ctx.extra.get("table_op") or {},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "data_object_usages": dump_data_object_usages(
-            ctx.extra.get("data_object_usages") or ()
-        ),
-        "column_usage_candidates": json.dumps(
-            ctx.extra.get("column_usage_candidates") or {},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "structural_profile": profile_prompt_json(profile, concerns["summary"]),
-        "applicable_slots": slot_specs_json(concerns["summary"]),
-        # spec 102: 규칙이 고를 수 있는 근거 분기 후보. 분할 3 템플릿만 참조한다.
-        "branch_index": inventory.branch_index(),
-        # spec 116 §19: SKILL 문서 보증 API 값 계약 — 분할 3 템플릿만 참조한다.
-        "api_contracts": (
-            json.dumps(
-                [dict(contract) for contract in ctx.extra["api_contracts"]],
-                ensure_ascii=False, separators=(",", ":"),
-            )
-            if ctx.extra.get("api_contracts") else "(없음)"
-        ),
+        "callee_outcomes_by_id": _direct_callee_outcomes_by_id(ctx, contexts),
+        "control_branch_index": inventory.branch_index(),
     }
     return values, inventory
-
-
-def _callee_interface_items(
-    ctx: AnalysisContext,
-    contexts: dict[str, AnalysisContext],
-) -> list[dict]:
-    """Canonical callee summaries used by display/search/bottom-up exactly once.
-
-    Bottom-up DAG 진행 중이면 callee summary가 ``contexts``에 있음.
-    아직 없으면(cycle 내부·분석 실패) 다른 의미 필드로 대신하지 않고 목록에서 제외한다.
-    """
-    items: list[dict] = []
-    for callee_id in ctx.callees:
-        c = contexts.get(callee_id)
-        if c is None:
-            continue
-        text = (c.summary or "").strip()
-        if text:
-            items.append({
-                "relation": "TARGET_CALLS_CALLEE",
-                "callee_id": callee_id,
-                "summary": text,
-                "evidence_status": c.extra.get("summary_evidence_status") or "sufficient",
-                "missing_context": list(c.extra.get("summary_missing_context") or ()),
-            })
-    return items
-
-
-def _format_callee_summaries(
-    ctx: AnalysisContext,
-    contexts: dict[str, AnalysisContext],
-) -> str:
-    """Render each available callee canonical summary exactly once."""
-    if not ctx.callees:
-        return "(없음)"
-    items = _callee_interface_items(ctx, contexts)
-    return (
-        json.dumps(items, ensure_ascii=False, separators=(",", ":"))
-        if items else "(없음)"
-    )

@@ -95,28 +95,27 @@ class DmlEffectOwnershipTest(unittest.TestCase):
 
 
 class UndeclaredDmlTypeFailsLoudlyTest(unittest.TestCase):
-    """S6 — 미선언 ``dml_type`` 은 조용히 버리지 않고 좌표와 함께 실패한다 (헌법 IV)."""
+    """S6 — Parser WRITE에 대응하는 DML 의미가 없으면 좌표와 함께 실패한다."""
 
     def test_s6_unknown_dml_type_raises_with_coordinates(self):
         from graph.schema.graph_nodes import CodeNode
+        from pipeline.models.data_object_usage import DataObjectUsageEvidence
         from pipeline.steps.step6_build_context.build_context_step import _table_op_lines
-
-        class _Edge:
-            source_id = "code:p.sql:p@1:UPSERTX@3"
-            target_id = "T"
-            relation = "WRITES"
-            dml_type = "UPSERTX"
 
         nodes = [
             CodeNode(id="code:p.sql:p@1", signature="p", file_path="p.sql", start_line=1,
                      end_line=8, label="PROCEDURE", name="p", code_text="", owner_id="p.sql",
                      parent_id=None),
             CodeNode(id="code:p.sql:p@1:UPSERTX@3", signature="x", file_path="p.sql",
-                     start_line=3, end_line=3, label="MERGE", name="", code_text="",
+                     start_line=3, end_line=3, label="UPSERTX", name="", code_text="",
                      owner_id="p.sql", parent_id="code:p.sql:p@1"),
         ]
-        with self.assertRaisesRegex(ValueError, r"미선언 dml_type 'UPSERTX'.*p\.sql:3"):
-            _table_op_lines([_Edge()], nodes)
+        nodes[1].extra["data_object_usages"] = (DataObjectUsageEvidence(
+            source_id=nodes[1].id, raw_reference="T", name="T", access="WRITE",
+            evidence_file="p.sql", evidence_line=3,
+        ),)
+        with self.assertRaisesRegex(ValueError, r"미선언 data-object access/dml.*p\.sql:3"):
+            _table_op_lines(nodes)
 
 
 if __name__ == "__main__":

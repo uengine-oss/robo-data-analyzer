@@ -21,28 +21,28 @@ from graph.schema import graph_nodes as gn
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.schema import rel_types as rt
 from graph.node_upsert import nonempty
+from pipeline.languages import ROUTINE_LABELS
 
 
 # label 필드 없는 노드 종류의 고정 라벨 (나머지는 node.label = antlr type).
 _FIXED_NODE_LABEL: dict[type, str] = {
     gn.Table: "TABLE",
-    gn.ObjectReference: "OBJECT_REFERENCE",
     gn.Column: "COLUMN",
     gn.Package: "PACKAGE",
     gn.Schema: "SCHEMA",
     gn.Rule: "RULE",
     gn.Example: "EXAMPLE",
-    gn.Question: "QUESTION",
-    gn.ProjectFile: "PROJECT_FILE",
 }
 
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
+    "meaning_status", "missing_context_count", "missing_context_artifact_hash",
     "file_path", "start_line", "end_line", "owner_id", "dtype",
     # RULE/EXAMPLE 파이썬 leaf 계약 (spec 116)
-    "rule_id", "anchor_line", "cond", "kind",
-    "given", "when", "then", "text", "reason",
+    "anchor_line", "structural_condition", "structural_effects",
+    "business_condition", "business_effects",
+    "given_conditions", "expected_effects", "text", "reason",
     "keys", "semantic_kind", "provenance", "status", "category",
     "raw_reference", "catalog", "catalog_quoted", "schema", "schema_quoted", "name_quoted",
     "database_link", "database_link_components_json", "datasource",
@@ -60,10 +60,7 @@ _EDGE_SPEC: dict[type, tuple[str, str, str]] = {
     ge.InitBy:     (rt.INIT_BY,    "from_id", "source_id"),
     ge.HasRule:    (rt.HAS_RULE,   "source_id", "target_id"),
     ge.HasExample: (rt.HAS_EXAMPLE, "source_id", "target_id"),
-    ge.HasQuestion: (rt.HAS_QUESTION, "source_id", "target_id"),
     ge.AffectsTable: (rt.AFFECTS_TABLE, "source_id", "target_id"),
-    ge.ReferTo: (rt.REFER_TO, "source_id", "target_id"),
-    ge.HasChunk: (rt.HAS_CHUNK, "source_id", "target_id"),
 }
 
 
@@ -90,6 +87,9 @@ def _node_labels(node) -> list[str]:
 
 def _node_props(node) -> dict:
     props = {k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS}
+    if isinstance(node, gn.CodeNode) and node.label not in ROUTINE_LABELS:
+        props.pop("summary", None)
+        props.pop("stereotype", None)
     return nonempty(props)
 
 
@@ -123,36 +123,14 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
     elif type(edge) is ge.References:
         props = {"evidence_line": edge.evidence_line}
     elif type(edge) is ge.HasRule:
-        props = (
-            {
-                "occurrence_id": edge.occurrence_id,
-                "ordinal": edge.ordinal,
-                "anchor_line": edge.anchor_line,
-            }
-            if edge.occurrence_id
-            else {}
-        )
+        props = {"ordinal": edge.ordinal}
     elif type(edge) is ge.HasExample:
-        props = (
-            {
-                "occurrence_id": edge.occurrence_id,
-                "ordinal": edge.ordinal,
-            }
-            if edge.occurrence_id
-            else {}
-        )
+        props = {"ordinal": edge.ordinal}
     elif type(edge) is ge.AffectsTable:
         props = {
             "access": edge.access,
             "op": edge.op,
             "op_source": edge.op_source,
-        }
-    elif type(edge) is ge.ReferTo:
-        props = {
-            "matched_key": edge.matched_key,
-            "evidence_file": edge.evidence_file,
-            "evidence_line": edge.evidence_line,
-            "via_symbol": edge.via_symbol,
         }
     else:
         props = {}

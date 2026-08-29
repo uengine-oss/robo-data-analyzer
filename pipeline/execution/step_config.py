@@ -1,13 +1,17 @@
 """step 함수 진입부 공용 — ``RunnableConfig`` → ``configurable`` dict.
 
 LangGraph step 함수는 모두 같은 보일러플레이트로 ``configurable`` 에서 project /
-neo_client / strategy / run / cost_budget / stream 을 꺼낸다. 그 한 줄을 여기로 모은다.
+strategy / run / cost_budget / stream 을 꺼낸다. 그 한 줄을 여기로 모은다.
 """
 from __future__ import annotations
 
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
+
+
+class StepConfigurationError(RuntimeError):
+    """A required workflow value is absent at a pipeline step boundary."""
 
 
 def step_config(config: Optional[RunnableConfig]) -> dict:
@@ -29,3 +33,13 @@ def step_config(config: Optional[RunnableConfig]) -> dict:
             f"got {type(configurable).__name__}"
         )
     return configurable
+
+
+def require_step_config_value(configurable: dict, name: str, *, step: str):
+    """Return one required configured value instead of silently skipping work."""
+    value = configurable.get(name)
+    if value is None:
+        raise StepConfigurationError(
+            f"{step} requires RunnableConfig.configurable[{name!r}]"
+        )
+    return value

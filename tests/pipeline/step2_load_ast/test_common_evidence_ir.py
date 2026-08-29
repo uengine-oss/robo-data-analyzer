@@ -653,7 +653,7 @@ def test_v11_import_bindings_preserve_grammar_owned_structure(
     ("source_id", "source", "entry", "legacy_name"),
     _structured_import_cases(),
 )
-def test_v11_framework_binding_keeps_entry_ranges_without_reparsing_legacy_name(
+def test_v11_framework_binding_uses_entry_ranges_without_retaining_tree_preview(
     source_id: str, source: str, entry: dict, legacy_name: str,
 ) -> None:
     raw = _structured_import_artifact(
@@ -673,7 +673,8 @@ def test_v11_framework_binding_keeps_entry_ranges_without_reparsing_legacy_name(
     assert len(result.import_refs) == 1
     ref = result.import_refs[0]
     assert ref["evidence_version"] == "1.1.0"
-    assert ref["legacy_name"] == f"preview-only:{legacy_name}"
+    assert "legacy_name" not in ref and "name" not in ref
+    assert "file" not in ref and "presence" not in ref
     assert ref["entries"][0]["import_kind"] == entry["importKind"]
     assert ref["entries"][0]["target_kind"] == entry["targetKind"]
     assert ref["entries"][0]["entry_ordinal"] == 0
@@ -732,7 +733,7 @@ def test_framework_imports_bind_canonical_ids_ranges_and_physical_lines() -> Non
         assert [ref["import_id"] for ref in result.import_refs] == [
             fact["factId"] for fact in raw["evidence"]["facts"]
         ]
-        assert [ref["name"] for ref in result.import_refs] == [
+        assert [ref["entries"][0]["target"] for ref in result.import_refs] == [
             "<local.h>", '"quoted.h"', "<spliced.h>", "<한글.h>",
         ]
         assert [(ref["line"], ref["end_line"]) for ref in result.import_refs] == [

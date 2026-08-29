@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from graph.neo4j_client import Neo4jClient
 from graph.ownership import ANALYZER_GRAPH_OWNER
+from graph.publication_schema import PRODUCT_NODE_TYPES
 
 
 # 노드 유일성 제약 (UNIQUE) — 모든 노드 식별 키 = ``id`` 단일 (종류 무관).
@@ -29,15 +30,24 @@ LEGACY_ID_CONSTRAINT_NAMES: tuple[str, ...] = (
     "schema_db_name",
 )
 
+PRODUCT_CONSTRAINTS: tuple[str, ...] = tuple(
+    "CREATE CONSTRAINT "
+    f"uniq_product_{label.lower()}_scope_generation IF NOT EXISTS "
+    f"FOR (n:{label}) "
+    "REQUIRE (n.analysis_scope_id, n.generation_id, n.stable_id) IS UNIQUE"
+    for label in sorted(PRODUCT_NODE_TYPES)
+)
+
 CONSTRAINTS: list[str] = [
-    "CREATE CONSTRAINT uniq_analyzer_owned_generation IF NOT EXISTS "
+    "CREATE CONSTRAINT uniq_analyzer_owned_scope_generation IF NOT EXISTS "
     "FOR (n:ANALYZER_OWNED) "
-    "REQUIRE (n.graph_owner, n.generation_id, n.id) IS UNIQUE",
-    "CREATE CONSTRAINT uniq_analyzer_generation_manifest IF NOT EXISTS "
-    "FOR (g:ANALYZER_GENERATION) REQUIRE (g.graph_owner, g.run_id) IS UNIQUE",
-    "CREATE CONSTRAINT uniq_analyzer_active_generation IF NOT EXISTS "
-    "FOR (g:ANALYZER_ACTIVE_GENERATION) REQUIRE (g.graph_owner, g.key) IS UNIQUE",
-]
+    "REQUIRE (n.graph_owner, n.analysis_scope_id, n.generation_id, n.id) IS UNIQUE",
+    "CREATE CONSTRAINT uniq_analysis_generation IF NOT EXISTS "
+    "FOR (g:AnalysisGeneration) "
+    "REQUIRE (g.graph_owner, g.analysis_scope_id, g.generation_id) IS UNIQUE",
+    "CREATE CONSTRAINT uniq_analysis_scope IF NOT EXISTS "
+    "FOR (s:AnalysisScope) REQUIRE (s.graph_owner, s.analysis_scope_id) IS UNIQUE",
+] + list(PRODUCT_CONSTRAINTS)
 
 # 조회 인덱스 (안정 라벨만 — 코드 노드는 열린 antlr type 라벨이라 id 키로 조회).
 INDEXES: list[str] = [
@@ -52,24 +62,11 @@ INDEXES: list[str] = [
 # 지울 수 있도록 legacy 데이터 라벨로만 유지한다 (active producer/consumer 아님).
 LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
     "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
-    "QUESTION", "RULE", "SCHEMA", "TABLE", "OBJECT_REFERENCE",
+    "QUESTION", "RULE", "SCHEMA", "TABLE",
     "PROJECT_FILE", "EXTERNAL_CHUNK",
     "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
     "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
 )
-
-LEGACY_OWNER_MIGRATION_QUERY = """
-MATCH (n)
-WHERE n.graph_owner IS NULL
-  AND (
-    any(label IN labels(n) WHERE label IN $stable_labels)
-    OR 'EXTERNAL' IN labels(n)
-    OR (n.file_path IS NOT NULL AND n.start_line IS NOT NULL AND n.end_line IS NOT NULL)
-  )
-SET n.graph_owner = $graph_owner
-RETURN count(n) AS migrated
-"""
-
 
 def _legacy_analyzer_id_constraint_names(
     constraints: list[dict], analyzer_labels: set[str],
@@ -86,7 +83,10 @@ def _legacy_analyzer_id_constraint_names(
             and labels[0] in analyzer_labels
             and properties == ["id"]
             and name
-            and name != "uniq_analyzer_owned_generation"
+            and name not in {
+                "uniq_analyzer_owned_generation",
+                "uniq_analyzer_owned_scope_generation",
+            }
         ):
             names.append(name)
     return sorted(set(names))
@@ -136,20 +136,3 @@ RETURN name, type, labelsOrTypes, properties
         )
     for stmt in CONSTRAINTS + INDEXES:
         await client.run_query(stmt)
-
-
-async def wipe_graph(client: Neo4jClient) -> None:
-    """현재 Analyzer가 소유한 분석 그래프만 초기화한다.
-
-    공유 Neo4j의 Fabric 연결 registry와 Architect 설계 그래프는 보존한다. 무소유 레거시
-    분석 노드는 별도 검증된 migration에서 owner를 부여한 뒤 이 경계로 삭제한다.
-    """
-    params = {
-        "graph_owner": ANALYZER_GRAPH_OWNER,
-        "stable_labels": list(LEGACY_ANALYZER_STABLE_LABELS),
-    }
-    await client.run_query(LEGACY_OWNER_MIGRATION_QUERY, params)
-    await client.run_query(
-        "MATCH (n) WHERE n.graph_owner = $graph_owner DETACH DELETE n",
-        {"graph_owner": ANALYZER_GRAPH_OWNER},
-    )

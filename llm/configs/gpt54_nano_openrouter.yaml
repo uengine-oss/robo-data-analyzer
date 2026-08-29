@@ -29,7 +29,7 @@ sampling:
 
 # OpenRouter 비표준 옵션 — extra_body 로만 전달.
 # provider.sort: throughput — 가장 빠른 OpenAI 경로 자동 선택.
-# allow_fallbacks: true — 1위 provider 실패 시 다음으로 자동 fallback.
+# allow_fallbacks: false — 선택된 provider 실패 시 다른 runtime으로 자동 전환하지 않는다.
 #
 # ★ reasoning: gpt-5.4-nano 기본값 = none (운영자 검증). 명시 안 박으면 모델 기본값
 #   적용 — 토큰/latency 최소. 정확도는 시스템 프롬프트 (지침) 로 끌어올림.
@@ -37,4 +37,4 @@ sampling:
 extra_body:
   provider:
     sort: throughput
-    allow_fallbacks: true
+    allow_fallbacks: false

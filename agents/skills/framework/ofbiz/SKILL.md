@@ -43,7 +43,7 @@ OFBiz 는 entity 와 table 매핑이 ``entitymodel.xml`` 에 명시:
 - ``<entity entity-name="OrderHeader" table-name="ORDER_HEADER">``
 - 이 매핑을 우선 사용. ddl_transform 은 매핑 없는 entity 의 fallback.
 
-## codebase_notes 예시
+## 접근 의미
 
 > Apache OFBiz 프로젝트. ``delegator`` 가 모든 DB 접근. entity-name 의 첫 인자가 핵심.
 > entitymodel.xml 이 진실 — 거기서 entity → table 매핑 우선.

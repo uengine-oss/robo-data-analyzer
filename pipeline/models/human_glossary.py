@@ -22,20 +22,19 @@ from pydantic import (
 )
 import yaml
 
+from shared.files.run_cache_context import read_run_bytes
+
 
 GLOSSARY_RELATIVE_PATH = Path("analysis") / "glossary.yaml"
-MAX_GLOSSARY_BYTES = 1_048_576
-MAX_GLOSSARY_TERMS = 1_000
-MAX_ALIASES_PER_TERM = 20
 
 
 class _HumanGlossaryTermInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    canonical: StrictStr = Field(..., min_length=1, max_length=60)
-    aliases: list[StrictStr] = Field(..., max_length=MAX_ALIASES_PER_TERM)
-    meaning: StrictStr = Field(..., min_length=1, max_length=500)
-    category: StrictStr = Field(..., max_length=100)
+    canonical: StrictStr = Field(..., min_length=1)
+    aliases: list[StrictStr]
+    meaning: StrictStr = Field(..., min_length=1)
+    category: StrictStr
 
     @model_validator(mode="after")
     def _reject_implicit_cleanup(self) -> "_HumanGlossaryTermInput":
@@ -58,7 +57,7 @@ class _HumanGlossaryInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal["1.0"]
-    terms: list[_HumanGlossaryTermInput] = Field(..., max_length=MAX_GLOSSARY_TERMS)
+    terms: list[_HumanGlossaryTermInput]
 
     @model_validator(mode="after")
     def _reject_cross_term_collisions(self) -> "_HumanGlossaryInput":
@@ -118,11 +117,7 @@ def load_human_glossary(corpus_root: Path) -> HumanGlossary:
     if not path.is_file():
         raise ValueError(f"human glossary path is not a file: {path}")
 
-    payload = path.read_bytes()
-    if len(payload) > MAX_GLOSSARY_BYTES:
-        raise ValueError(
-            f"human glossary exceeds {MAX_GLOSSARY_BYTES} bytes: {path}"
-        )
+    payload = read_run_bytes(path)
     try:
         text = payload.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:

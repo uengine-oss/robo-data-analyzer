@@ -43,6 +43,27 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             SimpleNamespace(name=name, name_quoted=False) for name in names
         )
 
+    @staticmethod
+    def _read_usages(
+        source_id: str,
+        source_file: str,
+        *table_ids: str,
+        line: int = 1,
+    ) -> tuple[DataObjectUsageEvidence, ...]:
+        return tuple(
+            DataObjectUsageEvidence(
+                source_id=source_id,
+                raw_reference=table_id,
+                name=table_id.rsplit(":", 1)[-1],
+                access="READ",
+                evidence_file=source_file,
+                evidence_line=line,
+                table_id=table_id,
+                resolution="exact",
+            )
+            for table_id in table_ids
+        )
+
     def test_single_direct_table_projects_unqualified_ddl_identifiers(self) -> None:
         source = self._source(
             "SELECT TAGSN, COMPUTE\n"
@@ -56,14 +77,17 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=3, direct_reads=("db:CALC_TB",),
+            data_object_usages=self._read_usages(
+                node.id, str(source), "db:CALC_TB",
+            ),
+            unqualified_identifier_references=self._identifiers(
+                ("TAGSN", 1), ("COMPUTE", 1), ("TAGSN", 3), ("tagNo", 3),
+            ),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
                     "db:CALC_TB": self._columns("TAGSN", "COMPUTE", "ETC"),
                 },
-                "unqualified_identifier_references": self._identifiers(
-                    ("TAGSN", 1), ("COMPUTE", 1), ("TAGSN", 3), ("tagNo", 3),
-                ),
             },
         )
 
@@ -86,15 +110,18 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:CALC_TB",),
+            data_object_usages=self._read_usages(
+                node.id, str(source), "db:CALC_TB",
+            ),
+            unqualified_identifier_references=(
+                SimpleNamespace(
+                    raw_reference="TAGSN", name="TAGSN",
+                    evidence_line=1, name_quoted=False,
+                ),
+            ),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {"db:CALC_TB": self._columns("TAGSN")},
-                "unqualified_identifier_references": (
-                    SimpleNamespace(
-                        raw_reference="TAGSN", name="TAGSN",
-                        evidence_line=1, name_quoted=False,
-                    ),
-                ),
             },
         )
 
@@ -116,6 +143,9 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:CALC_TB",),
+            data_object_usages=self._read_usages(
+                node.id, str(source), "db:CALC_TB",
+            ),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {"db:CALC_TB": self._columns("TAGSN")},
@@ -138,31 +168,31 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1,
             direct_reads=("db:A", "db:B"),
+            data_object_usages=(
+                DataObjectUsageEvidence(
+                    source_id=node.id, raw_reference="A", name="A", alias="A",
+                    access="READ", evidence_file=str(source), evidence_line=1,
+                    table_id="db:A", resolution="exact",
+                    qualified_columns=(QualifiedColumnUsage(
+                        raw_reference="A.ID", qualifier="A", name="ID", evidence_line=1,
+                    ),),
+                ),
+                DataObjectUsageEvidence(
+                    source_id=node.id, raw_reference="B", name="B", alias="B",
+                    access="READ", evidence_file=str(source), evidence_line=1,
+                    table_id="db:B", resolution="exact",
+                    qualified_columns=(QualifiedColumnUsage(
+                        raw_reference="B.STATUS", qualifier="B", name="STATUS", evidence_line=1,
+                    ),),
+                ),
+            ),
+            unqualified_identifier_references=self._identifiers(("NAME", 1)),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
                     "db:A": self._columns("ID", "NAME"),
                     "db:B": self._columns("ID", "STATUS"),
                 },
-                "unqualified_identifier_references": self._identifiers(("NAME", 1)),
-                "data_object_usages": (
-                    DataObjectUsageEvidence(
-                        source_id=node.id, raw_reference="A", name="A", alias="A",
-                        access="READ", evidence_file=str(source), evidence_line=1,
-                        table_id="db:A", resolution="exact",
-                        qualified_columns=(QualifiedColumnUsage(
-                            raw_reference="A.ID", qualifier="A", name="ID", evidence_line=1,
-                        ),),
-                    ),
-                    DataObjectUsageEvidence(
-                        source_id=node.id, raw_reference="B", name="B", alias="B",
-                        access="READ", evidence_file=str(source), evidence_line=1,
-                        table_id="db:B", resolution="exact",
-                        qualified_columns=(QualifiedColumnUsage(
-                            raw_reference="B.STATUS", qualifier="B", name="STATUS", evidence_line=1,
-                        ),),
-                    ),
-                ),
             },
         )
 
@@ -185,15 +215,18 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:A", "db:B"),
+            data_object_usages=self._read_usages(
+                node.id, str(source), "db:A", "db:B",
+            ),
+            unqualified_identifier_references=self._identifiers(
+                ("SHARED_ID", 1), ("COMPUTE", 1),
+            ),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
                     "db:A": self._columns("ID", "SHARED_ID"),
                     "db:B": self._columns("ID", "SHARED_ID", "COMPUTE"),
                 },
-                "unqualified_identifier_references": self._identifiers(
-                    ("SHARED_ID", 1), ("COMPUTE", 1),
-                ),
             },
         )
 
@@ -215,6 +248,13 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:T",),
+            data_object_usages=self._read_usages(node.id, str(source), "db:T"),
+            unqualified_identifier_references=(
+                SimpleNamespace(
+                    raw_reference='"Foo"', name='"Foo"',
+                    evidence_line=1, name_quoted=True,
+                ),
+            ),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
@@ -223,12 +263,6 @@ class ColumnUsageProjectionTest(unittest.TestCase):
                         SimpleNamespace(name="foo", name_quoted=True),
                     ),
                 },
-                "unqualified_identifier_references": (
-                    SimpleNamespace(
-                        raw_reference='"Foo"', name='"Foo"',
-                        evidence_line=1, name_quoted=True,
-                    ),
-                ),
             },
         )
 
@@ -251,6 +285,8 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=2, direct_reads=("db:A",),
+            data_object_usages=self._read_usages(node.id, str(source), "db:A"),
+            unqualified_identifier_references=self._identifiers(("VAL", 1)),
             extra={
                 "source_language": "oracle",
                 "ddl_columns_by_table": {
@@ -259,7 +295,6 @@ class ColumnUsageProjectionTest(unittest.TestCase):
                         "CNT_IMPLICIT", "FIXED_IMPLICIT",
                     ),
                 },
-                "unqualified_identifier_references": self._identifiers(("VAL", 1)),
             },
         )
 
@@ -288,12 +323,15 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             node_id: AnalysisContext(
                 id=node_id, signature="SELECT", file_path=str(source),
                 start_line=1, end_line=1, direct_reads=(f"db:{node_id}",),
+                data_object_usages=self._read_usages(
+                    node_id, str(source), f"db:{node_id}",
+                ),
+                unqualified_identifier_references=self._identifiers(("ID", 1)),
                 extra={
                     "source_language": "oracle",
                     "ddl_columns_by_table": {
                         f"db:{node_id}": self._columns("ID"),
                     },
-                    "unqualified_identifier_references": self._identifiers(("ID", 1)),
                 },
             )
             for node_id in nodes
@@ -323,34 +361,37 @@ class ColumnUsageProjectionTest(unittest.TestCase):
             parent.id: AnalysisContext(
                 id=parent.id, signature="SELECT", file_path=str(source),
                 start_line=1, end_line=2, direct_reads=("db:OTHER_TB",),
+                data_object_usages=self._read_usages(
+                    parent.id, str(source), "db:OTHER_TB",
+                ),
+                unqualified_identifier_references=self._identifiers(("COMPUTE", 1)),
                 extra={
                     "source_language": "oracle",
                     "ddl_columns_by_table": {
                         "db:OTHER_TB": self._columns("OTHER_VALUE"),
                     },
-                    "unqualified_identifier_references": self._identifiers(("COMPUTE", 1)),
                 },
             ),
             child.id: AnalysisContext(
                 id=child.id, signature="SELECT", file_path=str(source),
                 start_line=2, end_line=2, direct_reads=("db:CALC_TB",),
+                data_object_usages=(
+                    DataObjectUsageEvidence(
+                        source_id=child.id, raw_reference="CALC_TB", name="CALC_TB",
+                        alias="B", access="READ", evidence_file=str(source),
+                        evidence_line=2, table_id="db:CALC_TB", resolution="exact",
+                        qualified_columns=(QualifiedColumnUsage(
+                            raw_reference="B.COMPUTE", qualifier="B", name="COMPUTE",
+                            evidence_line=2,
+                        ),),
+                    ),
+                ),
+                unqualified_identifier_references=(),
                 extra={
                     "source_language": "oracle",
                     "ddl_columns_by_table": {
                         "db:CALC_TB": self._columns("COMPUTE"),
                     },
-                    "unqualified_identifier_references": (),
-                    "data_object_usages": (
-                        DataObjectUsageEvidence(
-                            source_id=child.id, raw_reference="CALC_TB", name="CALC_TB",
-                            alias="B", access="READ", evidence_file=str(source),
-                            evidence_line=2, table_id="db:CALC_TB", resolution="exact",
-                            qualified_columns=(QualifiedColumnUsage(
-                                raw_reference="B.COMPUTE", qualifier="B", name="COMPUTE",
-                                evidence_line=2,
-                            ),),
-                        ),
-                    ),
                 },
             ),
         }
@@ -374,6 +415,7 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:A",),
+            data_object_usages=self._read_usages(node.id, str(source), "db:A"),
             extra={"ddl_columns_by_table": {"db:A": self._columns("ID")}},
         )
 
@@ -393,6 +435,7 @@ class ColumnUsageProjectionTest(unittest.TestCase):
         context = AnalysisContext(
             id=node.id, signature=node.signature, file_path=str(source),
             start_line=1, end_line=1, direct_reads=("db:A",),
+            data_object_usages=self._read_usages(node.id, str(source), "db:A"),
             extra={
                 "source_language": "postgresql",
                 "ddl_columns_by_table": {"db:A": self._columns("ID")},

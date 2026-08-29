@@ -44,10 +44,10 @@ def build_langgraph_workflow(
     annotation 화이트리스트: ``RunnableConfig`` / ``"RunnableConfig"`` /
     ``Optional[RunnableConfig]`` / ``"Optional[RunnableConfig]"``. ``RunnableConfig | None``
     같은 PEP604 syntax 는 인식 못 함 — 인식 실패 시 step 이 config=None 으로 호출되어
-    project / neo_client / stream 전부 None → step 이 ``{}`` 만 반환 (silent 빈 결과).)
+    project / stream 전부 None → step 이 ``{}`` 만 반환 (silent 빈 결과).)
 
     state 는 WorkflowState (TypedDict). step 안에서
-    ``cfg = step_config(config)`` 로 strategy / run / cost_budget / neo_client / stream 접근.
+    ``cfg = step_config(config)`` 로 strategy / run / cost_budget / stream 접근.
 
     if 분기 0개. for 루프만.
 

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
-from pipeline.steps.step7_analyze_code.batch_planner import Batch
-from pipeline.steps.step7_analyze_code.batch_prompt_values import _build_batch_values
-from pipeline.steps.step7_analyze_code.three_split_llm_fanout import _build_user_values
+from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
+    _prepare_analysis_inputs,
+)
 from shared.files.cache import SourceFileCache
 
 
@@ -37,37 +37,21 @@ class ModelSourceFidelityContractTest(unittest.TestCase):
     def test_framework_prompt_values_keep_source_literals_byte_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source_text, node, context = self._target(directory)
-            values, _inventory = _build_user_values(
-                context, node, {node.id: context}, {node.id: node}, {},
+            values, _inventory = _prepare_analysis_inputs(
+                context, node, {node.id: context}, {node.id: node},
                 SourceFileCache(),
             )
 
         for line in source_text.splitlines():
-            self.assertIn(line, values["code_body"])
-        self.assertNotIn("[QUOTED_LITERAL", values["code_body"])
-
-    def test_dbms_batch_precursor_keeps_source_literals_byte_exact(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source_text, node, context = self._target(directory)
-            values, _mapping = _build_batch_values(
-                Batch(None, (node.id,)), {node.id: context}, {node.id: node},
-                {}, SourceFileCache(),
-            )
-
-        for line in source_text.splitlines():
-            self.assertIn(line, values["nodes"])
-        self.assertNotIn("[QUOTED_LITERAL", values["nodes"])
+            self.assertIn(line, values["numbered_source_code"])
+        self.assertNotIn("[QUOTED_LITERAL", values["numbered_source_code"])
 
     def test_no_lossy_source_projection_producer_or_replay_switch_exists(self) -> None:
         self.assertFalse(
             (ROOT / "pipeline" / "steps" / "step7_analyze_code"
              / "model_source_projection.py").exists()
         )
-        replay = (ROOT / "scripts" / "send_real_prompt_to_gpu.py").read_text(
-            encoding="utf-8",
-        )
-        self.assertNotIn("project_source_literals", replay)
-        self.assertNotIn("--project-source-literals", replay)
+        self.assertFalse((ROOT / "scripts" / "send_real_prompt_to_gpu.py").exists())
 
 
 if __name__ == "__main__":

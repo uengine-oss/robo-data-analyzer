@@ -9,10 +9,6 @@ from typing import Optional
 import httpx
 from langchain_core.runnables import RunnableConfig
 
-from graph.edges.has_column import upsert_has_column
-from graph.neo4j_client import Neo4jClient
-from graph.nodes.column import upsert_columns
-from graph.nodes.table import upsert_tables, update_sample_snapshots
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import CodeNode, Column, Table
 from graph.schema.node_ids import sql_column_id
@@ -34,7 +30,6 @@ async def resolve_data_objects_step(
     """Resolve parser evidence in one Catalog batch before DBMS R/W linking."""
     cfg = step_config(config)
     codebase = cfg.get("codebase")
-    neo: Neo4jClient | None = cfg.get("neo_client")
     stream = cfg.get("stream")
     datasource = (getattr(codebase, "datasource", None) or "").strip()
     code_nodes: list[CodeNode] = list(state.get("code_nodes") or ())
@@ -177,14 +172,6 @@ async def resolve_data_objects_step(
                 if usage.resolution != "exact"
             )
 
-    if neo is not None:
-        if new_tables:
-            await upsert_tables(neo, new_tables)
-        if new_columns:
-            await upsert_columns(neo, new_columns)
-        if new_edges:
-            await upsert_has_column(neo, new_edges)
-        await update_sample_snapshots(neo, samples)
     await emit_nodes(stream, [*new_tables, *new_columns])
     await emit_edges(stream, new_edges)
     emit_message(

@@ -5,7 +5,6 @@ from typing import Iterable, Mapping, Optional
 
 from pipeline.quality_gates.evidence_matching import resolve_qualified_name
 from pipeline.quality_gates.example_synthesis import synthesize_examples
-from pipeline.models.data_object_usage import is_object_reference_id
 
 
 _READ_OP = "READ"
@@ -21,7 +20,7 @@ def _authoritative_op(value: object) -> str | None:
     return op if op in _EXACT_OPS else None
 
 
-_THEN_EFFECT_OPS = {
+_STRUCTURAL_EFFECT_OPS = {
     "select": ("READ", "READ"),
     "insert": ("WRITE", "INSERT"),
     "update": ("WRITE", "UPDATE"),
@@ -31,7 +30,7 @@ _THEN_EFFECT_OPS = {
 
 
 def rule_table_effects(
-    then_statements: Iterable[str],
+    structural_effects: Iterable[str],
     reads: Iterable[str],
     writes: Iterable[str],
     table_op: Optional[dict[str, str]],
@@ -51,11 +50,11 @@ def rule_table_effects(
     authoritative = table_op or {}
     effects: dict[tuple[str, str], dict] = {}
     unresolved: list[str] = []
-    for statement in then_statements or ():
+    for statement in structural_effects or ():
         # 이 단계에는 채점 통과 규칙만 온다. parser 실패를 건너뛰면 의미 효과가 조용히
         # 사라지므로 불변식 위반을 그대로 상위에 전파한다.
         call = parse_effect(str(statement))
-        mapping = _THEN_EFFECT_OPS.get(call.func.id)
+        mapping = _STRUCTURAL_EFFECT_OPS.get(call.func.id)
         if mapping is None or not call.args:
             continue
         first = call.args[0]
@@ -71,18 +70,13 @@ def rule_table_effects(
             # 모델 효과의 접근 방향과 다른 R/W 집합으로 재귀속하지 않는다.
             unresolved.append(name)
             continue
-        # AFFECTS_TABLE is a confirmed TABLE-only downstream contract. The exact source access
-        # remains preserved as CodeNode READS/WRITES → OBJECT_REFERENCE; do not manufacture a
-        # Table effect edge or turn an expected unresolved identity into a whole-run failure.
-        if is_object_reference_id(table_id):
-            continue
         # 권위 op(SQL_KEY 유래)가 있으면 그것이 최종이다 — SELECT→READ 정규화 방어 포함.
         authoritative_op = _authoritative_op(authoritative.get(table_id))
         if authoritative_op and authoritative_op != derived_op:
             unresolved.append(name)
             continue
         op = authoritative_op or derived_op
-        op_source = "SCANNER" if authoritative_op else "LLM_INFERRED"
+        op_source = "SCANNER" if authoritative_op else "ANALYZER_DERIVED"
         effects[(table_id, op)] = {
             "table": table_id, "access": access, "op": op, "op_source": op_source,
         }
@@ -91,7 +85,6 @@ def rule_table_effects(
 
 def serialize_rules(
     rules: Iterable[object],
-    when_symbol: str,
     reads: Iterable[str],
     writes: Iterable[str],
     table_op: Optional[dict[str, str]],
@@ -99,8 +92,8 @@ def serialize_rules(
 ) -> tuple[list[dict], list[str]]:
     """채점 통과한 구조화 규칙들 → transport dict (enrichment 는 전부 코드가 채운다).
 
-    rule_id = "R-"+anchor / when = 실행 가능 단위 심볼 / affected_tables = then 결정론
-    귀속. 반환: (직렬화 목록, 미해석 테이블명 목록).
+    Rule identity and owner are derived later from ``anchor_line`` and the owning code
+    node. This transport carries only non-reconstructable values and relationships.
     """
     serialized: list[dict] = []
     unresolved_all: list[str] = []
@@ -109,18 +102,17 @@ def serialize_rules(
     # 여집합(else_of) 해소에 형제 규칙이 필요하므로 함수·배치 단위로 한 번에 만든다.
     examples_by_anchor = synthesize_examples(rules)
     for rule in rules:
-        then = [str(s) for s in (getattr(rule, "then", None) or [])]
+        structural_effects = [str(s) for s in rule.structural_effects]
         affected, unresolved = rule_table_effects(
-            then, reads, writes, table_op, table_aliases,
+            structural_effects, reads, writes, table_op, table_aliases,
         )
         unresolved_all.extend(unresolved)
         serialized.append({
-            "rule_id": f"R-{rule.anchor_line}",
             "anchor_line": rule.anchor_line,
-            "cond": rule.cond or "",
-            "then": then,
-            "nl": rule.nl,
-            "when": when_symbol,
+            "structural_condition": rule.structural_condition or "",
+            "structural_effects": structural_effects,
+            "business_condition": rule.business_condition or "",
+            "business_effects": list(rule.business_effects),
             "examples": examples_by_anchor.get(rule.anchor_line, []),
             "affected_tables": affected,
         })

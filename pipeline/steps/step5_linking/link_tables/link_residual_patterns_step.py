@@ -26,8 +26,6 @@ from pipeline.execution.quality_finding_log import record_analysis_findings
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.steps.step4_scan_project.scan_result_contract import require_scan_result
 from shared.events.runtime_logger import log_info
-from graph.edges.reads_writes import upsert_reads_writes
-from graph.neo4j_client import Neo4jClient
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message
 
 _STEP = "step5.link_residual_patterns"
@@ -39,7 +37,6 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
     project = cfg.get("codebase")
     cost_budget = cfg.get("cost_budget")
     stream = cfg.get("stream")
-    neo: Neo4jClient | None = cfg.get("neo_client")
 
     unresolved = state.get("unresolved_cases") or []
     if not unresolved:
@@ -81,10 +78,7 @@ async def link_residual_patterns_step(state: dict, config: Optional[RunnableConf
         )
         outcome = ResidualOutcome(edges=[], residual=list(unresolved))
 
-    if neo is not None and outcome.edges:
-        await upsert_reads_writes(neo, outcome.edges)
-
-    # 라이브 스트림 — 잔여 패턴 R/W 링킹 결과를 step 완료 즉시 화면으로.
+    # 라이브 스트림은 임시 진행 표시다. 제품 graph는 전체 계획 검증 후에만 쓴다.
     await emit_edges(stream, outcome.edges)
     emit_message(stream, f"✅ 잔여 패턴 링킹 완료 — {len(outcome.edges)}건")
 

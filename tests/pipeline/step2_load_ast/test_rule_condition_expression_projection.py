@@ -85,7 +85,7 @@ def test_case_value_is_projected_as_controller_subject_equality() -> None:
     projected = attach_rule_condition_projection(evidence, _case_bundle())
     rules = materialize_rule_items(projected, (3,))
 
-    assert rules[0].cond == 'F("rc") == F("RC_NFD")'
+    assert rules[0].structural_condition == 'F("rc") == F("RC_NFD")'
 
 
 def test_case_complement_negates_the_same_canonical_relation() -> None:
@@ -98,7 +98,7 @@ def test_case_complement_negates_the_same_canonical_relation() -> None:
     projected = attach_rule_condition_projection(evidence, _case_bundle())
     rules = materialize_rule_items(projected, (4,))
 
-    assert rules[0].cond == 'not (F("rc") == F("RC_NFD"))'
+    assert rules[0].structural_condition == 'not (F("rc") == F("RC_NFD"))'
 
 
 def test_projection_fails_closed_when_case_parent_subject_is_missing() -> None:
@@ -162,7 +162,7 @@ def test_binary_operator_shell_keeps_exact_source_atoms() -> None:
         "rows": {"R2": {"role": "decision", "when": ["C2"]}},
     }, bundle)
 
-    assert materialize_rule_items(evidence, (2,))[0].cond == (
+    assert materialize_rule_items(evidence, (2,))[0].structural_condition == (
         'F("x") == F("0")'
     )
 
@@ -182,6 +182,30 @@ def test_routine_attachment_preserves_the_exact_built_bundle() -> None:
 
     assert routine.extra["_resolved_rule_condition_bundle"] is bundles[routine.id]
     assert tuple(bundles[routine.id]["conditions"]) == ("C2",)
+
+
+def test_multiline_condition_uses_control_node_line_not_expression_line() -> None:
+    routine = _node("routine", "FUNCTION", 1)
+    decision = _node("decision", "IF", 10, parent_id=routine.id)
+    fact = _reference_fact(
+        "predicate", decision.id, "condition", 12, 40, "ready",
+    )
+
+    bundle = build_routine_rule_condition_bundles(
+        (routine, decision),
+        (fact,),
+        (_structural_source("predicate", "ready"),),
+    )[routine.id]
+
+    assert tuple(bundle["conditions"]) == ("C10",)
+    projected = attach_rule_condition_projection({
+        "conditions": {"C10": "ready"},
+        "effects": {},
+        "rows": {"R10": {"role": "decision", "when": ["C10"]}},
+    }, bundle)
+    assert materialize_rule_items(projected, (10,))[0].structural_condition == (
+        'F("ready")'
+    )
 
 
 def test_projection_rejects_an_incomplete_rule_condition_closure() -> None:

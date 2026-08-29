@@ -137,6 +137,17 @@ def detect_strategy(project_dir: Path) -> Literal["framework", "dbms"]:
 ROUTINE_LABELS: frozenset[str] = frozenset({"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"})
 
 
+@lru_cache(maxsize=1)
+def module_labels() -> frozenset[str]:
+    """All Parser labels that represent a source container Module."""
+    languages = (_load_ontology().get("roles") or {}).get("module") or {}
+    return frozenset(
+        str(node_type)
+        for node_types in languages.values()
+        for node_type in (node_types or ())
+    )
+
+
 @lru_cache(maxsize=None)
 def role_of(node_type: str, lang: str) -> str | None:
     """ANTLR 노드 타입의 언어별 역할을 반환한다."""
@@ -553,23 +564,6 @@ def external_file_categories() -> tuple[dict[str, str], dict[str, str]]:
 
 
 @lru_cache(maxsize=1)
-def dbms_builtin_packages() -> frozenset[str]:
-    """Return exact package identifiers declared by supported DBMS dialects.
-
-    The registry is deliberately package-based and conservative. An unknown
-    package remains an external call instead of disappearing because its name
-    happens to share a vendor-like prefix.
-    """
-    dialects = _load_ontology().get("dbms_builtin_packages") or {}
-    return frozenset(
-        str(package).strip().strip('"').upper()
-        for packages in dialects.values()
-        for package in (packages or [])
-        if str(package).strip()
-    )
-
-
-@lru_cache(maxsize=1)
 def _stereotype_values() -> dict[str, tuple[str, ...]]:
     data = _load_ontology()
     return {
@@ -633,14 +627,15 @@ def stereotype_priority_text() -> str:
 def exclude_contradicted_stereotype(
     stereotype: str, *, has_writes: bool
 ) -> tuple[str, str | None]:
-    """결정론 근거와 모순인 stereotype 을 빈 값으로 강제한다 — (값, 위반사유).
+    """결정론 근거와 모순인 stereotype 을 ``Unclassified``로 닫는다.
 
     실측(spec 116 7단계): 쓰기 근거가 있는 함수가 Query 류로 서술되는 오답은 의미
-    판단이 아니라 사실 모순이다 — 결정론이 기각하고 사람 검토로 표면화한다.
+    판단이 아니라 사실 모순이다. 모순된 역할을 공개하지 않되, 계약된 ontology의
+    불확정 값을 써서 summary/stereotype 결합 존재 규칙을 보존한다.
     """
     forbidden = set(_stereotype_rules().get("write_forbidden") or ())
     if has_writes and stereotype in forbidden:
-        return "", f"{stereotype} 는 결정론 쓰기 근거와 모순 (write_forbidden)"
+        return "Unclassified", f"{stereotype} 는 결정론 쓰기 근거와 모순 (write_forbidden)"
     return stereotype, None
 
 

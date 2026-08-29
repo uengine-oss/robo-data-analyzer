@@ -25,7 +25,6 @@ from graph.schema.graph_edges import (
     StatementNext,
 )
 from graph.schema.graph_nodes import Constant, DataType, CodeNode, Module, Package, Variable
-from shared.config.settings import SETTINGS
 from pipeline.languages import ROUTINE_LABELS, role_of
 from pipeline.languages import DBMS_EXTS, EXT_TO_LANG
 from graph.schema.node_ids import child_id, code_file_id, code_ns_id, positioned
@@ -53,16 +52,19 @@ from pipeline.steps.step2_load_ast.evidence_ir import (
     CommonEvidenceContractError,
     validate_common_evidence,
 )
+from pipeline.steps.step2_load_ast.structural_call_projection import (
+    project_callable_definitions,
+    project_scope_owned_calls,
+)
 
 def ast_and_source_roots(
     source_path: Path,
-    corpus_root: Path | None = None,
+    corpus_root: Path,
 ) -> tuple[Path, Path]:
     """``project.root`` → ``(AST 루트, 소스 루트)``.
 
-    ``corpus_root``가 있으면 그 실행의 source/AST가 반드시 같은 corpus에 속하며,
-    없을 때만 설정의 canonical data root를 사용한다. 명시한 corpus 밖 source는 서로 다른
-    실행의 source와 AST를 섞지 않도록 실패시킨다.
+    실행의 source/AST가 반드시 명시한 같은 corpus에 속한다. corpus 밖 source는
+    서로 다른 실행의 source와 AST를 섞지 않도록 실패시킨다.
 
     소스 루트 = AST 의 ``filePath`` 가 상대로 매달린 **antlr 파싱 base** (``_src_path``
     가 ``source_root / filePath`` 로 원문 슬라이싱). 이 데이터 규약(``data/source/<project>``
@@ -71,25 +73,17 @@ def ast_and_source_roots(
       AST=``data/analysis`` 전체.
     - ``project.root == data/source/<project>`` (CLI 단일 대상) → 소스루트=``data/source``
       (base 복원 — 이중경로 차단), AST=``data/analysis/<project>`` 로 스코프(그 프로젝트만).
-    - 설정의 canonical corpus를 쓰는 호출에서만 ``data/source`` 밖 Electron 경로모드를
-      허용한다. 이때 소스루트=선택 폴더, AST=canonical ``data/analysis`` 전체다.
     """
-    data_root = (
-        Path(corpus_root).expanduser().resolve()
-        if corpus_root is not None
-        else SETTINGS.analysis_data.dir.resolve()
-    )
+    data_root = Path(corpus_root).expanduser().resolve()
     analysis_root = data_root / "analysis"
     source_base = (data_root / "source").resolve()
     root = source_path.resolve()
     try:
         rel = root.relative_to(source_base)
     except ValueError:
-        if corpus_root is not None:
-            raise ValueError(
-                f"source가 명시 corpus_root 밖에 있다: source={root}, corpus={data_root}"
-            )
-        return analysis_root, root           # 경로모드 — base = 고른 폴더 그대로
+        raise ValueError(
+            f"source가 명시 corpus_root 밖에 있다: source={root}, corpus={data_root}"
+        )
     if rel == Path("."):
         return analysis_root, source_base    # 업로드·일괄 — 전체
     return analysis_root / rel, source_base   # CLI 단일 대상 — 그 프로젝트로 스코프
@@ -102,6 +96,7 @@ def read_antlr_json(
     expected_sha256: str | None = None,
     source_language: str | None = None,
     source_cache: SourceFileCache | None = None,
+    sealed_ast_document: dict | None = None,
 ) -> ParseResult:
     """antlr JSON 파일 1개 → ParseResult.
 
@@ -114,19 +109,22 @@ def read_antlr_json(
     empty result would remove a source file from the semantic population while counting it as
     parsed.
     """
-    try:
-        payload = json_path.read_bytes()
-        if expected_sha256 is not None:
-            actual_sha256 = hashlib.sha256(payload).hexdigest()
-            if actual_sha256 != expected_sha256:
-                raise ValueError(
-                    f"AST artifact changed after closure: {json_path} "
-                    f"expected={expected_sha256} actual={actual_sha256}"
-                )
-        raw = json.loads(payload.decode("utf-8", errors="strict"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        log_error(_COMPONENT, "read_antlr_json", e, json_path=str(json_path))
-        raise ValueError(f"invalid AST artifact {json_path}: {e}") from e
+    if sealed_ast_document is None:
+        try:
+            payload = json_path.read_bytes()
+            if expected_sha256 is not None:
+                actual_sha256 = hashlib.sha256(payload).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise ValueError(
+                        f"AST artifact changed after closure: {json_path} "
+                        f"expected={expected_sha256} actual={actual_sha256}"
+                    )
+            raw = json.loads(payload.decode("utf-8", errors="strict"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            log_error(_COMPONENT, "read_antlr_json", e, json_path=str(json_path))
+            raise ValueError(f"invalid AST artifact {json_path}: {e}") from e
+    else:
+        raw = sealed_ast_document
 
     if not isinstance(raw, dict):
         raise ValueError(
@@ -174,15 +172,9 @@ def read_antlr_json(
             source_path, source_bytes, evidence.decoded_text,
         )
 
-    file_name = raw.get("fileName") or json_path.name
-    ext = Path(file_name).suffix.lstrip(".").lower()
+    ext = Path(evidence.source_id).suffix.lstrip(".").lower()
 
     if ext in DBMS_EXTS:
-        if evidence.call_facts:
-            raise CommonEvidenceContractError(
-                "common evidence DBMS call consumer is not implemented; "
-                f"refusing to drop {len(evidence.call_facts)} facts from {evidence.source_id}"
-            )
         if evidence.import_facts:
             raise CommonEvidenceContractError(
                 "common evidence DBMS import consumer is not implemented; "
@@ -190,6 +182,17 @@ def read_antlr_json(
                 f"{evidence.source_id}"
             )
         result = _read_dbms(raw, source_root, json_path)
+        owner_id_by_definition_range = project_callable_definitions(
+            result,
+            evidence,
+            is_routine_node=lambda node: node.label in ROUTINE_LABELS,
+        )
+        project_scope_owned_calls(
+            result,
+            evidence,
+            owner_id_by_definition_range=owner_id_by_definition_range,
+            file_path=(result.modules[0].file_path if result.modules else ""),
+        )
         result.macro_facts.extend(fact.as_record() for fact in evidence.macro_facts)
         result.evidence_sources.append(evidence.source_record())
         result.evidence_completeness.extend(evidence.completeness_records())

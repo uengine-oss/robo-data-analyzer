@@ -21,6 +21,10 @@ from llm.runners.model_output_error import ModelOutputError
 from llm.runners.invocation import _extract_partial_content, _write_error_record
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.usage.token_usage import TokenUsageRecord
+from pipeline.execution.run_output_context import (
+    reset_response_locale,
+    set_response_locale,
+)
 from pydantic import BaseModel
 
 
@@ -28,7 +32,15 @@ class _Response(BaseModel):
     value: str
 
 
-class ParsingErrorEvidenceTest(unittest.IsolatedAsyncioTestCase):
+class _LocaleAwareAsyncTestCase(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._response_locale_token = set_response_locale("ko")
+
+    def tearDown(self) -> None:
+        reset_response_locale(self._response_locale_token)
+
+
+class ParsingErrorEvidenceTest(_LocaleAwareAsyncTestCase):
     async def test_validation_failure_keeps_raw_and_surfaces_reason(self) -> None:
         raw_msg = AIMessage(content='{"value": "truncated')
         injected = ValueError("unfinished Rule statement: unbalanced delimiter")
@@ -108,13 +120,14 @@ class ParsingErrorEvidenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ValueError", kwargs["metadata"]["parsing_error"])
 
 
-class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
+class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
     async def _invoke(
         self,
         parsed: object,
         *,
         raw_content: str | None = None,
         parsing_error: Exception | None = None,
+        finish_reason: str | None = None,
     ):
         temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(temporary_directory.cleanup)
@@ -124,7 +137,10 @@ class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
         raw_msg = AIMessage(
-            content=json.dumps(parsed) if raw_content is None else raw_content
+            content=json.dumps(parsed) if raw_content is None else raw_content,
+            response_metadata=(
+                {"finish_reason": finish_reason} if finish_reason else {}
+            ),
         )
         structured_model = SimpleNamespace(
             ainvoke=AsyncMock(return_value={
@@ -230,24 +246,45 @@ class ProviderSchemaBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(evidence["response"]["parsed"])
         self.assertIn("JSONDecodeError", evidence["metadata"]["parsing_error"])
 
-    async def test_nonstandard_code_escape_is_repaired_without_changing_text(self) -> None:
+    async def test_length_finish_reason_is_not_downgraded_to_schema_failure(self) -> None:
+        prompts_dir, _boundary, record = await self._invoke(
+            {},
+            parsing_error=ValueError("provider returned an incomplete tool payload"),
+            finish_reason="length",
+        )
+
+        with self.assertRaises(ModelOutputError) as caught:
+            await run_yaml_rule(
+                prompts_dir=prompts_dir,
+                rule_name="boundary",
+                user_values={"value": "input"},
+                response_model=_Response,
+            )
+
+        self.assertEqual("length", caught.exception.kind)
+        evidence = record.call_args.kwargs
+        self.assertEqual("length", evidence["metadata"]["finish_reason"])
+        self.assertIn("output-token boundary", str(caught.exception))
+
+    async def test_nonstandard_code_escape_remains_a_schema_failure(self) -> None:
         prompts_dir, _boundary, record = await self._invoke(
             None,
             raw_content=r'''{"value": "source literal '\0'"}''',
             parsing_error=ValueError("provider rejected invalid JSON escape"),
         )
 
-        result = await run_yaml_rule(
-            prompts_dir=prompts_dir,
-            rule_name="boundary",
-            user_values={"value": "input"},
-            response_model=_Response,
-        )
+        with self.assertRaises(ModelOutputError) as caught:
+            await run_yaml_rule(
+                prompts_dir=prompts_dir,
+                rule_name="boundary",
+                user_values={"value": "input"},
+                response_model=_Response,
+            )
 
-        self.assertEqual(r"source literal '\0'", result.value)
+        self.assertEqual("schema", caught.exception.kind)
         evidence = record.call_args.kwargs
-        self.assertEqual(r"source literal '\0'", evidence["response"]["parsed"]["value"])
-        self.assertTrue(evidence["metadata"]["json_escape_repaired"])
+        self.assertIsNone(evidence["response"]["parsed"])
+        self.assertNotIn("json_escape_repaired", evidence["metadata"])
 
 
 class RealChainJsonSchemaBoundaryProof(unittest.IsolatedAsyncioTestCase):

@@ -7,13 +7,12 @@ LangChain 이 정규화해서 ``input_tokens / output_tokens / total_tokens`` +
 
 **별도 어댑터 클래스 X — 함수 1개로 끝**.
 
-``cached_tokens`` 가 노출 안 되는 환경 (SGLang ``--enable-cache-report`` OFF 등) 만
-``LatencyBasedCacheEstimator`` 로 fallback 추정.
+``cached_tokens`` 가 노출되지 않으면 0으로 기록한다. latency로 token 수를 추측하지 않는다.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 class UnmeteredLlmCallError(RuntimeError):
@@ -61,7 +60,6 @@ def track_usage(
     response: Any,
     model: str,
     latency_ms: int = 0,
-    cache_estimator: Optional["LatencyBasedCacheEstimator"] = None,
 ) -> TokenUsageRecord:
     """LLM 응답에서 토큰 사용량 추출 — provider 자동 정규화.
 
@@ -69,13 +67,10 @@ def track_usage(
     - input_tokens / output_tokens / total_tokens (필수)
     - input_token_details.cache_read (옵션 — prompt cache hit)
 
-    cached_tokens 노출 X 환경 → ``cache_estimator`` 로 latency 기반 추정.
-
     Args:
         response: LangChain LLM 응답 (AIMessage 또는 ChatResult).
         model: 모델 이름 — ``llm_pricing.yaml`` 가 비용 계산에 사용.
-        latency_ms: LLM 호출 latency (cache_estimator fallback 용).
-        cache_estimator: cached_tokens=0 이면 추정 (옵션).
+        latency_ms: LLM 호출 latency.
 
     Returns:
         ``TokenUsageRecord``. ``cost_usd`` 는 0.0 으로 비워둠
@@ -116,13 +111,6 @@ def track_usage(
     cached_tokens = _require_nonnegative_token_count(
         cache_details.get("cache_read", 0), field_name="cached_tokens"
     )
-    # fallback: cached_tokens 노출 X 환경
-    if cached_tokens == 0 and cache_estimator is not None and input_tokens > 0:
-        cached_tokens = cache_estimator.estimate(
-            input_tokens=input_tokens,
-            latency_ms=latency_ms,
-        )
-
     record = TokenUsageRecord(
         model=model,
         input_tokens=input_tokens,
@@ -133,30 +121,3 @@ def track_usage(
     )
     validate_token_usage(record)
     return record
-
-
-class LatencyBasedCacheEstimator:
-    """cached_tokens 가 노출 안 되는 환경의 fallback 추정기.
-
-    원리: prompt cache hit 가 많으면 latency 가 짧아짐 (입력 토큰 처리 시간 절감).
-    threshold 보다 빠르면 일정 비율 cache hit 로 추정.
-
-    한계: 추정값이라 정확도 낮음. cached_tokens 공식 노출 환경 우선.
-    """
-
-    def __init__(
-        self,
-        fast_latency_ms_per_1k_input: float = 50.0,    # 1k 입력당 50ms 이하 → cache
-        cache_hit_ratio: float = 0.85,                 # 빠르면 85% cache 로 가정
-    ):
-        self.fast_latency_ms_per_1k_input = fast_latency_ms_per_1k_input
-        self.cache_hit_ratio = cache_hit_ratio
-
-    def estimate(self, input_tokens: int, latency_ms: int) -> int:
-        """latency 기반 cached_tokens 추정."""
-        if input_tokens <= 0 or latency_ms <= 0:
-            return 0
-        ms_per_1k = latency_ms / max(input_tokens / 1000, 0.001)
-        if ms_per_1k <= self.fast_latency_ms_per_1k_input:
-            return int(input_tokens * self.cache_hit_ratio)
-        return 0

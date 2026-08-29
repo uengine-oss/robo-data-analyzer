@@ -80,24 +80,11 @@ def _site(call_id: str, offset: int, source: str) -> dict:
     }
 
 
-def _resolution(call_id: str, ordinal: int, offset: int, length: int) -> dict:
+def _resolution(call_id: str, ordinal: int) -> dict:
     return {
         "call_id": call_id,
         "ordinal": ordinal,
-        "source_id": "sample.c",
         "caller_id": "code:sample.c:fn@10",
-        "owner_status": "resolved",
-        "file": "sample.c",
-        "line": 11,
-        "range": {"char_offset": offset, "char_length": length},
-        "callee_range": {"char_offset": offset, "char_length": 5},
-        "argument_ranges": [],
-        "callee_kind": "named",
-        "terminal_name": "check",
-        "grammar_rule": "postfixExpression",
-        "presence_status": "active",
-        "presence": {"status": "active"},
-        "configured_preprocessing_required": False,
         "resolution_status": "internal",
         "adapter_schema": "test-call/v1",
         "outcome": "edge",
@@ -118,22 +105,46 @@ def test_exact_ranges_classify_same_line_condition_and_effect_calls() -> None:
         _site("effect-call", 130, "check(y)"),
     )
     resolutions = (
-        _resolution("condition-call", 0, 105, 8),
-        _resolution("effect-call", 1, 130, 8),
+        _resolution("condition-call", 0),
+        _resolution("effect-call", 1),
     )
 
-    call_lines, occurrences = build_parser_call_evidence(
+    occurrences = build_parser_call_evidence(
         list(sites), list(resolutions), [_routine()],
     )
-
-    assert call_lines == {
-        "code:sample.c:fn@10": [(2, "check"), (2, "check")],
-    }
     projected = occurrences["code:sample.c:fn@10"]
-    assert [item.context_role for item in projected] == ["condition", "effect"]
+    assert [item.structural_role for item in projected] == ["condition", "effect"]
     assert projected[0].condition_fact_id == "condition-fact"
     assert projected[1].condition_fact_id is None
     assert projected[0].callee_id == "code:sample.c:check@30"
+
+
+def test_inactive_condition_keeps_structure_separate_from_presence() -> None:
+    site = _site("inactive-condition-call", 105, "check(x)")
+    site["presence_status"] = "inactive"
+    site["presence"] = {"status": "inactive"}
+    occurrences = build_parser_call_evidence(
+        [site], [_resolution("inactive-condition-call", 0)], [_routine()],
+    )
+    occurrence = occurrences["code:sample.c:fn@10"][0]
+    assert occurrence.structural_role == "condition"
+    assert occurrence.condition_fact_id == "condition-fact"
+    assert occurrence.presence_status == "inactive"
+
+    context = AnalysisContext(
+        id="code:sample.c:fn@10", signature="fn()", file_path="sample.c",
+        start_line=10, end_line=20,
+    )
+    context.extra["ast_statements"] = ()
+    context.extra["ast_call_occurrences"] = (occurrence,)
+    profile, specs = build_code_semantic_plan(_routine(), context)
+    call_fact = next(
+        fact for fact in profile.evidence.values()
+        if fact.kind == "CALL" and fact.attributes.get("occurrence_id")
+    )
+    assert call_fact.attributes["structural_role"] == "condition"
+    assert call_fact.attributes["presence_status"] == "inactive"
+    assert all(call_fact.id not in spec.evidence_refs for spec in specs)
 
 
 def test_call_projection_rejects_a_missing_resolution_outcome() -> None:
@@ -143,22 +154,22 @@ def test_call_projection_rejects_a_missing_resolution_outcome() -> None:
         build_parser_call_evidence([site], [], [_routine()])
 
 
-def test_call_projection_rejects_parser_ledger_structure_drift() -> None:
+def test_call_projection_uses_parser_line_as_the_only_structure_source() -> None:
     site = _site("effect-call", 130, "check(y)")
-    resolution = _resolution("effect-call", 0, 130, 8)
-    resolution["line"] = 12
+    resolution = _resolution("effect-call", 0)
+    site["line"] = 12
 
-    with pytest.raises(ValueError, match="structure differs.*line"):
-        build_parser_call_evidence([site], [resolution], [_routine()])
+    occurrences = build_parser_call_evidence([site], [resolution], [_routine()])
+
+    assert [(item.line, item.callee) for item in occurrences["code:sample.c:fn@10"]] == [
+        (3, "check")
+    ]
 
 
 def test_call_projection_rejects_argument_source_range_population_drift() -> None:
     site = _site("effect-call", 130, "check(y)")
     site["argument_ranges"] = [{"charOffset": 136, "charLength": 1}]
-    resolution = _resolution("effect-call", 0, 130, 8)
-    resolution["argument_ranges"] = [
-        {"char_offset": 136, "char_length": 1},
-    ]
+    resolution = _resolution("effect-call", 0)
 
     with pytest.raises(ValueError, match="source/range population mismatch"):
         build_parser_call_evidence([site], [resolution], [_routine()])
@@ -171,7 +182,7 @@ def test_branch_inventory_uses_role_not_callee_name_for_same_line_calls() -> Non
             line=1,
             callee="check",
             call_source="check(x)",
-            context_role="condition",
+            structural_role="condition",
             condition_fact_id="condition-fact",
         ),
         CallOccurrenceFact(
@@ -179,7 +190,7 @@ def test_branch_inventory_uses_role_not_callee_name_for_same_line_calls() -> Non
             line=1,
             callee="check",
             call_source="check(y)",
-            context_role="effect",
+            structural_role="effect",
         ),
     )
     inventory = build_inventory(
@@ -187,7 +198,6 @@ def test_branch_inventory_uses_role_not_callee_name_for_same_line_calls() -> Non
         (ControlSubtreeNode("if", "IF", 1, 1, expression="check(x)"),),
         "c",
         statements=(),
-        call_lines=((1, "check"), (1, "check")),
         call_occurrences=occurrences,
     )
 
@@ -204,10 +214,10 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
         _site("effect-call", 130, "check(y)"),
     )
     resolutions = (
-        _resolution("condition-call", 0, 105, 8),
-        _resolution("effect-call", 1, 130, 8),
+        _resolution("condition-call", 0),
+        _resolution("effect-call", 1),
     )
-    call_lines, occurrences = build_parser_call_evidence(
+    occurrences = build_parser_call_evidence(
         list(sites), list(resolutions), [_routine()],
     )
     context = AnalysisContext(
@@ -218,9 +228,6 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
         end_line=20,
     )
     context.extra["ast_statements"] = ()
-    context.extra["ast_call_lines"] = tuple(
-        call_lines["code:sample.c:fn@10"]
-    )
     context.extra["ast_call_occurrences"] = tuple(
         occurrences["code:sample.c:fn@10"]
     )
@@ -231,7 +238,6 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
         "c",
         line_offset=9,
         statements=(),
-        call_lines=context.extra["ast_call_lines"],
         call_occurrences=context.extra["ast_call_occurrences"],
     )
     semantic_routine = _routine()
@@ -283,7 +289,7 @@ def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
             call_source="copy(dst0, src0)",
             argument_sources=("dst0", "src0"),
             source_range=(10, 16),
-            context_role="effect",
+            structural_role="effect",
         ),
         CallOccurrenceFact(
             call_id="a-second",
@@ -292,7 +298,7 @@ def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
             call_source="copy(dst1, src1)",
             argument_sources=("dst1", "src1"),
             source_range=(30, 16),
-            context_role="effect",
+            structural_role="effect",
         ),
     )
     inventory = build_inventory(
@@ -300,7 +306,6 @@ def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
         (),
         "c",
         statements=(),
-        call_lines=((1, "copy"), (1, "copy")),
         call_occurrences=occurrences,
     )
 
@@ -319,15 +324,9 @@ def test_occurrence_call_leaf_preserves_receiver_and_ordered_arguments() -> None
         value=None,
         from_source=None,
         occurrence_id="call-1",
-        source_line=10,
         call_source="ctx->handler(a, b)",
         argument_sources=("a", "b"),
         receiver_source="ctx",
-        source_range=(100, 18),
-        callee_source="ctx->handler",
-        callee_kind="named",
-        context_role="effect",
-        presence_status="active",
     ))
 
     assert rendered == 'call("handler", F("ctx"), [F("a"), F("b")])'

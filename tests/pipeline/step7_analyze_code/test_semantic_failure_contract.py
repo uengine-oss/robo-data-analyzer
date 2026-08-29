@@ -2,6 +2,7 @@
 """모델 품질 finding은 격리·표면화하고 운영/schema 호출 경계는 명시 전파한다."""
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
@@ -18,10 +19,10 @@ from pipeline.models.analysis_context import (
     StatementFact,
 )
 from pipeline.models.analysis_finding import AnalysisFinding
+from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchSummaryItem,
-    BatchSummaryOutput,
     RuleItem,
     RulesExamplesOutput,
     SummaryOutput,
@@ -58,23 +59,21 @@ def _frame_summary(
     summary: str,
     stereotype: str,
     status: str = "sufficient",
-    missing: list[str] | None = None,
 ) -> SummaryOutput:
     profile, specs = build_code_semantic_plan(node, context)
     model = semantic_frame_response_model(specs)
-    missing = list(missing or [])
     parsed = model.model_validate({
         "slots": {
-                wire_id: {
-                "meaning": summary if status != "insufficient" else "",
-                "status": status,
-                "missing_context": missing,
-            }
-                for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
+            wire_id: summary if status != "insufficient" else ""
+            for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
         },
     })
     frame = normalize_semantic_frame_response(parsed, profile, specs)
-    return project_summary(frame, stereotype=stereotype)
+    return project_summary(
+        frame,
+        summary=summary if status != "insufficient" else "",
+        stereotype=stereotype,
+    )
 
 
 def _semantic_frame(
@@ -86,11 +85,7 @@ def _semantic_frame(
     profile, specs = build_code_semantic_plan(node, context)
     model = semantic_frame_response_model(specs)
     parsed = model.model_validate({"slots": {
-        wire_id: {
-            "meaning": meaning,
-            "status": "sufficient",
-            "missing_context": [],
-        }
+        wire_id: meaning
         for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
     }})
     return normalize_semantic_frame_response(parsed, profile, specs)
@@ -109,7 +104,6 @@ def _batch_frame_summary(
         stereotype=summary.stereotype,
         evidence_status=summary.evidence_status,
         missing_context=summary.missing_context,
-        questions=summary.questions,
         semantic_frame=summary.semantic_frame,
     )
 
@@ -122,14 +116,8 @@ def _frame_wire_payload(
 ) -> dict:
     slots_type = response_model.model_fields["slots"].annotation
     return {
-        "slots": {
-            key: {
-                "meaning": meaning,
-                "status": "sufficient",
-                "missing_context": [],
-            }
-            for key in slots_type.model_fields
-        },
+        "slots": {key: meaning for key in slots_type.model_fields},
+        "summary": meaning,
         "stereotype": stereotype,
     }
 
@@ -149,7 +137,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         output = _batch_frame_summary(
             "1-1", node, context,
             summary="", stereotype="", status="insufficient",
-            missing=["호출 대상 계약 원문"],
         )
 
         finding = _apply_batch_summary(
@@ -162,10 +149,11 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", context.summary)
         self.assertEqual("needs_context", context.extra["summary_status"])
         self.assertEqual(
-            ["호출 대상 계약 원문"], node.extra["summary_missing_context"],
+            ("assigned FUNCTION.RESPONSIBILITY returned no meaning",),
+            finding.reasons,
         )
 
-    def test_table_insight_schedules_only_direct_rw_owner(self) -> None:
+    def test_table_usage_meaning_schedules_only_direct_rw_owner(self) -> None:
         routine = AnalysisContext(
             id="routine", signature="p", file_path="p.sql",
             start_line=1, end_line=20,
@@ -175,6 +163,17 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             id="select", signature="SELECT", file_path="p.sql",
             start_line=5, end_line=5,
             reads=("db:T",), direct_reads=("db:T",),
+            data_object_usages=(DataObjectUsageEvidence(
+                source_id="select",
+                raw_reference="db:T",
+                name="T",
+                access="READ",
+                evidence_file="p.sql",
+                evidence_line=5,
+                producer="linked_edges",
+                table_id="db:T",
+                resolution="exact",
+            ),),
         )
 
         self.assertEqual(
@@ -225,8 +224,8 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             extra={"rule_rows": (28,)},
         )
         accepted = RuleItem(
-            anchor_line=28, cond=None,
-            then=['select("RDITAG_TB")'], nl="",
+            anchor_line=28, structural_condition=None,
+            structural_effects=['select("RDITAG_TB")'],
         )
         with (
             patch(
@@ -245,10 +244,10 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 requested_parts={"rules"},
             )
 
-        self.assertEqual(("db:RDITAG_TB",), serialize.call_args.args[2])
-        self.assertEqual((), serialize.call_args.args[3])
+        self.assertEqual(("db:RDITAG_TB",), serialize.call_args.args[1])
+        self.assertEqual((), serialize.call_args.args[2])
         self.assertEqual(
-            {"db:RDITAG_TB": "READ"}, serialize.call_args.args[4],
+            {"db:RDITAG_TB": "READ"}, serialize.call_args.args[3],
         )
 
     def test_unverified_rule_is_not_regraded_or_serialized_as_trusted(self) -> None:
@@ -309,7 +308,11 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         from pipeline.models.code_analysis_output import BatchRulesItem
 
         expected = {"1-2": "a"}
-        broken = RuleItem(anchor_line=2, cond='F("flag") ==', then=[])
+        broken = RuleItem(
+            anchor_line=2,
+            structural_condition='F("flag") ==',
+            structural_effects=[],
+        )
         accepted, unresolved = _partition_keyed_items(
             [BatchRulesItem(node_key="1-2", rules=[broken])],
             expected,
@@ -350,10 +353,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             })
         with (
             patch(
-                "pipeline.steps.step7_analyze_code.batch_analyze._build_batch_values",
-                return_value=({"unit_id": "unit"}, {}),
-            ),
-            patch(
                 "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
                 side_effect=invalid_output,
             ) as run,
@@ -363,8 +362,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     parent_id="parent",
                     node_ids=["a", "b"],
                     concern="summary",
-                    rule_name="code_summary_batch",
-                    response_model=BatchSummaryOutput,
+                    rule_name="code_summary_node",
                     prompts_dir=Path("."),
                     contexts=contexts,
                     code_by_id=code_by_id,
@@ -375,6 +373,82 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     strategy_name="dbms",
                 )
         self.assertEqual(1, run.await_count)
+
+    async def test_dbms_sibling_summaries_use_available_shared_slots(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        source = Path(temporary.name) / "siblings.sql"
+        source.write_text("first\nsecond\n", encoding="utf-8")
+        contexts = {
+            node_id: AnalysisContext(
+                id=node_id, signature=node_id, file_path=str(source),
+                start_line=line, end_line=line,
+            )
+            for node_id, line in (("a", 1), ("b", 2))
+        }
+        code_by_id = {
+            node_id: CodeNode(
+                id=node_id, signature=node_id, file_path=str(source),
+                start_line=context.start_line, end_line=context.end_line,
+                label="PROCEDURE",
+            )
+            for node_id, context in contexts.items()
+        }
+        for node_id, context in contexts.items():
+            context.extra["ast_statements"] = ()
+            profile, specs = build_code_semantic_plan(code_by_id[node_id], context)
+            context.extra["_semantic_frame_plan"] = (
+                profile, specs, semantic_concern_slots(specs),
+            )
+
+        started = 0
+        in_flight = 0
+        peak_in_flight = 0
+        both_started = asyncio.Event()
+
+        async def valid_output(*, response_model, **_kwargs):
+            nonlocal started, in_flight, peak_in_flight
+            started += 1
+            in_flight += 1
+            peak_in_flight = max(peak_in_flight, in_flight)
+            if started == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            bindings = dict(response_model.__semantic_slot_bindings__)
+            try:
+                return response_model.model_validate({
+                    "slots": {
+                        wire_id: "해당 원문을 처리한다"
+                        for wire_id in bindings
+                    },
+                    "summary": "해당 원문을 처리한다",
+                    "stereotype": "Helper",
+                })
+            finally:
+                in_flight -= 1
+
+        with patch(
+            "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
+            side_effect=valid_output,
+        ) as run:
+            result = await _collect_keyed_concern(
+                parent_id="parent",
+                node_ids=["a", "b"],
+                concern="summary",
+                rule_name="code_summary_node",
+                prompts_dir=Path("."),
+                contexts=contexts,
+                code_by_id=code_by_id,
+                cost_budget=None,
+                table_descriptions={},
+                source_cache=SourceFileCache(),
+                llm_slots=PrioritySemaphore(2),
+                strategy_name="dbms",
+            )
+
+        self.assertEqual({"a", "b"}, set(result))
+        self.assertEqual(2, run.await_count)
+        self.assertEqual(2, peak_in_flight)
 
     async def test_dbms_call_node_uses_exact_single_node_source_closure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -390,7 +464,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 start_line=1, end_line=1,
             )
             context.extra["ast_statements"] = ()
-            context.extra["ast_call_lines"] = ()
             profile, specs = build_code_semantic_plan(node, context)
             context.extra["_semantic_frame_plan"] = (
                 profile, specs, semantic_concern_slots(specs),
@@ -398,27 +471,19 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
 
             async def valid_output(*, rule_name, user_values, response_model, **_kwargs):
                 self.assertEqual("code_summary_node", rule_name)
-                packet = json.loads(user_values["code_body"])
-                self.assertEqual([{"line": 1, "text": source_text}], packet["lines"])
+                self.assertEqual(f"1 | {source_text}", user_values["code_body"])
                 self.assertNotIn("QUOTED_LITERAL", user_values["code_body"])
                 bindings = dict(response_model.__semantic_slot_bindings__)
                 return response_model.model_validate({
                     "slots": {
-                        wire_id: {
-                            "meaning": "'A\\tB'를 do_work에 전달해 호출한다",
-                            "status": "sufficient",
-                            "missing_context": [],
-                        }
+                        wire_id: "'A\\tB'를 do_work에 전달해 호출한다"
                         for wire_id in bindings
                     },
+                    "summary": "'A\\tB'를 do_work에 전달해 호출한다",
                     "stereotype": "Helper",
                 })
 
             with (
-                patch(
-                    "pipeline.steps.step7_analyze_code.batch_analyze._build_batch_values",
-                    return_value=({"unit_id": "unit"}, {}),
-                ),
                 patch(
                     "pipeline.steps.step7_analyze_code.batch_analyze.run_yaml_rule",
                     side_effect=valid_output,
@@ -428,8 +493,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     parent_id=None,
                     node_ids=[node.id],
                     concern="summary",
-                    rule_name="code_summary_batch",
-                    response_model=BatchSummaryOutput,
+                    rule_name="code_summary_node",
                     prompts_dir=Path("llm/prompts/dbms"),
                     contexts={node.id: context},
                     code_by_id={node.id: node},
@@ -537,7 +601,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("rejected", finding.status)
         self.assertIsNone(node.summary)
         self.assertIsNone(node.stereotype)
-        self.assertEqual([], node.extra["questions"])
+        self.assertNotIn("questions", node.extra)
         self.assertEqual("", context.summary)
         self.assertEqual("rejected", context.extra["summary_status"])
 
@@ -596,7 +660,6 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
         context.extra["ast_statements"] = ()
         output = _frame_summary(
             node, context, summary="", stereotype="", status="insufficient",
-            missing=["함수 본문"],
         )
 
         result = await analyze_code_three_split(
@@ -612,7 +675,10 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(node.stereotype)
         self.assertEqual("", context.summary)
         self.assertEqual("needs_context", context.extra["summary_status"])
-        self.assertEqual("unverified", node.extra["analysis_findings"][0]["status"])
+        self.assertEqual("insufficient", node.meaning_status)
+        self.assertGreater(node.missing_context_count, 0)
+        self.assertEqual(64, len(node.missing_context_artifact_hash))
+        self.assertNotIn("analysis_findings", node.extra)
 
     async def test_exact_callee_copy_is_not_published_by_framework(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -658,16 +724,17 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, node)
         self.assertIsNone(node.summary)
         self.assertIsNone(node.stereotype)
-        self.assertEqual([], node.extra["questions"])
+        self.assertNotIn("questions", node.extra)
         self.assertEqual("", context.summary)
-        self.assertEqual("completed_with_findings", node.extra["analysis_status"])
-        self.assertEqual("summary", node.extra["analysis_findings"][0]["concern"])
-        self.assertEqual("rejected", node.extra["analysis_findings"][0]["status"])
-        frame = node.extra["semantic_frame"]
-        self.assertTrue(frame["slots"])
+        self.assertEqual("insufficient", node.meaning_status)
+        self.assertGreater(node.missing_context_count, 0)
+        self.assertNotIn("analysis_status", node.extra)
+        self.assertNotIn("analysis_findings", node.extra)
+        frame = node.extra["_summary_semantic_frame"]
+        self.assertTrue(frame.slots)
         self.assertTrue(all(
-            slot["status"] == "insufficient" and slot["meaning"] == ""
-            for slot in frame["slots"].values()
+            slot.status == "insufficient" and slot.meaning == ""
+            for slot in frame.slots.values()
         ))
 
     async def test_model_output_failures_become_visible_findings_and_run_continues(self) -> None:
@@ -708,14 +775,13 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertIs(result, node)
-        self.assertEqual(["code_summary"], calls)
+        self.assertEqual(["code_summary", "code_rule_meanings"], calls)
         self.assertIsNone(node.summary)
-        self.assertEqual(1, len(node.extra["rules"]))
-        self.assertEqual("completed_with_findings", node.extra["analysis_status"])
-        self.assertEqual(
-            {"summary", "semantic_frame"},
-            {finding["concern"] for finding in node.extra["analysis_findings"]},
-        )
+        self.assertEqual([], node.extra["rules"])
+        self.assertEqual("insufficient", node.meaning_status)
+        self.assertGreater(node.missing_context_count, 0)
+        self.assertNotIn("analysis_status", node.extra)
+        self.assertNotIn("analysis_findings", node.extra)
 
     async def test_invalid_stereotype_does_not_partially_mutate_framework_node(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -781,7 +847,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                     )
         self.assertEqual(1, run.await_count)
 
-    async def test_deterministic_rules_do_not_invoke_a_second_provider(self) -> None:
+    async def test_rule_meanings_use_one_provider_call_without_judge_or_repair(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sample.py"
             source.write_text("def work():\n    return 0\n", encoding="utf-8")
@@ -806,6 +872,12 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                         meaning="작업을 수행해 그 결과를 호출자에게 반환한다.",
                         stereotype="Helper",
                     ))
+                if rule_name == "code_rule_meanings":
+                    return response_model.model_validate({
+                        "conditions": {},
+                        "effects": {"E1": "작업 결과를 호출자에게 반환한다"},
+                        "rows": {"R2": "business_rule"},
+                    })
                 raise AssertionError(f"unexpected provider concern: {rule_name}")
 
             with patch(
@@ -819,9 +891,11 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                     llm_slots=PrioritySemaphore(1),
                 )
         self.assertEqual(1, calls.count("code_summary"))
-        self.assertEqual(["code_summary"], calls)
+        self.assertEqual(1, calls.count("code_rule_meanings"))
+        self.assertEqual(["code_summary", "code_rule_meanings"], calls)
         self.assertEqual(1, len(node.extra["rules"]))
-        self.assertEqual([], node.extra["questions"])
+        self.assertTrue(node.extra["rules"][0]["business_effects"])
+        self.assertNotIn("questions", node.extra)
 
 
 if __name__ == "__main__":
