@@ -4,6 +4,7 @@ from __future__ import annotations
 
 ANALYSIS_SCOPE_LABEL = "AnalysisScope"
 ANALYSIS_GENERATION_LABEL = "AnalysisGeneration"
+SEARCH_SEGMENT_VECTOR_INDEX_NAME = "search_segment_embedding"
 
 PRODUCT_NODE_TYPES = frozenset({
     "Package",

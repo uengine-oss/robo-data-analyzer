@@ -1,13 +1,12 @@
-"""MCP over HTTP — 레거시 검색 목록과 선택 노드 상세 조회를 노출한다.
+"""MCP over HTTP — 현재 Analyzer 검색 목록과 semantic detail을 노출한다.
 
 FastMCP(streamable-http, stateless)를 FastAPI `/robo/mcp` 에 mount. 도구 = REST 와 **같은
 검색 코어**(`search.ranking.retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
 (진행 스트림은 프론트 REST 전용 — 사용자 합의).
 
-spec 060/131: ``cluster_retrieve``는 선택용 목록만, ``node_detail`` 기본 보기는 선택한
-ID의 검증된 semantic frame과 ID-deduplicated linked context를 반환한다. 원문은 감사용
-``full`` 보기에서만 명시적으로 조회한다. 두 도구 모두 **compact 비이스케이프 JSON 텍스트**
-한 벌을 반환한다.
+spec 131: ``cluster_retrieve``는 선택용 목록만, ``node_detail``은 선택한 ID의 검증된
+source-free semantic frame과 ID-deduplicated linked context를 반환한다. 두 도구 모두
+**compact 비이스케이프 JSON 텍스트** 한 벌을 반환한다.
 dict 반환 시 MCP SDK가 escape+indent 텍스트화·structuredContent 이중 전송으로 2.1배
 부풀리므로 문자열 반환은 전송 계약이다.
 
@@ -28,9 +27,8 @@ from search.corpus.evidence_reader import compact_rules
 mcp = FastMCP(
     "robo-cluster",
     instructions=(
-        "레거시 코드그래프 의미검색. cluster_retrieve로 관련 노드 목록과 규칙 근거를 먼저 "
-        "찾고, 필요한 ID만 node_detail의 frame 보기로 semantic frame과 관계 근거를 조회한다. "
-        "정상 생성에서 full 원문 보기를 사용하지 않는다."
+        "Analyzer 의미검색. cluster_retrieve로 관련 노드 목록과 규칙 근거를 먼저 찾고, "
+        "필요한 ID만 node_detail로 semantic frame과 연결 문맥을 조회한다."
     ),
     stateless_http=True,
     streamable_http_path="/",   # mount 지점(/robo/mcp)이 곧 엔드포인트
@@ -80,7 +78,7 @@ async def cluster_retrieve(
     database: Optional[str] = None,
     analysis_scope_id: Optional[str] = None,
 ) -> str:
-    """자연어 요구사항 → 관련 레거시 노드 목록·규칙 근거. 응답은 JSON 텍스트.
+    """자연어 요구사항 → 관련 제품 노드 목록·규칙 근거. 응답은 JSON 텍스트.
 
     Args:
         query: 자연어 요구사항 (예: "주문 처리 시 재고 상태 변화").
@@ -125,22 +123,21 @@ async def node_detail(
         node_id: ``cluster_retrieve`` 목록에서 선택한 노드 ID.
         database: 검색과 같은 운영자 지정 Neo4j DB 이름. 프로젝트/코퍼스 이름을 추측해
             넣지 말고, 지정받지 않았으면 생략한다(서버 기본 DB 사용).
-        view: ``frame``은 Architect 정상 생성용 source-free 의미 프레임 보기다.
-            ``full``은 사람의 감사·결함 추적용 원문 상세다. ``gwt``는 ``frame``의 폐기 전 별칭이다.
+        view: 지원 값은 source-free 의미 프레임인 ``frame`` 하나다.
     """
     requested_id = (node_id or "").strip()
     if not requested_id:
         return _json({"error": {"code": "EMPTY_ID", "message": "node_id is required"}})
     requested_view = (view or "").strip().lower()
-    if requested_view not in {"full", "frame", "gwt"}:
-        return _json({"error": {"code": "INVALID_VIEW", "message": "view must be frame or full"}})
+    if requested_view != "frame":
+        return _json({"error": {"code": "INVALID_VIEW", "message": "view must be frame"}})
 
     def _run() -> dict:
         _select_database(database)
         from search.corpus.node_detail import read_node_detail
         return read_node_detail(
             requested_id,
-            view="frame" if requested_view == "gwt" else requested_view,
+            view=requested_view,
             analysis_scope_id=analysis_scope_id,
         )
 

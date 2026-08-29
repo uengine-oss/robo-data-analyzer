@@ -362,6 +362,16 @@
   - 그래프 회귀 `73 passed, 1 skipped, 12 subtests passed`, 전체 자동 회귀
     `1435 passed, 4 skipped, 319 subtests passed`를 통과했다. 실제 LLM·SKT 재분석은 수행하지 않았다.
 
+- [x] **B31 현재 제품 graph를 직접 읽는 검색·상세조회 계약 복구**
+  - 구형 `FUNCTION/TABLE/RULE/id/graph_owner/EMBEDDED/EMBED_META` 조회를 제거하고 현재
+    `CodeNode/Table/Rule/Example/stable_id/SearchSegment` 제품을 직접 읽게 했다.
+  - 공개되지 않는 `AFFECTS_TABLE` 소비와 중복 `rule_examples` 투영을 제거했다. 상세조회는 구조화 Rule과
+    Example을 한 번만 반환하고 Table 문맥은 공개 READS/WRITES에서 읽는다.
+  - 벡터 인덱스는 scope/generation additional property와 Cypher `SEARCH` in-index filter를 사용한다.
+    기존 framework DB에서 함수 Rule 3건, Table Column 14건, corpus 17/17, dense top-5를 직접 확인했다.
+  - 검색 집중 회귀 `45 passed, 25 subtests passed`, 전체 자동 회귀
+    `1430 passed, 4 skipped, 340 subtests passed`다. 실제 LLM 호출·SKT 재분석·새 DB·Docker는 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

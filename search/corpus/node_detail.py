@@ -1,26 +1,29 @@
-"""MCP ``node_detail``용 단일 노드 원본·관계·근거 조회.
-
-검색 랭킹과 무관한 읽기 전용 경계다. 공개 필드 정책과 소스 완전성 검사를 한 곳에서
-적용해 API가 Cypher/그래프 세부를 소유하지 않게 한다.
-"""
+"""Read one current product node and project a source-free semantic detail."""
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from search.corpus.evidence_reader import compact_rules, gwt_rules, read_columns, read_rules
-from search.corpus.neo4j_reader import read_driver
+from pipeline.languages import ROUTINE_LABELS
+from search.corpus.evidence_reader import (
+    read_columns,
+    read_rules,
+    semantic_rules,
+)
 from search.corpus.generation import (
     CompletedGenerationUnavailable,
     completed_generation_session,
 )
-from graph.ownership import ANALYZER_GRAPH_OWNER
+from search.corpus.neo4j_reader import read_driver
+
 
 _INTERNAL_PROPERTIES = {
-    "embedding", "graph_owner", "analysis_scope_id", "generation_id", "element_id",
+    "embedding",
+    "analysis_scope_id",
+    "generation_id",
+    "stable_id",
 }
-_SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
-_CODE_LABELS = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
+_CODE_NODE_LABEL = "CodeNode"
+_DATA_OBJECT_LABELS = frozenset({"Table", "Column"})
 
 
 def _error(code: str, message: str) -> dict:
@@ -28,16 +31,18 @@ def _error(code: str, message: str) -> dict:
 
 
 def _public_properties(properties: dict[str, Any]) -> dict[str, Any]:
-    hidden = _INTERNAL_PROPERTIES | _SOURCE_PROPERTIES | {"id", "name"}
+    hidden = _INTERNAL_PROPERTIES | {"name"}
     return {key: value for key, value in properties.items() if key not in hidden}
 
 
-def _semantic_description(properties: dict[str, Any]) -> str:
-    """Return persisted source text first, then Analyzer semantic text."""
-    source_description = str(properties.get("description") or "").strip()
-    if source_description:
-        return source_description
-    return str(properties.get("analyzed_description") or "").strip()
+def _display_name(labels: set[str], properties: dict[str, Any]) -> str:
+    if "Table" in labels:
+        return str(properties.get("physical_table_name") or "")
+    if "Column" in labels:
+        return str(properties.get("physical_column_name") or "")
+    if "File" in labels:
+        return str(properties.get("relative_path") or "")
+    return str(properties.get("name") or "")
 
 
 def build_node_detail(
@@ -47,57 +52,30 @@ def build_node_detail(
     columns: list[dict],
     *,
     node_id: str | None = None,
-    require_complete_source: bool = True,
 ) -> dict:
-    """조회 행을 공개 계약으로 직렬화한다. 테스트와 live reader가 같은 검사를 쓴다."""
+    """Serialize current product rows without exposing storage bookkeeping."""
     requested_id = (node_id or "").strip()
     if not requested_id and node_rows:
-        requested_id = str((node_rows[0].get("props") or {}).get("id") or "").strip()
+        requested_id = str(
+            (node_rows[0].get("props") or {}).get("stable_id") or ""
+        ).strip()
     if not requested_id:
         return _error("EMPTY_ID", "node_id is required")
     if not node_rows:
         return _error("NODE_NOT_FOUND", "node not found")
     if len(node_rows) != 1:
-        return _error("NODE_ID_NOT_UNIQUE", "node id is not unique")
+        return _error("NODE_ID_NOT_UNIQUE", "node stable_id is not unique")
 
     row = node_rows[0]
     labels = sorted(set(row.get("labels") or []))
-    props = dict(row.get("props") or {})
-    actual_id = str(props.get("id") or "")
+    properties = dict(row.get("props") or {})
+    actual_id = str(properties.get("stable_id") or "")
     if actual_id != requested_id:
-        return _error("NODE_ID_MISMATCH", "queried node id does not match result")
-
-    is_code = bool(_CODE_LABELS & set(labels))
-    source_values = {key: props.get(key) for key in _SOURCE_PROPERTIES}
-    if is_code:
-        complete = (
-            bool(source_values["file_path"])
-            and isinstance(source_values["start_line"], int)
-            and source_values["start_line"] > 0
-            and isinstance(source_values["end_line"], int)
-            and source_values["end_line"] >= source_values["start_line"]
-            and bool(source_values["code_text"])
-        )
-        if require_complete_source and not complete:
-            return _error("SOURCE_INCOMPLETE", "code node source coordinates or text are incomplete")
-        source = {"available": complete, **source_values}
-    else:
-        source = {
-            "available": False,
-            "file_path": None,
-            "start_line": None,
-            "end_line": None,
-            "code_text": None,
-        }
+        return _error("NODE_ID_MISMATCH", "queried stable_id does not match result")
 
     public_relationships = []
     for relationship in relationships:
         other_properties = dict(relationship.get("other_properties") or {})
-        related_source = None
-        if relationship.get("type") == "REFERENCES":
-            related_source = {
-                key: other_properties.get(key) for key in _SOURCE_PROPERTIES
-            }
         public_relationships.append({
             "type": relationship.get("type") or "",
             "direction": relationship.get("direction") or "",
@@ -106,10 +84,10 @@ def build_node_detail(
                 "name": relationship.get("other_name") or "",
                 "labels": sorted(set(relationship.get("other_labels") or [])),
                 "properties": _public_properties(other_properties),
-                **({"source": related_source} if related_source is not None else {}),
             },
             "properties": {
-                key: value for key, value in (relationship.get("properties") or {}).items()
+                key: value
+                for key, value in (relationship.get("properties") or {}).items()
                 if key not in _INTERNAL_PROPERTIES
             },
         })
@@ -117,237 +95,204 @@ def build_node_detail(
     return {"node": {
         "id": actual_id,
         "labels": labels,
-        "name": props.get("name") or "",
-        "properties": _public_properties(props),
-        "source": source,
+        "name": _display_name(set(labels), properties),
+        "properties": _public_properties(properties),
         "rules": rules,
         "columns": columns,
         "relationships": public_relationships,
     }}
 
 
-def build_gwt_detail(detail: dict, table_contexts: list[dict]) -> dict:
-    """Project one product node into a source-free semantic detail packet."""
+def _valid_artifact_hash(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _function_meaning(properties: dict[str, Any]) -> dict | None:
+    status = properties.get("meaning_status")
+    count = properties.get("missing_context_count")
+    summary = properties.get("summary")
+    stereotype = properties.get("stereotype")
+    artifact_hash = properties.get("missing_context_artifact_hash")
+    if status not in {"sufficient", "partial", "insufficient"}:
+        return None
+    has_summary = isinstance(summary, str) and bool(summary.strip())
+    has_stereotype = isinstance(stereotype, str) and bool(stereotype.strip())
+    valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+    valid_presence = (
+        valid_count
+        and has_summary == has_stereotype
+        and (
+            (status == "sufficient" and has_summary and count == 0 and not artifact_hash)
+            or (
+                status == "partial"
+                and has_summary
+                and count > 0
+                and _valid_artifact_hash(artifact_hash)
+            )
+            or (
+                status == "insufficient"
+                and not has_summary
+                and count > 0
+                and _valid_artifact_hash(artifact_hash)
+            )
+        )
+    )
+    if not valid_presence:
+        return None
+    return {
+        "summary": summary if has_summary else None,
+        "stereotype": stereotype if has_stereotype else None,
+        "meaning_status": status,
+    }
+
+
+def _data_object_meaning(properties: dict[str, Any]) -> dict | None:
+    status = properties.get("meaning_status")
+    count = properties.get("missing_context_count")
+    artifact_hash = properties.get("missing_context_artifact_hash")
+    logical_name = str(properties.get("logical_name") or "").strip()
+    description = str(properties.get("analyzed_description") or "").strip()
+    valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+    valid_presence = (
+        status in {"sufficient", "insufficient"}
+        and valid_count
+        and (
+            (
+                status == "sufficient"
+                and logical_name
+                and description
+                and count == 0
+                and not artifact_hash
+            )
+            or (
+                status == "insufficient"
+                and not logical_name
+                and not description
+                and count > 0
+                and _valid_artifact_hash(artifact_hash)
+            )
+        )
+    )
+    if not valid_presence:
+        return None
+    return {
+        "logical_name": logical_name or None,
+        "analyzed_description": description or None,
+        "meaning_status": status,
+    }
+
+
+def build_semantic_detail(detail: dict, table_contexts: list[dict]) -> dict:
+    """Project one product node into the only supported semantic detail shape."""
     if "error" in detail:
         return detail
     node = detail["node"]
-    props = node.get("properties") or {}
-    calls = []
-    symbols = []
-    for relationship in node.get("relationships") or []:
-        other = relationship.get("node") or {}
-        if (relationship.get("type") == "CALLS"
-                and relationship.get("direction") == "out"):
-            target_id = other.get("id") or ""
-            direction = "out"
-            calls.append({
-                "evidence_id": (
-                    f"{node.get('id') or ''}::call::{direction}::{target_id}"
-                ),
-                "direction": direction,
-                "id": target_id,
-                "name": other.get("name") or "",
-                "labels": list(other.get("labels") or []),
-            })
-        elif relationship.get("type") == "REFERENCES" and relationship.get("direction") == "out":
-            target_id = other.get("id") or ""
-            reference_line = (relationship.get("properties") or {}).get("evidence_line")
-            symbols.append({
-                "evidence_id": (
-                    f"{node.get('id') or ''}::symbol::{target_id}::{reference_line or 0}"
-                ),
-                "relation": "TARGET_REFERENCES_DEFINITION",
-                "id": target_id,
-                "name": other.get("name") or "",
-                "labels": list(other.get("labels") or []),
-                "definition": dict(other.get("properties") or {}),
-                "reference_line": reference_line,
-            })
-    is_function = bool(_CODE_LABELS.intersection(node.get("labels") or ()))
+    labels = set(node.get("labels") or ())
+    properties = node.get("properties") or {}
+    is_function = (
+        _CODE_NODE_LABEL in labels
+        and str(properties.get("code_kind") or "") in ROUTINE_LABELS
+    )
     if is_function:
-        status = props.get("meaning_status")
-        count = props.get("missing_context_count")
-        summary = props.get("summary")
-        stereotype = props.get("stereotype")
-        artifact_hash = props.get("missing_context_artifact_hash")
-        if status not in {"sufficient", "partial", "insufficient"}:
-            return _error(
-                "FUNCTION_MEANING_UNAVAILABLE",
-                "validated function meaning status is unavailable",
-            )
-        has_summary = isinstance(summary, str) and bool(summary.strip())
-        has_stereotype = isinstance(stereotype, str) and bool(stereotype.strip())
-        valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
-        valid_hash = (
-            isinstance(artifact_hash, str)
-            and len(artifact_hash) == 64
-            and all(character in "0123456789abcdef" for character in artifact_hash)
-        )
-        valid_presence = (
-            valid_count
-            and has_summary == has_stereotype
-            and (
-                (status == "sufficient" and has_summary and count == 0 and not artifact_hash)
-                or (status == "partial" and has_summary and count > 0 and valid_hash)
-                or (status == "insufficient" and not has_summary and count > 0 and valid_hash)
-            )
-        )
-        if not valid_presence:
+        meaning = _function_meaning(properties)
+        if meaning is None:
             return _error(
                 "FUNCTION_MEANING_INVALID",
-                "function meaning property presence is inconsistent",
+                "validated function meaning properties are missing or inconsistent",
             )
-        function_meaning = {
-            "summary": summary if has_summary else None,
-            "stereotype": stereotype if has_stereotype else None,
-            "meaning_status": status,
-            "missing_context_count": count,
-            **(
-                {"missing_context_artifact_hash": artifact_hash}
-                if artifact_hash else {}
-            ),
-        }
-    else:
-        status = props.get("meaning_status")
-        count = props.get("missing_context_count")
-        artifact_hash = props.get("missing_context_artifact_hash")
-        logical_name = str(props.get("logical_name") or "").strip()
-        analyzed_description = str(props.get("analyzed_description") or "").strip()
-        valid_count = isinstance(count, int) and not isinstance(count, bool) and count >= 0
-        valid_hash = (
-            isinstance(artifact_hash, str)
-            and len(artifact_hash) == 64
-            and all(character in "0123456789abcdef" for character in artifact_hash)
-        )
-        if status not in {"sufficient", "insufficient"}:
-            return _error(
-                "DATA_OBJECT_MEANING_UNAVAILABLE",
-                "validated table or column meaning status is unavailable",
-            )
-        valid_presence = (
-            valid_count
-            and (
-                (
-                    status == "sufficient" and logical_name and analyzed_description
-                    and count == 0 and not artifact_hash
-                )
-                or (
-                    status == "insufficient" and not logical_name
-                    and not props.get("analyzed_description")
-                    and count > 0 and valid_hash
-                )
-            )
-        )
-        if not valid_presence:
+        meaning_key = "function_meaning"
+    elif labels & _DATA_OBJECT_LABELS:
+        meaning = _data_object_meaning(properties)
+        if meaning is None:
             return _error(
                 "DATA_OBJECT_MEANING_INVALID",
-                "table or column meaning property presence is inconsistent",
+                "validated table or column meaning properties are missing or inconsistent",
             )
-        data_object_meaning = {
-            "logical_name": logical_name or None,
-            "analyzed_description": (
-                    analyzed_description or None
-            ),
-            "meaning_status": status,
-            "missing_context_count": count,
-            **(
-                {"missing_context_artifact_hash": artifact_hash}
-                if artifact_hash else {}
-            ),
-        }
-        function_meaning = None
-    structured_rules = gwt_rules(node.get("rules") or [], node_id=str(node.get("id") or ""))
-    return {"schema_version": "semantic-detail/v2", "node": {
+        meaning_key = "data_object_meaning"
+    else:
+        return _error(
+            "SEMANTIC_DETAIL_UNSUPPORTED",
+            "semantic detail is available only for routine, table, and column products",
+        )
+
+    callees = []
+    for relationship in node.get("relationships") or []:
+        if (
+            relationship.get("type") != "CALLS"
+            or relationship.get("direction") != "out"
+        ):
+            continue
+        other = relationship.get("node") or {}
+        other_properties = other.get("properties") or {}
+        callees.append({
+            "id": other.get("id") or "",
+            "name": other.get("name") or "",
+            "summary": other_properties.get("summary") or "",
+            "stereotype": other_properties.get("stereotype") or "",
+            "meaning_status": other_properties.get("meaning_status") or "",
+        })
+
+    structured_rules = semantic_rules(node.get("rules") or [])
+    return {"schema_version": "semantic-detail/v3", "node": {
         "id": node.get("id") or "",
         "labels": list(node.get("labels") or []),
         "name": node.get("name") or "",
-        **(
-            {"function_meaning": function_meaning}
-            if function_meaning is not None
-            else {"data_object_meaning": data_object_meaning}
-        ),
-        "rule_examples": [
-            {
-                "anchor_line": rule["line"],
-                "examples": rule["examples"],
-            }
-            for rule in structured_rules if rule.get("examples")
-        ],
+        meaning_key: meaning,
+        "rules": structured_rules,
         "linked_context": {
-            "callees": calls,
-            "symbols": symbols,
-            "data_objects": [
-            {
-                "evidence_id": (
-                    f"{node.get('id') or ''}::table::{table.get('id') or ''}"
-                ),
-                **table,
-            }
-            for table in table_contexts
-            ],
+            "callees": callees,
+            "data_objects": table_contexts,
         },
     }}
 
 
-def _sample_snapshot(properties: dict, table_id: str) -> dict:
-    raw = properties.get("sample_snapshot_json")
-    if raw in (None, ""):
-        return {"columns": [], "sample_rows": []}
-    try:
-        value = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid sample snapshot for {table_id}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"invalid sample snapshot for {table_id}")
-    return {
-        "columns": list(value.get("columns") or []),
-        "sample_rows": list(value.get("sample_rows") or []),
-    }
-
-
 def _table_context(
-    session, table_id: str, name: str, access: list[str], properties: dict | None = None,
+    session,
+    table_id: str,
+    name: str,
+    access: list[str],
+    properties: dict | None = None,
 ) -> dict:
     props = properties
     if props is None:
         rows = session.run(
-            "MATCH (t:TABLE {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-            "RETURN properties(t) AS props",
-            id=table_id,
-            graph_owner=ANALYZER_GRAPH_OWNER,
+            "MATCH (table:Table {stable_id:$stable_id, "
+            "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+            "RETURN properties(table) AS props",
+            stable_id=table_id,
         ).data()
         props = dict(rows[0].get("props") or {}) if len(rows) == 1 else {}
-    sample = _sample_snapshot(props, table_id)
-    columns = read_columns(session, table_id)
     return {
         "id": table_id,
-        "name": name or props.get("name") or "",
+        "name": name or props.get("physical_table_name") or "",
         "access": sorted(set(access)),
+        "logical_name": props.get("logical_name") or "",
+        "analyzed_description": props.get("analyzed_description") or "",
         "meaning_status": props.get("meaning_status") or "",
-        "missing_context_count": props.get("missing_context_count") or 0,
-        "missing_context_artifact_hash": (
-            props.get("missing_context_artifact_hash") or ""
-        ),
-        "columns": columns,
-        "sample": sample,
+        "columns": read_columns(session, table_id),
     }
 
 
 def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
     grouped: dict[str, dict] = {}
     for relationship in relationships:
-        rel_type = str(relationship.get("type") or "")
-        if rel_type not in {"READS", "WRITES"}:
+        relationship_type = str(relationship.get("type") or "")
+        if relationship_type not in {"READS", "WRITES"}:
             continue
-        if "TABLE" not in set(relationship.get("other_labels") or []):
+        if "Table" not in set(relationship.get("other_labels") or []):
             continue
         table_id = str(relationship.get("other_id") or "")
         if not table_id:
             continue
-        item = grouped.setdefault(table_id, {
-            "name": relationship.get("other_name") or "", "access": [],
-        })
-        item["access"].append("READ" if rel_type == "READS" else "WRITE")
+        item = grouped.setdefault(
+            table_id,
+            {"name": relationship.get("other_name") or "", "access": []},
+        )
+        item["access"].append("READ" if relationship_type == "READS" else "WRITE")
     return [
         _table_context(session, table_id, item["name"], item["access"])
         for table_id, item in sorted(grouped.items())
@@ -357,82 +302,85 @@ def _related_table_contexts(session, relationships: list[dict]) -> list[dict]:
 def read_node_detail(
     node_id: str,
     *,
-    view: str = "full",
+    view: str = "frame",
     analysis_scope_id: str | None = None,
 ) -> dict:
-    """현재 요청 DB에서 node id 하나를 읽는다. 부재·중복·불완전 소스는 명시 오류다."""
+    """Read a routine/table/column from the active completed generation."""
     requested_id = (node_id or "").strip()
     if not requested_id:
         return _error("EMPTY_ID", "node_id is required")
+    if view != "frame":
+        return _error("INVALID_VIEW", "view must be frame")
 
     driver, database = read_driver()
     try:
         with completed_generation_session(
-            driver, database, analysis_scope_id=analysis_scope_id,
+            driver,
+            database,
+            analysis_scope_id=analysis_scope_id,
         ) as session:
             node_rows = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-                "RETURN labels(n) AS labels, properties(n) AS props",
-                id=requested_id,
-                graph_owner=ANALYZER_GRAPH_OWNER,
+                "MATCH (node {stable_id:$stable_id, "
+                "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+                "RETURN labels(node) AS labels, properties(node) AS props",
+                stable_id=requested_id,
             ).data()
             if len(node_rows) != 1:
-                return build_node_detail(node_rows, [], [], [], node_id=requested_id)
+                return build_node_detail(
+                    node_rows,
+                    [],
+                    [],
+                    [],
+                    node_id=requested_id,
+                )
 
             relationships = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})-[r]-"
-                "(other {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-                "RETURN type(r) AS type, "
-                "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction, "
-                "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
+                "MATCH (node {stable_id:$stable_id, "
+                "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})-[rel]-"
+                "(other {analysis_scope_id:$analysis_scope_id, "
+                "generation_id:$generation_id}) "
+                "RETURN type(rel) AS type, "
+                "CASE WHEN startNode(rel) = node THEN 'out' ELSE 'in' END AS direction, "
+                "coalesce(other.stable_id,'') AS other_id, "
+                "coalesce(other.name, other.physical_table_name, "
+                "other.physical_column_name, other.relative_path, '') AS other_name, "
                 "labels(other) AS other_labels, properties(other) AS other_properties, "
-                "properties(r) AS properties "
+                "properties(rel) AS properties "
                 "ORDER BY type, direction, other_id",
-                id=requested_id,
-                graph_owner=ANALYZER_GRAPH_OWNER,
+                stable_id=requested_id,
             ).data()
             labels = set(node_rows[0].get("labels") or [])
-            rules = read_rules(session, requested_id)
-            columns = read_columns(session, requested_id) if "TABLE" in labels else []
+            rules = (
+                read_rules(session, requested_id)
+                if _CODE_NODE_LABEL in labels
+                else []
+            )
+            columns = (
+                read_columns(session, requested_id)
+                if "Table" in labels
+                else []
+            )
             detail = build_node_detail(
                 node_rows,
                 relationships,
                 rules,
                 columns,
                 node_id=requested_id,
-                require_complete_source=view == "full",
             )
-            if view == "full" or "error" in detail:
-                if "error" not in detail:
-                    detail["meta"] = {
-                        "analysis_scope_id": session.analysis_scope_id,
-                        "generation_id": session.generation_id,
-                        "quality_status": session.quality_status,
-                        "call_resolution": session.call_resolution,
-                        "import_resolution": session.import_resolution,
-                    }
+            if "error" in detail:
                 return detail
-            try:
-                if "TABLE" in labels:
-                    props = dict(node_rows[0].get("props") or {})
-                    tables = [_table_context(
-                        session, requested_id, str(props.get("name") or ""),
-                        [], properties=props,
-                    )]
-                else:
-                    tables = _related_table_contexts(session, relationships)
-            except ValueError as exc:
-                return _error("SAMPLE_SNAPSHOT_INVALID", str(exc))
-            packet = build_gwt_detail(detail, tables)
-            if "error" not in packet:
-                packet["meta"] = {
-                    "analysis_scope_id": session.analysis_scope_id,
-                    "generation_id": session.generation_id,
-                    "quality_status": session.quality_status,
-                    "call_resolution": session.call_resolution,
-                    "import_resolution": session.import_resolution,
-                }
-            return packet
+            if "Table" in labels:
+                props = dict(node_rows[0].get("props") or {})
+                tables = [_table_context(
+                    session,
+                    requested_id,
+                    str(props.get("physical_table_name") or ""),
+                    [],
+                    properties=props,
+                )]
+            else:
+                tables = _related_table_contexts(session, relationships)
+            return build_semantic_detail(detail, tables)
     except CompletedGenerationUnavailable as error:
         return _error("GRAPH_NOT_PUBLISHED", str(error))
     finally:

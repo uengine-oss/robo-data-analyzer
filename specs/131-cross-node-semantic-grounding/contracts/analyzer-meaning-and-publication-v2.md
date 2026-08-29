@@ -941,6 +941,21 @@ REFER_TO의 exact-key 정본이며 관계에 복제하지 않는다. 모든 실�
 SearchSegment의 vector 일부를 잘라 저장하지 않는다. publish transaction·commit까지 포함한 전체 wall과
 Neo4j timing은 immutable `AnalysisHealth`에 소급 patch하지 않고 post-commit run artifact가 소유한다.
 
+### 10.5 검색·상세조회 소비 계약
+
+- 검색은 active completed generation의 `CodeNode-[:HAS_SEARCH_SEGMENT]->SearchSegment`만 읽는다.
+  별도 `EMBEDDED`/`EMBED_META` node, 대문자 구형 label, `id`/`graph_owner` 호환 조회는 없다.
+- `search_segment_embedding` vector index는 `SearchSegment.embedding`을 색인하고
+  `analysis_scope_id`·`generation_id`를 additional property로 포함한다. Cypher `SEARCH`의 in-index filter로
+  요청 범위를 먼저 제한한 뒤 top-k를 구한다. 전체 generation에서 top-k를 뽑고 사후 필터링하지 않는다.
+- corpus는 SearchSegment 수, embedding 존재 수, 단일 model ID, 단일 차원, CodeNode 연결 수가 모두
+  exact-once일 때만 열린다. 저장 model ID와 현재 query encoder fingerprint가 다르면 검색을 중단하며
+  자동 provider 전환·fallback·재임베딩은 하지 않는다.
+- 상세조회는 `semantic-detail/v3`의 `frame` 하나만 제공한다. 함수는 검증된 Summary/Stereotype,
+  구조화 Rule과 그 Example, 사용자 작성 callee, READS/WRITES로 연결된 Table/Column 문맥을 반환한다.
+  Rule의 내부 `AFFECTS_TABLE`, 원문, 좌표/evidence ID, storage bookkeeping과 중복 `rule_examples` 투영은
+  반환하지 않는다.
+
 ## 11. write와 원자적 공개
 
 `AnalysisScope`와 `AnalysisGeneration`은 generation 제품 stage와 분리된 control-node ledger가 소유한다.

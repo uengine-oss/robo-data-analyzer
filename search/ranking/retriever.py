@@ -17,9 +17,7 @@ from search.ranking.recall import recall
 from search.ranking.rerank import passage, predict_cached
 from search.corpus.evidence_reader import read_rules
 from llm import embedder
-from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.schema.rel_types import (
-    AFFECTS_TABLE,
     READS,
     WRITES,
 )
@@ -32,7 +30,7 @@ from search.ranking.graph_access import (
 from search.ranking.row_builder import table_row
 from search.ranking.selection_policy import support_plan
 
-_TABLE_RELS = (READS, WRITES, AFFECTS_TABLE)
+_TABLE_RELS = (READS, WRITES)
 
 
 class Retriever:
@@ -49,10 +47,13 @@ class Retriever:
         if not missing:
             return
         rows = self.s.run(
-            "MATCH (n {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-            "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
-            "RETURN n.id AS id, n.embedding AS v",
-            ids=list(missing), graph_owner=ANALYZER_GRAPH_OWNER,
+            "MATCH (node:CodeNode {analysis_scope_id:$analysis_scope_id, "
+            "generation_id:$generation_id})-[:HAS_SEARCH_SEGMENT]->"
+            "(segment:SearchSegment {analysis_scope_id:$analysis_scope_id, "
+            "generation_id:$generation_id}) "
+            "WHERE node.stable_id IN $ids "
+            "RETURN node.stable_id AS id, segment.embedding AS v",
+            ids=list(missing),
         ).data()
         for r in rows:
             self._vecs[r["id"]] = np.array(r["v"], dtype=np.float32)
@@ -98,11 +99,14 @@ class Retriever:
 
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
-            "MATCH (x {id:$id, graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-            "OPTIONAL MATCH (x)-[r]->(t:TABLE {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+            "MATCH (x:CodeNode {stable_id:$stable_id, "
+            "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+            "OPTIONAL MATCH (x)-[r]->(t:Table {analysis_scope_id:$analysis_scope_id, "
+            "generation_id:$generation_id}) "
             "WHERE type(r) IN $rels "
-            "RETURN elementId(x) AS eid, collect({rel:type(r), t:t.name}) AS tb",
-            id=cid, rels=list(_TABLE_RELS), graph_owner=ANALYZER_GRAPH_OWNER,
+            "RETURN elementId(x) AS eid, "
+            "collect({rel:type(r), t:t.physical_table_name}) AS tb",
+            stable_id=cid, rels=list(_TABLE_RELS),
         ).single()
         rw: dict[str, list] = {}
         for e in (rec["tb"] if rec else []):
@@ -116,7 +120,7 @@ class Retriever:
             "label": n.get("label", ""), "stereotype": n.get("stereotype", ""),
             "summary": (n.get("summary") or "").replace("\n", " "),
             "writes": sorted(set(rw.get("WRITES", []))),
-            "reads": sorted(set(rw.get("READS", []) + rw.get("AFFECTS_TABLE", []))),
+            "reads": sorted(set(rw.get("READS", []))),
             "calls": calls,
             "rules": self._rules_for(cid),
             "relevance": round(score[cid][1], 3), "role": role,
@@ -152,11 +156,13 @@ class Retriever:
             if not frontier:
                 break
             rows = self.s.run(
-                "MATCH (x {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})-[:CALLS]-"
-                "(y {graph_owner:$graph_owner, analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
-                "WHERE x.id IN $ids AND y.id IS NOT NULL "
-                "RETURN DISTINCT y.id AS id",
-                ids=list(frontier), graph_owner=ANALYZER_GRAPH_OWNER,
+                "MATCH (x:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                "generation_id:$generation_id})-[:CALLS]-"
+                "(y:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                "generation_id:$generation_id}) "
+                "WHERE x.stable_id IN $ids "
+                "RETURN DISTINCT y.stable_id AS id",
+                ids=list(frontier),
             ).data()
             reached = {r["id"] for r in rows} - seen
             for cid in reached & others:

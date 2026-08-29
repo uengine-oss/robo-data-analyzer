@@ -1,7 +1,8 @@
 """Dense·BM25·구조 채널 후보 회수와 RRF 융합.
 
-★핵심 이식: dense 채널이 놀이터의 전량 코사인(`vecs @ qv`)이 아니라 **요청 DB 의 벡터 인덱스**
-(`db.index.vector.queryNodes`)를 조회한다. bm25·structural 은 요청 DB 코퍼스(corpus.Corpus)를 쓴다.
+Dense 채널은 메모리 전량 코사인(`vecs @ qv`) 대신 요청 DB의 벡터 인덱스를
+세대·분석 범위 in-index filter가 포함된 Cypher `SEARCH`로 조회한다.
+BM25·structural 채널은 요청 DB 코퍼스(corpus.Corpus)를 쓴다.
 전역 싱글턴 없음 — session·corpus 는 요청마다 주입된다.
 """
 from __future__ import annotations
@@ -11,18 +12,24 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from search.corpus.embed_material import VECTOR_INDEX_NAME
+from graph.publication_schema import SEARCH_SEGMENT_VECTOR_INDEX_NAME
 from shared.config.settings import SETTINGS
-from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
 
 _QUERY_NODES = (
-    "CALL db.index.vector.queryNodes($name, $k, $qv) YIELD node, score "
-    "WHERE node.id IS NOT NULL AND node.graph_owner = $graph_owner "
-    "AND node.analysis_scope_id = $analysis_scope_id "
-    "AND node.generation_id = $generation_id "
-    "RETURN node.id AS id, score AS score"
+    "MATCH (segment:SearchSegment) "
+    "SEARCH segment IN ("
+    f"VECTOR INDEX {SEARCH_SEGMENT_VECTOR_INDEX_NAME} "
+    "FOR $qv "
+    "WHERE segment.analysis_scope_id = $analysis_scope_id "
+    "AND segment.generation_id = $generation_id "
+    "LIMIT $k"
+    ") SCORE AS score "
+    "MATCH (parent:CodeNode {analysis_scope_id:$analysis_scope_id, "
+    "generation_id:$generation_id})-[:HAS_SEARCH_SEGMENT]->(segment) "
+    "RETURN parent.stable_id AS id, max(score) AS score "
+    "ORDER BY score DESC"
 )
 
 
@@ -58,10 +65,8 @@ def _dense_index(session, qv, k: int) -> list[tuple[str, float]]:
     """요청 DB 벡터 인덱스 근사탐색 top-k (id, cosine)."""
     rows = session.run(
         _QUERY_NODES,
-        name=VECTOR_INDEX_NAME,
         k=k,
         qv=[float(x) for x in qv],
-        graph_owner=ANALYZER_GRAPH_OWNER,
     ).data()
     return [(r["id"], float(r["score"])) for r in rows]
 

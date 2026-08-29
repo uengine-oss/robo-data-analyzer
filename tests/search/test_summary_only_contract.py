@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 
 from search.corpus.corpus import Corpus, _CORPUS_QUERY
-from search.corpus.embed_material import FETCH_MATERIAL, compose_embed_text
+from search.corpus.embed_material import compose_embed_text
 from search.ranking.recall import _structural
 from search.ranking.rerank import passage
 
@@ -39,10 +39,9 @@ class SummaryOnlyContractTest(unittest.TestCase):
         self.assertEqual(compose_embed_text(first), compose_embed_text(second))
 
     def test_queries_require_summary(self) -> None:
-        for query in (FETCH_MATERIAL, _CORPUS_QUERY):
-            with self.subTest(query=query):
-                where_clause = query.split("RETURN", 1)[0]
-                self.assertIn("n.summary IS NOT NULL", where_clause)
+        where_clause = _CORPUS_QUERY.split("RETURN", 1)[0]
+        self.assertIn("node.summary IS NOT NULL", where_clause)
+        self.assertIn("HAS_SEARCH_SEGMENT", where_clause)
         self.assertNotIn("logical_name", _CORPUS_QUERY)
 
     def test_sparse_and_structural_channels_ignore_other_fields(self) -> None:

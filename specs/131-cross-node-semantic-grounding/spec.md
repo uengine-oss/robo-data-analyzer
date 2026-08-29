@@ -154,6 +154,13 @@ exact-once ledger를 같은 generation에서 다시 읽어 검증한 뒤 active 
 Component·GlossaryTerm·SearchSegment와 계약된 관계만 둔다. occurrence, unresolved, candidate, raw response,
 local key map, finding은 graph node가 아니라 run artifact다.
 
+검색과 상세조회는 이 제품 graph를 별도 호환 투영 없이 직접 읽는다. 모든 제품 identity는 `stable_id`이며,
+검색 corpus는 active completed generation의 `CodeNode-[:HAS_SEARCH_SEGMENT]->SearchSegment` exact-once
+population이다. 벡터 인덱스는 `analysis_scope_id`와 `generation_id`를 in-index filter로 사용한다. 저장된
+embedding model ID와 질의 encoder가 다르면 fallback이나 암묵 재임베딩 없이 실패한다. 상세조회는 원문·
+내부 evidence를 복제하지 않고 함수 의미, 구조화 Rule/Example, 사용자 CALLS, READS/WRITES 데이터 문맥만
+`semantic-detail/v3`으로 반환한다.
+
 Rule property는 `anchor_line`, `structural_condition`, `structural_effects`, `business_effects`만 보존한다.
 소유 함수, rule id, 항상 같은 status와 검증되지 않은 자연어 condition은 관계·anchor 또는 구조 정본에서
 복원되거나 제품 정확도를 해치므로 중복 저장하지 않는다. Example은 `given_conditions`와

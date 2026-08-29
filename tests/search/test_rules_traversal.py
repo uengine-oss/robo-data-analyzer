@@ -1,4 +1,4 @@
-"""Retriever._rules_for — HAS_RULE→AFFECTS_TABLE→HAS_EXAMPLE 트래버설 단위 테스트.
+"""Retriever._rules_for — current HAS_RULE→HAS_EXAMPLE traversal tests.
 
 하위 소비자가 함수별 Rule의 구조 사실과 Strategy-B 의미 상태를
 tables, examples[{kind, given, then}]}] (파이썬 leaf 계약, spec 116)를 누락·오염 0 으로
@@ -57,25 +57,21 @@ class RulesTraversalTest(unittest.TestCase):
 
     def test_groups_examples_under_rules_in_order(self):
         rows = [
-            _row("R-3", 3, example_id="fn::R-3::E1",
-                 given_conditions=['F("cd") == "3"'], expected_effects=['ret("0")'],
-                 tables=[{"name": "orders", "op": "INSERT"}]),
-            _row("R-9", 9, example_id="fn::R-9::E1",
-                 given_conditions=['F("cd") == "9"'], expected_effects=['ret("1")'],
-                 tables=[{"name": "stock", "op": "UPDATE"}]),
+            _row("R-3", 3, example_id="fn::R-3::E1", example_ordinal=1,
+                 given_conditions=['F("cd") == "3"'], expected_effects=['ret("0")']),
+            _row("R-9", 9, example_id="fn::R-9::E1", example_ordinal=1,
+                 given_conditions=['F("cd") == "9"'], expected_effects=['ret("1")']),
         ]
         out = self._retriever(rows)._rules_for("fn")
         self.assertEqual([x["rule_id"] for x in out], ["R-3", "R-9"])
         self.assertEqual([x["anchor_line"] for x in out], [3, 9])
         self.assertEqual(len(out[0]["examples"]), 1)
         self.assertEqual(out[0]["examples"][0], {
-            "kind": "satisfy",
             "given_conditions": ['F("cd") == "3"'],
             "expected_effects": ['ret("0")'],
         })
         # 테이블 귀속은 규칙 단위다 — example 이 아니라 rule 에 붙는다.
-        self.assertEqual(out[0]["tables"], [{"name": "orders", "op": "INSERT"}])
-        self.assertEqual(out[1]["tables"], [{"name": "stock", "op": "UPDATE"}])
+        self.assertNotIn("tables", out[0])
 
     def test_duplicate_join_row_does_not_duplicate_one_example(self):
         row = _row("R-3", 3, example_id="fn::R-3::E1",
@@ -84,13 +80,15 @@ class RulesTraversalTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(len(out[0]["examples"]), 1)
 
-    def test_query_scopes_by_owner_and_orders_by_anchor(self):
+    def test_query_uses_current_stable_identity_and_orders_by_anchor(self):
         r = self._retriever([])
         r._rules_for("member.c::checkout")
-        self.assertEqual(r.s.last_params["id"], "member.c::checkout")
+        self.assertEqual(r.s.last_params["stable_id"], "member.c::checkout")
         # idx 숫자 정렬 계약: '::E10' 이 '::E2' 앞에 오지 않도록 size 선행 정렬.
         self.assertIn("ORDER BY ordinal, anchor_line", r.s.last_cypher)
-        self.assertIn("size(coalesce(e.id,''))", r.s.last_cypher)
+        self.assertIn("example_ordinal", r.s.last_cypher)
+        self.assertIn("r.stable_id", r.s.last_cypher)
+        self.assertNotIn("AFFECTS_TABLE", r.s.last_cypher)
 
     def test_rule_without_examples_yields_machine_body_only(self):
         out = self._retriever([_row("R-3", 3)])._rules_for("fn")
@@ -98,14 +96,6 @@ class RulesTraversalTest(unittest.TestCase):
         self.assertEqual(out[0]["examples"], [])
         self.assertEqual(out[0]["structural_condition"], 'F("cd") == "3"')
         self.assertEqual(out[0]["structural_effects"], ['ret("0")'])
-        self.assertEqual(out[0]["owner_signature"], "fn(itf)")
-
-    def test_null_table_entries_dropped(self):
-        rows = [_row("R-3", 3, tables=[
-            {"name": None, "op": None}, {"name": "orders", "op": "READ"},
-        ])]
-        out = self._retriever(rows)._rules_for("fn")
-        self.assertEqual(out[0]["tables"], [{"name": "orders", "op": "READ"}])
 
     def test_no_rules_returns_empty(self):
         self.assertEqual(self._retriever([])._rules_for("fn"), [])

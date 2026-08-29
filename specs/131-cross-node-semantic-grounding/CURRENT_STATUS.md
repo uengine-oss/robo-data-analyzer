@@ -2091,3 +2091,30 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   재분석은 수행하지 않았다.
 - 사람용 최종 HTML도 같은 동작으로 갱신했다. 60,380 bytes, section `14/14`, details `12/12`,
   SHA-256 `fdfb1b3594e5738722ac22175c454e983de4d196b06d52eb07d0d1d59a9437fb`다.
+
+## 115. 현재 제품 graph 검색·상세조회 소비자 복구 (2026-08-29)
+
+- 원인 확정: 현재 publisher와 기존 `framework` DB는 `CodeNode/Table/Column/Rule/Example/SearchSegment`,
+  `stable_id`, scope/generation을 공개하지만 검색·MCP 소비자는 폐기된 대문자 label, `id`, `graph_owner`,
+  `EMBEDDED/EMBED_META`를 읽고 있었다. 실제 첫 실패는 존재하는
+  `code:zapamcom10150.c:a000_input_validation`과 `db:ZNGM_COMM_CD_DTL`이 `NODE_NOT_FOUND`가 된 좌표다.
+  Rule reader는 제품에 없는 `AFFECTS_TABLE`까지 조회했다.
+- 수정: corpus·ranking·상세조회가 현재 제품 graph를 직접 읽는다. Rule/Example은 HAS_RULE/HAS_EXAMPLE
+  ordinal로 결합하고, Table 문맥은 CodeNode의 공개 READS/WRITES만 사용한다. `semantic-detail/v3`은
+  함수 의미, 구조화 Rule/Example, 사용자 callee, Table/Column 문맥을 한 번씩 반환하며 원문·내부 evidence,
+  storage bookkeeping, 중복 `rule_examples`를 반환하지 않는다.
+- 벡터 원인과 수정: 구형 인덱스는 빈 `EMBEDDED.embedding`을 가리켰고 기존 vector procedure는 전체
+  population top-k 뒤 scope/generation을 사후 필터링했다. `search_segment_embedding`을
+  `SearchSegment.embedding`과 두 additional property로 재생성하고 Neo4j 2026.04의 Cypher `SEARCH`
+  in-index filter로 바꿨다. 구형 `embedded_code_vec`는 정확한 target 확인 뒤 일회 제거했다.
+- 기존 DB 직접 검증: 인증과 `SHOW DATABASES`는 허용된 5개가 모두 online이다. 최종 scope의 함수 상세는
+  Rule 3건, Table 상세는 Column 14건, 동일 embedding fingerprint로 읽은 corpus는 17/17 unique,
+  저장 vector 직접 질의는 범위 내 top-5와 자기 유사도 1.0을 반환했다. 저장 model
+  `openai:text-embedding-3-small`과 기본 실행 설정 `sglang:BAAI/bge-m3` 불일치는 우회하지 않고
+  fail-closed하며, 검증에서는 API 호출 없이 fingerprint만 일치시켰다.
+- 검증: 검색 집중 회귀 `45 passed, 25 subtests passed`, 전체 자동 회귀
+  `1430 passed, 4 skipped, 340 subtests passed`다. 실제 LLM 호출, SKT 재분석, 새 DB와 Docker는
+  사용하지 않았다. 보호된 Catalog/evidence IR WIP와 금지 script는 건드리거나 stage하지 않았다.
+- 사람용 최종 HTML도 현재 검색·상세조회 경로와 동기화했다. 61,396 bytes, section `14/14`,
+  details `12/12`, SHA-256
+  `44830c7fb94f092b325d7a6cf4ec3ec6115b4706b8a615fee9f53017b754ecf6`다.

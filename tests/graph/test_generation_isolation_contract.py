@@ -42,8 +42,17 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
         self.assertFalse(hasattr(constraints, "LEGACY_ID_CONSTRAINT_NAMES"))
         self.assertFalse(hasattr(constraints, "LEGACY_ANALYZER_STABLE_LABELS"))
 
-    def test_schema_bootstrap_has_no_obsolete_table_index(self) -> None:
-        self.assertEqual([], constraints.INDEXES)
+    def test_schema_bootstrap_has_only_current_search_segment_index(self) -> None:
+        self.assertEqual(1, len(constraints.INDEXES))
+        [statement] = constraints.INDEXES
+        self.assertIn("SearchSegment", statement)
+        self.assertIn("segment.embedding", statement)
+        self.assertIn(
+            "WITH [segment.analysis_scope_id, segment.generation_id]",
+            statement,
+        )
+        self.assertNotIn("table_schema", statement)
+        self.assertNotIn(":TABLE", statement)
 
     def test_run_does_not_destroy_published_graph_before_success(self) -> None:
         source = inspect.getsource(run_executor.execute_run)

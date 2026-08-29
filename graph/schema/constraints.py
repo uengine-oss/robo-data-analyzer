@@ -7,7 +7,10 @@ analysis run.
 from __future__ import annotations
 
 from graph.neo4j_client import Neo4jClient
-from graph.publication_schema import PRODUCT_NODE_TYPES
+from graph.publication_schema import (
+    PRODUCT_NODE_TYPES,
+    SEARCH_SEGMENT_VECTOR_INDEX_NAME,
+)
 
 
 PRODUCT_CONSTRAINTS: tuple[str, ...] = tuple(
@@ -29,8 +32,13 @@ CONSTRAINTS: list[str] = [
     "FOR (s:AnalysisScope) REQUIRE (s.graph_owner, s.analysis_scope_id) IS UNIQUE",
 ] + list(PRODUCT_CONSTRAINTS)
 
-# No standalone lookup index is required by the current scoped product queries.
-INDEXES: list[str] = []
+INDEXES: list[str] = [
+    "CREATE VECTOR INDEX "
+    f"{SEARCH_SEGMENT_VECTOR_INDEX_NAME} IF NOT EXISTS "
+    "FOR (segment:SearchSegment) ON segment.embedding "
+    "WITH [segment.analysis_scope_id, segment.generation_id] "
+    "OPTIONS {indexConfig: {`vector.similarity_function`: 'cosine'}}",
+]
 
 
 async def ensure_schema(client: Neo4jClient) -> None:
