@@ -2071,4 +2071,23 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   `94 passed, 132 subtests passed`, 전체 자동 회귀 `1435 passed, 4 skipped, 319 subtests passed`를
   통과했다. 실제 LLM 호출, SKT 재분석, Neo4j 쓰기, 새 DB 생성은 0회다.
 - 사람용 최종 HTML도 같은 완전한 Summary와 TABLE/COLUMN 입력 예시로 동기화했다. 현재 크기는
-  60,060 bytes, SHA-256은 `cca80c5c276b3bca96d36479c03938cfc1346c45bf116c348f0d51f96f2bddba`다.
+  이후 Neo4j 실행 경로 설명까지 반영한 §114의 최신 hash가 정본이다.
+
+## 114. 기존 Neo4j의 구형 Analyzer 자산 일회 정리와 실행 경로 직선화 (2026-08-29)
+
+- 원인: `ensure_schema`가 분석을 시작할 때마다 DB 전체에서 Analyzer 후보 라벨을 찾고,
+  `SHOW CONSTRAINTS`로 구형 단일 ID 제약을 판별한 뒤 삭제를 반복했다. 현재 제품이 사용하지 않는
+  대문자 `TABLE.schema` 인덱스도 매번 선언했다. 과거 이관 책임이 정상 분석 경로에 남은 우회였다.
+- 기존 DB만 사용해 일회 정리했다. `neo4j`의 구형 Analyzer 노드 978개·제약 11개,
+  `test`의 구형 Analyzer 노드 2,660개·제약 6개, `framework`의 구형 세대 관리 노드 1개·제약 3개와
+  세 DB의 구형 `table_schema` 인덱스를 제거했다. 새 DB와 Docker는 사용하지 않았다.
+- 보존 검증: `framework` 현재 제품 노드는 정리 전후 1,807개로 같고, `neo4j`의 Fabric 노드 1개도
+  그대로다. `neo4j/test/framework/dbms/system`은 모두 `online/online`이며 금지 라벨,
+  구형 제약, 구형 인덱스는 0건이다.
+- 제품 수정: `ensure_schema`는 이제 현재 generation-scoped 제약을 `IF NOT EXISTS`로 선언만 한다.
+  DB 탐색, 동적 구형 판별, `DROP`, 구형 호환 상수와 보조 함수는 제품 코드에서 제거했다.
+- 검증: formal red 2건을 먼저 확인했고, 그래프 회귀 `73 passed, 1 skipped, 12 subtests passed`,
+  전체 자동 회귀 `1435 passed, 4 skipped, 319 subtests passed`를 통과했다. 실제 LLM 호출과 SKT
+  재분석은 수행하지 않았다.
+- 사람용 최종 HTML도 같은 동작으로 갱신했다. 60,380 bytes, section `14/14`, details `12/12`,
+  SHA-256 `fdfb1b3594e5738722ac22175c454e983de4d196b06d52eb07d0d1d59a9437fb`다.

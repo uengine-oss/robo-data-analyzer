@@ -354,6 +354,14 @@
     `94 passed, 132 subtests passed`, 전체 자동 회귀 `1435 passed, 4 skipped, 319 subtests passed`다.
     실제 LLM·SKT 재분석·Neo4j 쓰기는 0회다.
 
+- [x] **B30 Neo4j 구형 Analyzer 자산 일회 정리와 실행 중 migration 제거**
+  - 기존 `neo4j/test/framework`에서 정확히 확인한 구형 Analyzer 노드·제약·인덱스만 일회 제거하고,
+    현재 `framework` 제품과 Fabric/Catalog 자산은 보존했다. 새 DB와 Docker는 사용하지 않았다.
+  - `ensure_schema`의 DB 전체 탐색, 동적 구형 제약 판별, 반복 `DROP`을 제거하고 현재
+    generation-scoped 제약의 `IF NOT EXISTS` 선언만 남겼다.
+  - 그래프 회귀 `73 passed, 1 skipped, 12 subtests passed`, 전체 자동 회귀
+    `1435 passed, 4 skipped, 319 subtests passed`를 통과했다. 실제 LLM·SKT 재분석은 수행하지 않았다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

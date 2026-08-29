@@ -34,32 +34,16 @@ class GenerationIsolationRedContractTests(unittest.TestCase):
                 analyzer_constraints,
             )
 
-    def test_legacy_schema_constraint_cannot_collapse_catalog_siblings(self) -> None:
-        self.assertIn("schema_db_name", constraints.LEGACY_ID_CONSTRAINT_NAMES)
+    def test_schema_bootstrap_contains_no_runtime_migration(self) -> None:
+        source = inspect.getsource(constraints.ensure_schema)
+        self.assertNotIn("SHOW CONSTRAINTS", source)
+        self.assertNotIn("DROP CONSTRAINT", source)
+        self.assertNotIn("MATCH (", source)
+        self.assertFalse(hasattr(constraints, "LEGACY_ID_CONSTRAINT_NAMES"))
+        self.assertFalse(hasattr(constraints, "LEGACY_ANALYZER_STABLE_LABELS"))
 
-    def test_observed_analyzer_code_labels_drop_only_legacy_single_id_constraints(self) -> None:
-        rows = [
-            {
-                "name": "uniq_function", "type": "NODE_PROPERTY_UNIQUENESS",
-                "labelsOrTypes": ["FUNCTION"], "properties": ["id"],
-            },
-            {
-                "name": "architect_ui_id", "type": "NODE_PROPERTY_UNIQUENESS",
-                "labelsOrTypes": ["UI"], "properties": ["id"],
-            },
-            {
-                "name": "function_generation", "type": "NODE_PROPERTY_UNIQUENESS",
-                "labelsOrTypes": ["FUNCTION"],
-                "properties": ["generation_id", "id"],
-            },
-        ]
-
-        self.assertEqual(
-            ["uniq_function"],
-            constraints._legacy_analyzer_id_constraint_names(
-                rows, {"ANALYZER_OWNED", "FUNCTION"},
-            ),
-        )
+    def test_schema_bootstrap_has_no_obsolete_table_index(self) -> None:
+        self.assertEqual([], constraints.INDEXES)
 
     def test_run_does_not_destroy_published_graph_before_success(self) -> None:
         source = inspect.getsource(run_executor.execute_run)

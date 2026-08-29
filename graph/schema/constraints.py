@@ -1,34 +1,14 @@
-"""Neo4j 인덱스 / 제약 일괄 생성.
+"""Create the current Analyzer Neo4j constraints once at run start.
 
-run 시작 시 1회 호출 (``ensure_schema()``).
-``IF NOT EXISTS`` — 이미 있으면 무시. 스키마는 안정적이라 매 run 새로 만들지 않는다.
-
-라벨은 UPPER_SNAKE (plan §4 명명 규칙).
-새 노드 종류 추가 시: 이 파일에 CONSTRAINT 1줄 + INDEX (필요 시) 추가.
+The runtime only declares the schema required by the current publication model.
+Historical schema cleanup is an explicit maintenance operation, never part of an
+analysis run.
 """
 from __future__ import annotations
 
 from graph.neo4j_client import Neo4jClient
-from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.publication_schema import PRODUCT_NODE_TYPES
 
-
-# 노드 유일성 제약 (UNIQUE) — 모든 노드 식별 키 = ``id`` 단일 (종류 무관).
-#   값은 노드별 고유 문자열 (DB=db.schema.name / 코드=fqn형태 / EM=해시·합성키).
-# 제약 이름은 ``uniq_<label>`` — 옛 버전이 ``module_id`` 등 동일 이름을 옛 속성(m.module_id)에
-# 걸어둔 더티 DB 에서도 ``IF NOT EXISTS`` 가 (이름 충돌로) 새 ``.id`` 제약 생성을 막지 않도록
-# 새 이름 사용. (이미 .id 에 동등 제약이 있으면 IF NOT EXISTS 가 no-op — clean·dirty 양쪽 안전.)
-# ★코드 노드 라벨은 antlr type **열린 집합**이라 종류별 제약 열거 불가 →
-#   전 노드 공통 마커 ``:ANALYZER_OWNED`` 에 id 유니크 제약을 건다. 이 인덱스가 없으면
-#   무라벨 MATCH by id 가 AllNodesScan — AST 적재 159초의 원인이었다 (run6 실측).
-LEGACY_ID_CONSTRAINT_NAMES: tuple[str, ...] = (
-    "uniq_analyzer_owned", "uniq_schema", "uniq_table", "uniq_object_reference",
-    "uniq_column", "uniq_package", "uniq_rule", "uniq_example", "uniq_question",
-    "uniq_project_file", "uniq_external_chunk",
-    # Pre-generation schema used (db, name), which cannot represent two SQL catalogs
-    # containing the same schema. The generation-scoped canonical id constraint supersedes it.
-    "schema_db_name",
-)
 
 PRODUCT_CONSTRAINTS: tuple[str, ...] = tuple(
     "CREATE CONSTRAINT "
@@ -49,90 +29,11 @@ CONSTRAINTS: list[str] = [
     "FOR (s:AnalysisScope) REQUIRE (s.graph_owner, s.analysis_scope_id) IS UNIQUE",
 ] + list(PRODUCT_CONSTRAINTS)
 
-# 조회 인덱스 (안정 라벨만 — 코드 노드는 열린 antlr type 라벨이라 id 키로 조회).
-INDEXES: list[str] = [
-    "CREATE INDEX table_schema IF NOT EXISTS FOR (t:TABLE) ON (t.schema)",
-]
-
-# 무소유 레거시를 자동 migration할 수 있는 Analyzer 고유 라벨만 열거한다. Architect의 ``UI``처럼
-# 대문자 라벨도 존재하므로 "대문자면 Analyzer"라는 포괄 규칙은 금지한다. 열린 집합 코드 라벨은
-# Analyzer 원문 좌표 3종(file_path/start_line/end_line)이 모두 있을 때만 분류한다.
-# 뒤쪽 외부 라벨 10종은 spec 075 시절 산출물 — 새 계약(spec 078)은 PROJECT_FILE·
-# EXTERNAL_CHUNK 만 생산하지만, 옛 run 이 남긴 무소유 데이터를 owner-scoped wipe 로
-# 지울 수 있도록 legacy 데이터 라벨로만 유지한다 (active producer/consumer 아님).
-LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
-    "COLUMN", "EMBED_META", "EXAMPLE", "GLOSSARY", "PACKAGE",
-    "QUESTION", "RULE", "SCHEMA", "TABLE",
-    "PROJECT_FILE", "EXTERNAL_CHUNK",
-    "SQL_STATEMENT", "CONFIG_SECTION", "ARTIFACT_CHUNK", "CHUNK",
-    "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
-)
-
-def _legacy_analyzer_id_constraint_names(
-    constraints: list[dict], analyzer_labels: set[str],
-) -> list[str]:
-    """Select only obsolete single-id constraints on observed Analyzer labels."""
-    names: list[str] = []
-    for row in constraints:
-        labels = list(row.get("labelsOrTypes") or [])
-        properties = list(row.get("properties") or [])
-        name = str(row.get("name") or "")
-        if (
-            row.get("type") == "NODE_PROPERTY_UNIQUENESS"
-            and len(labels) == 1
-            and labels[0] in analyzer_labels
-            and properties == ["id"]
-            and name
-            and name not in {
-                "uniq_analyzer_owned_generation",
-                "uniq_analyzer_owned_scope_generation",
-            }
-        ):
-            names.append(name)
-    return sorted(set(names))
-
-
-def _quoted_schema_name(name: str) -> str:
-    return "`" + name.replace("`", "``") + "`"
+# No standalone lookup index is required by the current scoped product queries.
+INDEXES: list[str] = []
 
 
 async def ensure_schema(client: Neo4jClient) -> None:
-    """제약 + 인덱스 생성 (``IF NOT EXISTS`` — 이미 있으면 무시). run 시작 시 1회.
-
-    스키마는 안정적 — 매 run drop-recreate 하지 않는다 (다른 프로젝트와 DB 를 공유할 경우
-    drop-all 은 남의 스키마까지 파괴). 단 옛 버전 잔재 인덱스가 제약 자리를 차지하면
-    충돌하므로 — analyzer 는 깨끗한 전용 DB 를 써야 한다.
-    """
-    owned_label_rows = await client.run_read_query(
-        """
-MATCH (n)
-WHERE n.graph_owner = $graph_owner
-   OR any(label IN labels(n) WHERE label IN $stable_labels)
-   OR (n.file_path IS NOT NULL AND n.start_line IS NOT NULL AND n.end_line IS NOT NULL)
-UNWIND labels(n) AS label
-RETURN DISTINCT label
-""",
-        {
-            "graph_owner": ANALYZER_GRAPH_OWNER,
-            "stable_labels": list(LEGACY_ANALYZER_STABLE_LABELS),
-        },
-    )
-    analyzer_labels = {
-        str(row.get("label") or "") for row in owned_label_rows if row.get("label")
-    }
-    constraint_rows = await client.run_read_query(
-        """
-SHOW CONSTRAINTS
-YIELD name, type, labelsOrTypes, properties
-RETURN name, type, labelsOrTypes, properties
-"""
-    )
-    dynamic_legacy_names = _legacy_analyzer_id_constraint_names(
-        constraint_rows, analyzer_labels,
-    )
-    for name in sorted(set(LEGACY_ID_CONSTRAINT_NAMES) | set(dynamic_legacy_names)):
-        await client.run_query(
-            f"DROP CONSTRAINT {_quoted_schema_name(name)} IF EXISTS"
-        )
-    for stmt in CONSTRAINTS + INDEXES:
-        await client.run_query(stmt)
+    """Declare the current stable schema without inspecting or migrating history."""
+    for statement in CONSTRAINTS + INDEXES:
+        await client.run_query(statement)
