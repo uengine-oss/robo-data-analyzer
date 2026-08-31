@@ -168,7 +168,53 @@ class PromptSemanticInventoryTest(unittest.TestCase):
         self.assertEqual(0, inventory["rule"]["missing_response_rows"])
         self.assertEqual(0, inventory["rule"]["extra_response_rows"])
 
-    def test_current_exact_slot_summary_table_and_column_wire_are_counted(self) -> None:
+    def test_compact_rule_wire_ordinals_map_to_internal_anchor_rows(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            directory = run_dir / "rule-structures"
+            directory.mkdir()
+            evidence = {
+                "conditions": {"C415": "ready"},
+                "effects": {},
+                "rows": {"R415": {"role": "decision", "when": ["C415"]}},
+            }
+            (directory / "validate.json").write_text(json.dumps({
+                "schema": "deterministic-rule/v1",
+                "target_id": "code:order.c:validate",
+                "evidence": evidence,
+                "rules": [
+                    rule.model_dump(mode="json")
+                    for rule in materialize_rule_items(evidence, (415,))
+                ],
+            }), encoding="utf-8")
+            prompt_dir = run_dir / "llm-prompts"
+            prompt_dir.mkdir()
+            response = {
+                "target_id": "code:order.c:validate",
+                "response": {"parsed": {
+                    "rows": {"R1": "business_rule"},
+                    "effects": {},
+                }},
+                "response_schema": {"schema": {
+                    "properties": {"rows": {
+                        "type": "object",
+                        "properties": {"R1": {"type": "string"}},
+                        "required": ["R1"],
+                    }},
+                }},
+            }
+            (prompt_dir / "code_rule_meanings.jsonl").write_text(
+                json.dumps(response) + "\n", encoding="utf-8",
+            )
+
+            inventory, _, _ = _prompt_inventory(run_dir)
+
+        self.assertEqual(1, inventory["rule"]["response_rows"])
+        self.assertEqual(1, inventory["rule"]["business_rule_rows"])
+        self.assertEqual(0, inventory["rule"]["missing_response_rows"])
+        self.assertEqual(0, inventory["rule"]["extra_response_rows"])
+
+    def test_current_exact_summary_table_and_column_wire_are_counted(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             run_dir = Path(temporary_directory)
             prompt_dir = run_dir / "llm-prompts"
@@ -197,7 +243,6 @@ class PromptSemanticInventoryTest(unittest.TestCase):
                 "target_id": "code:f",
                 "response": {"parsed": {
                     "summary": "전체 흐름", "stereotype": "Util",
-                    "slots": {"W-summary": "입력을 검증한다"},
                 }},
             }
             table = {
@@ -221,13 +266,33 @@ class PromptSemanticInventoryTest(unittest.TestCase):
             inventory, table_ids, column_ids = _prompt_inventory(run_dir)
 
         self.assertEqual(0, inventory["summary"]["empty_summary"])
-        self.assertEqual(1, inventory["summary"]["slots"])
-        self.assertEqual(0, inventory["summary"]["empty_slots"])
+        self.assertEqual(2, inventory["summary"]["meaning_fields"])
+        self.assertEqual(0, inventory["summary"]["empty_meaning_fields"])
         self.assertEqual(0, inventory["table"]["empty_meaning"])
         self.assertEqual(0, inventory["column"]["empty_meaning"])
         self.assertEqual(1, inventory["column"]["empty_meaning_fields"])
         self.assertEqual({"db:T"}, table_ids)
         self.assertEqual({"db:T.C"}, column_ids)
+
+    def test_retired_summary_slots_are_rejected(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            prompt_dir = run_dir / "llm-prompts"
+            prompt_dir.mkdir()
+            (run_dir / "rule-structures").mkdir()
+            (prompt_dir / "code_summary.jsonl").write_text(
+                json.dumps({
+                    "response": {"parsed": {
+                        "summary": "전체 흐름",
+                        "stereotype": "Util",
+                        "slots": {"W-summary": "retired"},
+                    }},
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "extra=\\['slots'\\]"):
+                _prompt_inventory(run_dir)
 
     def test_nested_same_line_nodes_are_not_reported_as_duplicate_coordinates(self) -> None:
         nested_group = {

@@ -26,7 +26,10 @@ from pipeline.quality_gates.rule_audit_artifact import (
     RULE_AUDIT_DIRECTORY,
     load_rule_audit_records,
 )
-from pipeline.semantic_tasks.rule.meaning_frame import prepare_rule_meaning_assignment
+from pipeline.semantic_tasks.rule.meaning_frame import (
+    prepare_rule_meaning_assignment,
+    rule_meaning_wire_keys,
+)
 from search.corpus.generation import completed_generation_session
 
 
@@ -59,11 +62,18 @@ def _records(path: Path) -> Iterable[dict[str, Any]]:
             yield props
 
 
-def _slot_values(value: Any) -> dict[str, str]:
-    """Return the current exact-key semantic slot map."""
+def _summary_meaning_fields(value: Any) -> dict[str, str]:
+    """Read the current Summary-owned response and reject retired slot output."""
     if not isinstance(value, dict):
-        raise ValueError(f"semantic slots must be an object: {type(value).__name__}")
-    return {str(key): str(item or "") for key, item in value.items()}
+        raise ValueError("summary response must be an object")
+    required = {"summary", "stereotype"}
+    actual = set(value)
+    if actual != required:
+        raise ValueError(
+            "summary response fields must exactly match the current contract: "
+            f"missing={sorted(required - actual)} extra={sorted(actual - required)}"
+        )
+    return {name: str(value.get(name) or "") for name in sorted(required)}
 
 
 def _table_meaning_fields(value: Any, *, owner: str) -> dict[str, str]:
@@ -97,17 +107,19 @@ def _recorded_required_keys(record: dict[str, Any], field: str) -> set[str] | No
     field_schema = properties.get(field)
     if not isinstance(field_schema, dict):
         return None
+    definition = field_schema
     reference = field_schema.get("$ref")
     prefix = "#/$defs/"
-    if not isinstance(reference, str) or not reference.startswith(prefix):
-        return None
-    definitions = schema.get("$defs")
-    definition = (
-        definitions.get(reference[len(prefix):])
-        if isinstance(definitions, dict) else None
-    )
-    if not isinstance(definition, dict):
-        return None
+    if reference is not None:
+        if not isinstance(reference, str) or not reference.startswith(prefix):
+            return None
+        definitions = schema.get("$defs")
+        definition = (
+            definitions.get(reference[len(prefix):])
+            if isinstance(definitions, dict) else None
+        )
+        if not isinstance(definition, dict):
+            return None
     required = definition.get("required")
     if not isinstance(required, list) or not all(
         isinstance(key, str) for key in required
@@ -144,9 +156,7 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
         for record in _records(path):
             parsed = (record.get("response") or {}).get("parsed") or {}
             summaries.append({
-                "summary": parsed.get("summary"),
-                "stereotype": parsed.get("stereotype"),
-                "slots": _slot_values(parsed.get("slots")),
+                "meaning_fields": _summary_meaning_fields(parsed),
             })
 
     rule_directory = run_dir / RULE_AUDIT_DIRECTORY
@@ -164,6 +174,10 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
     }
     expected_model_rows = {
         target_id: set((assignment.model_evidence.get("rows") or {}).keys())
+        for target_id, assignment in rule_assignments.items()
+    }
+    expected_wire_rows = {
+        target_id: set(rule_meaning_wire_keys(assignment.model_evidence)[2])
         for target_id, assignment in rule_assignments.items()
     }
     deterministic_rows = {
@@ -212,15 +226,21 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             if audit is None:
                 unexpected_rule_targets += 1
                 continue
-            expected_rows = expected_model_rows[target_id]
+            expected_internal_rows = expected_model_rows[target_id]
             actual_rows = set(str(key) for key in response_rows)
             recorded_rows = _recorded_required_keys(record, "rows")
-            legacy_rows = (
-                actual_rows
-                & deterministic_rows[target_id]
-                & recorded_rows
-                if recorded_rows is not None else set()
-            )
+            uses_compact_wire = recorded_rows == expected_wire_rows[target_id]
+            if uses_compact_wire:
+                expected_rows = expected_wire_rows[target_id]
+                legacy_rows: set[str] = set()
+            else:
+                expected_rows = expected_internal_rows
+                legacy_rows = (
+                    actual_rows
+                    & deterministic_rows[target_id]
+                    & recorded_rows
+                    if recorded_rows is not None else set()
+                )
             current_response_rows = actual_rows - legacy_rows
             rule_response_rows += len(current_response_rows)
             rule_dispositions.update(
@@ -277,13 +297,21 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
         {
             "summary": {
                 "outputs": len(summaries),
-                "empty_summary": sum(_blank(item.get("summary")) for item in summaries),
-                "empty_stereotype": sum(_blank(item.get("stereotype")) for item in summaries),
-                "slots": sum(len(item["slots"]) for item in summaries),
-                "empty_slots": sum(
+                "meaning_fields": sum(
+                    len(item["meaning_fields"]) for item in summaries
+                ),
+                "empty_summary": sum(
+                    _blank(item["meaning_fields"].get("summary"))
+                    for item in summaries
+                ),
+                "empty_stereotype": sum(
+                    _blank(item["meaning_fields"].get("stereotype"))
+                    for item in summaries
+                ),
+                "empty_meaning_fields": sum(
                     _blank(value)
                     for item in summaries
-                    for value in item["slots"].values()
+                    for value in item["meaning_fields"].values()
                 ),
             },
             "rule": {
