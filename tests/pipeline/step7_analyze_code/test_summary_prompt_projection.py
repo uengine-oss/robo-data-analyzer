@@ -81,9 +81,7 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
     assert projected_call == {
         "kind": "CALL",
         "line": 1,
-        "arguments": ["value"],
         "callee": "send",
-        "callee_kind": "named",
         "role": "effect",
     }
     canonical_call = next(
@@ -102,6 +100,7 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
         "meaning": "값을 전송하고 성공 여부를 반환한다.",
     }]
     assert set(values) == {
+        "target_id",
         "code_body",
         "structural_profile",
         "applicable_slots",

@@ -10,9 +10,6 @@ from pipeline.models.function_table_usage_response_schema import (
 )
 from pipeline.steps.step7_analyze_code.batch_node_identity import batch_node_keys
 from pipeline.steps.step7_analyze_code.batch_planner import Batch
-from pipeline.steps.step7_analyze_code.table_prompt_context import (
-    dump_linked_table_descriptions,
-)
 from shared.files.cache import SourceFileCache
 
 
@@ -36,18 +33,17 @@ def build_table_usage_meaning_batch_values(
         usage_specs = concerns["table_usage_meanings"]
         direct_reads = exact_direct_table_ids(context, "READ")
         direct_writes = exact_direct_table_ids(context, "WRITE")
-        direct_tables = tuple(dict.fromkeys((*direct_reads, *direct_writes)))
         packets.append({
             "node_key": id_to_key[node_id],
             "assigned_table_usages": function_table_usage_prompt_assignments(
                 profile, usage_specs, direct_reads, direct_writes,
-            ),
-            "linked_table_contexts": json.loads(
-                dump_linked_table_descriptions(direct_tables, table_descriptions)
+                table_descriptions,
             ),
             "numbered_source": excerpt.numbered_text,
         })
     return {
+        # Recorder identity only. The prompt template does not reference this value.
+        "target_id": batch.parent_id or batch.node_ids[0],
         "table_usage_packets": json.dumps(
             packets,
             ensure_ascii=False,

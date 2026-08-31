@@ -1,31 +1,25 @@
-## DBMS 분할 2 — node별 direct table operation 의미.
+## DBMS split 2 — direct table usage meanings by node.
 extends: _common
 inherit_inputs: false
 structured_output_method: function_calling
 shared_values:
   function_table_usage_contract: ../common/function_table_usage_contract.md
 user_template_specific: |
-  # [TASK — 각 TARGET_NODE의 direct TABLE access meaning]
+  # [TASK — 각 TARGET_NODE의 직접 테이블 접근 의미]
 
-  각 node의 exact direct table usage로 미리 묶은 FT 결과만 채운다.
-  조상·형제·callee·COLUMN 의미는 만들지 않는다.
+  각 packet에서 Analyzer가 미리 묶은 `FT` 항목의 업무 목적만 채운다. 요약, Rule, COLUMN 의미는 만들지 않는다.
 
   ## [OUTPUT CONTRACT]
 
-  최상위 `nodes`는 exact node_key required map이다. 각 node 값 자체가 그 node의
-  ASSIGNED_TABLE_USAGES FT key exact required map이다. 각 FT key를 빠짐없이 한 번만
-  쓰고, 값에는 해당 node에서 그 table/access를 사용하는 업무 의미 문자열 하나만 쓴다.
-  입력으로 의미를 입증할 수 없으면 그 FT key의 값은 빈 문자열로 둔다.
-  status, missing context 문장, FT key를 summary 문장 안에 복사하지 않는다.
-  table identity, READ/WRITE, DML operation, column, 좌표는 Analyzer가 이미 소유하므로
-  다시 고르거나 출력하지 않는다.
+  응답 최상위 `nodes`는 response_format이 지정한 exact node key map이다. 각 node의 값은 그 node에 배정된 FT key exact required map이다. 모든 node와 `FT` key를 정확히 한 번 채우고 다른 key를 만들지 않는다. 각 `FT` 값은 업무 목적 문자열 하나이며, 입증할 수 없으면 빈 문자열이다.
 
   {function_table_usage_contract}
 
 user_template_dynamic_inputs: |
-  # [INPUT — BATCH TABLE usage frame packets]
+  # [INPUT]
 
   response_locale: {response_locale}
-  각 packet의 `numbered_source`는 원문 literal delimiter와 escape를 치환하지 않은 exact text다.
+  각 packet의 `numbered_source`는 literal delimiter와 escape를 바꾸지 않은 exact text다.
+
   table_usage_packets_json:
   {table_usage_packets}

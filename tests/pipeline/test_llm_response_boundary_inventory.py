@@ -123,7 +123,7 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             }), {"nodes"}),
             (table_description_frame_response_model(
                 table_evidence, table_plan, column_plans,
-            ), {"slots", "columns"}),
+            ), {"logical_name", "description", "columns"}),
             (rule_meaning_response_model(("C1",), ("E1",), ("R1",)), {
                 "effects", "rows",
             }),

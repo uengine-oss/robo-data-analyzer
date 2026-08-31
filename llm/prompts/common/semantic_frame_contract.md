@@ -18,10 +18,8 @@
   `FAMILY.ROLE`, `fact_refs`는 그 칸이 읽을 수 있는 정확한 `E…` 목록이다.
 - `SOURCE`는 활성 원문이다. 각 줄의 절대 줄번호는 구조 사실과 원문을 맞추는 좌표이며
   실행 코드가 아니다. 현재 칸의 evidence와 같은 범위만 의미 판정에 사용한다.
-- `expression_closure`가 있으면 각 값은 `[role, tagged expression tree]`다. tag는 `ref`,
-  `lit`, `group`, `member`, `subscript`, `call`, `unary`, `binary`, `conditional`,
-  `assignment`, `cast`, `sequence`이며 배열 순서는 원문의 피연산자·인자 순서다.
-  이 트리는 구문 구조이지 binding, type, 업무 의미의 선언이 아니다.
+- 구조 사실에는 원문만으로 복원할 수 없는 소유 관계, 분기 역할, 연결 결과와 외부 문맥만
+  들어 있다. 표현식의 전체 중첩 트리는 같은 SOURCE를 중복 전송하므로 포함하지 않는다.
 
 ## [DECISION PROCEDURE]
 

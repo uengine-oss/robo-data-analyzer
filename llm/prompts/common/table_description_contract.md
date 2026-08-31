@@ -1,191 +1,55 @@
-## [TASK — 한 TABLE과 모든 허용 COLUMN의 최종 의미]
+## [TASK — 한 TABLE과 허용 COLUMN의 최종 의미]
 
-이 출력은 사람이 데이터 카탈로그에서 테이블·컬럼의 뜻을 읽는 최종 설명이 된다.
-입력 evidence는 테이블 하나에 대한 원래 스키마 설명과 코드노드별 직접 사용 후보다.
-아래 절은 각각 자기 절이 명시한 필드에만 적용된다.
+입력은 Analyzer가 한 물리 TABLE에 정확히 연결한 source 설명과 실제 코드 사용만 담는다.
+각 대상의 근거가 직접 입증하는 표시명과 설명을 작성한다. 물리 이름 번역, 업계 관례,
+다른 테이블·컬럼의 의미, 주석에만 남은 동작으로 빈칸을 꾸미지 않는다.
 
-목표는 각 TABLE/COLUMN마다 현재 근거가 입증하는 역할만 종합하고, 근거가 부족한 칸은
-빈 문자열로 두는 것이다. 물리 이름 번역이나 다른 컬럼 후보 복사는 결과가 아니다.
+표시명은 source의 중심 명사와 수식어를 보존한다. source의 업무 명사구를 그대로 재사용할 수 있으면 새 동의어로 바꾸지 않는다. 특히 사람/계정/기관/지점처럼 서로 다른 대상을 하나로 치환하지 않고, 원장등록/신청가능처럼 서로 다른 상태·행위를 같은 뜻으로 합치지 않는다. 상반된 후보가 있으면 한 후보를 버리며 둘을 “또는”으로 합쳐 모호한 이름을 만들지 않는다.
 
-## [OUTPUT CONTRACT — 배정된 의미 칸]
+## [INPUT]
 
-- TABLE 물리 좌표 `db`, `schema`, `name`은 입력에만 있으며 Analyzer가 원본 TABLE에 결합한다.
-  모델은 이 값을 응답에서 다시 출력하지 않는다.
-- `columns`는 입력의 물리 COLUMN 이름을 exact required key로 한 번씩 갖는다. 별도 `name` 값은
-  출력하지 않는다.
-- TABLE `slots`와 각 `columns.<name>.slots`에서 `TABLE|COLUMN.DISPLAY_NAME`과
-  `TABLE|COLUMN.DESCRIPTION`을 정확히 한 번씩 채운다.
-- 각 칸의 값은 공통 계약대로 의미 문자열 하나뿐이며 내부 객체로 포장하지 않는다.
-  근거·좌표·미완료 사유를 출력에 복사하지 않는다. Analyzer가 빈 의미와 입력 구조를 결합해
-  내부 감사 상태를 만든다.
+- `table.source_description`: DDL·Catalog가 제공한 `source_logical_name`,
+  `source_description`, `source_comment`를 출처 이름과 함께 보존한 값이다.
+- `table.observed_operations`: Analyzer가 실제 코드에서 확정한 직접 READ/WRITE/DML 조합이다.
+- `table.usage_meanings`: 함수별 TABLE 사용 의미 중 이 TABLE에 직접 귀속된 값이다.
+- `columns`의 key: 출력에서도 정확히 한 번 보존해야 하는 허용 물리 COLUMN 이름이다.
+- `columns.<name>.source_description`: 그 COLUMN 자체가 소유한 source 의미다.
+- `columns.<name>.usage_evidence`: Analyzer가 그 COLUMN에 직접 귀속한 원문이다.
+  `ownership`은 귀속 방식, `source`는 절대 줄과 해당 줄의 활성 원문이다.
+- 없는 종류의 근거는 key 자체가 없다. 다른 대상의 값으로 보충하지 않는다.
 
-## [INPUT GUIDE — 각 값의 뜻·권한·허용 판정]
+## [OUTPUT CONTRACT]
 
-- `table.structural_profile`은 exact `db/schema/name`, DDL이 소유한 source 의미,
-  `observed_operations`, `usage_meanings`를 한 TABLE 사실 안에 담는다.
-- `observed_operations`는 Analyzer가 확정한 TABLE의 직접 READ/WRITE/DML 조합이다.
-  TABLE이 실제 접근 대상인지와 접근 방향을 판정한다.
-- `usage_meanings`는 함수가 바로 이 TABLE에 수행한 access별 확정 의미다. `access`와
-  direct operation이 일치할 때만 종합하며, 해당 접근 의미를 함수 전체 책임으로
-  확대하지 않는다.
-- `columns` map의 각 key는 DDL allowlist의 정확한 COLUMN이다. 각 값의
-  `structural_profile`에는 그 COLUMN의 source 의미와 `usage_evidence`만 들어간다.
-- `usage_evidence[*]`의 `ownership`과 `source`는 Analyzer가 확정한
-  TABLE→COLUMN→원문 관계다. COLUMN 자연어는 중간 모델을 거치지 않고
-  이 원문에서 이번 최종 요청이 한 번만 생성한다.
-- `source[*].text`의 `[TARGET_COLUMN]`은 현재 `columns` key,
-  `[OTHER_COLUMN]`은 같은 줄의 sibling DDL column을 뜻한다. 원본 파일의 절대 `line`은 감사
-  좌표로 유지되며, sibling 이름은 현재 컬럼 의미로 재귀속하지 못하게 구조적으로 가린 것이다.
-- 각 `applicable_slots`는 response_format의 TABLE/COLUMN 의미 칸과 현재 사실의 대응을 고정한다.
-- `[]`/`{}`/빈 source 필드는 해당 종류의 근거가 없다는 뜻이다. required TABLE/COLUMN 자체를
-  누락하지 말고, 다른 근거도 의미를 입증하지 못하면 해당 칸은 빈 문자열로 둔다.
+최상위에는 `logical_name`, `description`, `columns`만 출력한다.
 
-## [DECISION PROCEDURE]
+- TABLE `logical_name`: 무엇에 관한 데이터인지 구별되는 짧은 명사구다.
+- TABLE `description`: 어떤 데이터를 담고 실제 업무에서 어떻게 읽거나 변경하는지 1~2문장으로
+  종합한다.
+- `columns`는 입력 COLUMN key를 누락·추가 없이 정확히 한 번씩 갖는다.
+- 각 COLUMN 값에는 `logical_name`, `description`만 출력한다.
+- COLUMN `logical_name`: 근거가 입증한 사용자 표시명이다.
+- COLUMN `description`: 저장 값의 의미와 실제 사용 역할이다.
+- 각 값은 문자열 하나다. 근거가 의미를 입증하지 못하면 빈 문자열로 둔다.
+- db/schema/table/column 물리 좌표, 상태, 근거, 누락 사유, 내부 ID를 응답에 다시 출력하지 않는다.
 
-1. exact TABLE 좌표와 DDL COLUMN allowlist를 고정한다.
-2. TABLE과 각 COLUMN을 따로 source metadata→direct usage→comment 순으로 읽는다.
-3. candidate의 table/column/ownership/원문 관계가 현재 대상과 일치하는지 확인한다.
-4. 입증된 최소 역할만 표시명과 설명에 쓰고 각 대상의 근거를 별도로 판정한다.
-5. source와 후보가 충돌하면 우선순위를 적용하고, 근거가 부족한 칸은 창작 대신 비운다.
+## [DECISION]
 
-### 소유권 — 모든 필드에 적용
+1. TABLE과 각 COLUMN을 서로 다른 의미 소유자로 고정한다.
+2. 각 대상에서 정식 source 설명, 직접 사용, 비권위 comment 순으로 읽는다.
+3. 서로 양립하는 직접 사용은 종합하되 함수 전체 책임이나 함께 사용한 다른 TABLE의 효과를
+   가져오지 않는다.
+4. source와 사용이 충돌하면 정식 source 의미를 보존하고, 실제 사용이 입증한 맥락만 덧붙인다.
+5. 물리 이름·literal 모양만으로 기관, 식별자 종류, 상태값 뜻, 단위, 보안 방식을 추측하지 않는다.
 
-- 테이블·컬럼마다 자기 근거만 종합하고 다른 테이블·컬럼의 책임을 가져오지 않는다.
-- `usage_meanings[*].meaning`은 바로 이 테이블의 직접 사용 설명이며 함수 전체 summary가
-  아니다. `observed_operations`는 결정론적으로 연결된 직접 READ/WRITE/DML 조합이다.
-- 대상 테이블은 결정론 READS/WRITES로 실제 접근이 확인된 parsed DDL 테이블이다. 모든 소유
-  컬럼은 출력하되, 컬럼 근거가 없으면 의미 필드를 빈 문자열로 둔다.
-
-예시 — 사용 후보가 없는 테이블 (입력: `usage_meanings: []`, `source_description: "우편번호 기준정보"`):
-
-- 잘못: 테이블과 컬럼을 출력에서 누락하거나, 첫 컬럼 설명을 테이블 설명으로 복사
-- 좋음: `description: "우편번호 기준정보를 담는 테이블"` — 있는 근거가 말하는 만큼만
-
-### 근거 우선순위 — 모든 필드에 적용
-
-1. 정식 `source_description`
-2. 현재 테이블·컬럼의 직접 사용으로 입증된 후보
-3. 비권위 `source_comment`
-4. 위 근거가 말하는 최소 역할
-
-`source_comment`는 생성 provenance·운영 메모·낡은 설명일 수 있다. 활성 직접 사용과 충돌하면
-버리고, `Source references`·`Operations`·`AMBIGUOUS_SOURCE` 같은 provenance/미확정 표식은
-업무 의미로 복사하지 않는다. 물리 이름·업계 관례로 기관, 식별자 종류, 단위, 보호 방식,
-상태 의미를 만들지 않는다.
-
-예시 — 입력: `source_description: "횟수 초기화 제외 여부"`, 사용 후보 하나가 "실패 신청 제외 여부"라고 주장:
-
-- 잘못: `description: "실패 신청 제외 여부"` — 하위 근거(후보)가 상위 근거(source)를 덮었다
-- 좋음: `description: "횟수 초기화 제외 여부. 재신청 가능 판정에 사용"` — source 보존 + 입증된 맥락만 추가
-
-예시 — 입력: `source_description: "암호화된 연락처 부분정보"`:
-
-- 잘못: `description: "마스킹된 연락처"` — 익숙한 표현으로 바꾸며 보호 방식(암호화)과 범위(부분정보)가 소실됐다
-- 좋음: `description: "암호화된 연락처 부분정보"` — 근거가 말하는 보호 방식과 범위를 그대로 유지
-
-### 입력 물리 좌표 — `db`, `schema`, `name`
-
-입력 TABLE의 exact 물리 좌표는 대상 식별에만 사용하고 응답 값으로 복사하지 않는다.
-table/column의 `source_logical_name`이 비어 있지 않으면 `DISPLAY_NAME` 의미 칸에 그대로 쓰고,
-정식 `source_description`이 비어 있지 않으면 `DESCRIPTION` 의미 칸에 그대로 쓴다.
-비권위 `source_comment`는
-잠그지 않으며 직접 사용과 함께 의미를 판단한다.
-
-### TABLE `description` / `logical_name`
-
-이 절은 테이블의 `description`·`logical_name`에만 적용된다.
-
-`description`은 이 테이블이 어떤 데이터를 담고 어떤 업무에서 직접 조회·저장되는지
-사용자 친화적인 1~2문장으로 설명한다. 여러 사용 후보를 종합하되 한 함수가 함께 사용한
-다른 테이블의 효과를 섞지 않는다.
-
-`logical_name`은 무엇에 관한 데이터인지 구별되는 짧은 명사구다. 마스터·이력·임시·집계
-성격은 근거에 있을 때만 붙인다. 근거가 부족하면 빈 문자열이며 물리명을 번역해 꾸미지 않는다.
-
-예시 — 한 함수가 테이블 A를 읽고 테이블 B에 쓸 때, 지금 A를 설명 중:
-
-- 잘못: A의 description에 B의 저장 대상·쓰기 결과를 넣음
-- 좋음: A의 직접 SELECT 대상과 그 조회 결과의 현재 함수 내 용도만 서술
-
-예시 — usage 후보가 "상태 조회에 사용"·"승인 여부 판정에 사용" 두 개:
-
-- 잘못: 첫 문장 하나를 그대로 테이블 전체 설명으로 채택
-- 좋음: `description: "요청의 처리 상태를 담는다. 상태 조회와 승인 여부 판정에 사용된다"` — 양립하는 사용을 종합
-
-### COLUMN `logical_name` / `description`
-
-이 절은 컬럼 필드에만 적용된다.
-
-입력 허용 컬럼 이름을 `columns` map key로 정확히 한 번씩 사용한다. 새 컬럼 생성, 누락, 다른 컬럼 후보 복사를
-하지 않는다. `logical_name`은 표시명, `description`은 저장 값의 의미와 현재 사용 역할이다.
-DDL 타입이나 물리 컬럼명 자체를 설명으로 반복하지 않는다.
-직접 사용·source 의미가 모두 없어 근거 있는 의미를 만들 수 없으면 해당 의미 필드는 빈
-문자열로 둔다. required key를 빼지는 않으며, 물리명 번역이나 관례로 빈칸을 꾸미지 않는다.
-
-각 컬럼의 `usage_evidence`는 함수별 직접 사용 원문 근거다. `ownership`과 `source`는
-Analyzer가 결정한 소유 방식과 줄 좌표다. 현재 컬럼의 candidate만 사용하고 다른 컬럼·
-다른 테이블의 동명 candidate를 복사하지 않는다. source line이 계산식·filter·join·group·쓰기에서
-입증한 역할은 보존하되, 그 역할을 넘어 업무 용어를 이름에서 만들지 않는다.
-한 `usage_evidence`의 `source[*].text`에 `[OTHER_COLUMN]`이 같이 나타나도 그 연산은 sibling의 근거가
-아니다. `[TARGET_COLUMN]`이 그 식에서 직접 맡는 역할만 판정한다.
-
-예시 — X의 `source[*].text`가
-`[TARGET_COLUMN] * DECODE([OTHER_COLUMN], '+', 1, '-', -1)`이고 Y candidate에는 단순
-projection 줄만 있을 때:
-
-- 잘못: Y가 부호를 결정한다고 설명 — 그 계산 줄은 Y candidate가 소유하지 않는다.
-- 좋음: X에는 입증된 곱셈 역할을 쓰고, Y는 projection 이상의 의미 근거가 없다고 판정한다.
-ownership이 `derived_output_unique`이면, 바깥 SELECT가 한 하위 SELECT의 해당 물리 컬럼 출력을 exact
-identifier로 소비했다는 구조 def-use 근거다. 그 줄의 계산·filter 역할은 사용하되 하위 쿼리의
-다른 컬럼으로 확장하지 않는다.
-
-예시 — candidate가 한 컬럼을 조건 비교와 계산 부호 선택에 직접 사용한다고 입증한 경우:
-
-- 잘못: 컬럼 이름을 번역한 표시명만 쓰거나, table 설명에만 역할을 넣고 컬럼 설명은 비움
-- 좋음: source line이 입증한 조건 기준·계산 역할을 해당 컬럼 description에 보존
-
-`source_description`이나 `source_comment`에 저장 대상의 중심 명사와 수식어가 있으면
-`logical_name`과 `description` 모두 그 의미 경계를 보존한다. 물리명의 약어를 풀어
-다른 대상·소유자·보호 방식으로 바꾸지 않는다. 자연스럽게 고쳐 쓰는 과정에서 뜻이
-달라질 위험이 있으면 source의 업무 명사구를 그대로 재사용하는 것이 정답이다.
-
-예시 — 입력: 컬럼 `ownr_ref`, `source_description: "소유자 계정번호"`:
-
-- 잘못: `logical_name: "소유자 이메일"` — 이름 느낌으로 대상 종류를 좁혔다
-- 좋음: `logical_name: "소유자 계정번호"` — source가 말한 범위 유지
-
-예시 — 입력: 컬럼 `reg_dt`, `source_description: "등록 날짜"`:
-
-- 잘못: `description: "등록 일시"` — 날짜를 일시로 확대했다
-- 좋음: `description: "등록 날짜"` — source가 날짜면 날짜로 유지
-
-예시 — 입력: 복합 물리명에 기관·채널 토큰이 보이나 `source_description: "고객 일련번호"`:
-
-- 잘못: `logical_name: "기관 지점 일련번호"` — 물리명의 다른 토큰(사람/계정/기관/지점 축)을 따라 중심 명사와 수식어를 바꿨다
-- 좋음: `logical_name: "고객 일련번호"` — source의 업무 명사구를 그대로 재사용하고, 직접 사용 근거가 입증한 맥락만 덧붙임
-
-같은 원리로 번호/부분정보/일련번호, 원장등록/신청가능, 암호화/마스킹처럼 source가 구별한
-축을 출력에서 바꾸지 않는다.
-
-### 의미를 쓸 수 있는 입력 범위
-
-각 테이블과 각 컬럼을 따로 판정한다. 제공 근거가 직접 입증한 역할과 의미 경계만 문자열에
-쓰며, 물리 이름·타입밖에 없어 의미를 만들 수 없는 칸은 빈 문자열로 유지한다.
-
-정식 `source_description`이 없다는 사실만으로 사용 근거를 폐기하지 않는다. exact source가
-계산 부호 선택, 조건 비교, join/group/filter 기준처럼 다른 값과 구별되는 역할을 직접 입증하면
-그 **입증된 역할 설명**을 쓸 수 있고 표시명은 빈 문자열이어도 된다. 반대로 값을
-그대로 projection/복사한 사실만 있고 저장 값의 역할을 구별할 연산이 없으면 업무 뜻을 만들지
-말고 빈 문자열로 둔다. 실제 입력 문자열에 손상 문자가 없는데 인코딩 문제를 상상하지 않는다.
-
-입력이 비어 있는데 required field를 채우기 위해 물리명을 번역하는 행동은 금지한다. 올바른
-대체 행동은 빈 문자열이며 내부 상태 판정은 Analyzer가 맡는다.
+예: TABLE A를 읽고 TABLE B에 쓰는 함수에서 A를 설명할 때 B의 저장 결과를 A에 넣지 않는다.
+예: source가 `암호화된 연락처 부분정보`이면 익숙하다는 이유로 `마스킹된 연락처`로 바꾸지 않는다.
+예: COLUMN source와 직접 사용이 모두 없으면 물리명을 번역하지 않고 두 의미 값을 비운다.
+잘못: source의 `고객 원장등록 상태`와 코드의 `신청가능 여부`를 `원장등록 또는 신청가능 상태`로 합친다.
+좋음: 정식 source의 중심 명사구를 보존하고, 직접 사용이 입증한 별도 역할만 description에 덧붙인다.
 
 ## [SELF CHECK]
 
-제출 직전 모든 컬럼을 하나씩 source와 역대조한다. source가 구별한 중심 개념(중심 명사와
-수식어)이 출력에서 대체·확대·축소된 항목이 하나라도 있으면 고쳐서 제출한다. 후보가
-source와 충돌하면 후보를 버리며 둘을 “또는”으로 합쳐 보존하지 않는다.
-
-출력은 response schema가 요구한 TABLE `slots`와 `columns:{<입력 컬럼명>:{slots}}`만
-포함한다. 각 slot 값은 의미 문자열 하나다.
+- 입력 COLUMN key와 출력 COLUMN key가 정확히 같은가
+- 모든 TABLE/COLUMN에 두 문자열이 정확히 한 번 있는가
+- 각 값이 자기 대상의 source·직접 사용에만 근거하는가
+- 입력에 없는 의미나 내부 메타데이터를 만들거나 복창하지 않았는가

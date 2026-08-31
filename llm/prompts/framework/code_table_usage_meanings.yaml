@@ -1,38 +1,28 @@
-## Framework 분할 2 — 현재 함수의 테이블 접근 의미.
+## Framework split 2 — direct table usage meanings.
 extends: _common
 inherit_inputs: false
 shared_values:
   function_table_usage_contract: ../common/function_table_usage_contract.md
 user_template_specific: |
-  # [TASK — TARGET의 direct TABLE access meaning]
+  # [TASK — TARGET의 직접 테이블 접근 의미]
 
-  TARGET의 exact direct table usage로 미리 묶은 FT 결과만 채운다.
-  함수 summary, Rule, COLUMN 의미는 만들지 않는다.
+  Analyzer가 미리 묶은 `FT` 항목의 업무 목적만 채운다. 함수 요약, Rule, COLUMN 의미는 만들지 않는다.
 
   ## [OUTPUT CONTRACT]
 
-  최상위 객체 자체가 ASSIGNED_TABLE_USAGES의 FT key exact required map이다.
-  각 FT key를 빠짐없이 한 번만 쓰고, 값에는 이 함수에서 해당 table/access를
-  사용하는 업무 의미 문자열 하나만 쓴다. 입력으로 의미를 입증할 수 없으면
-  그 FT key의 값은 빈 문자열로 둔다.
-
-  status, missing context 문장, FT key를 summary 문장 안에 복사하지 않는다.
-  table identity, READ/WRITE, DML operation, column, 좌표는 Analyzer가 이미 소유하므로
-  다시 고르거나 출력하지 않는다.
+  응답 최상위 객체는 response_format이 지정한 FT key exact required map이다. 모든 key를 정확히 한 번 채우고 다른 key를 만들지 않는다. 각 값은 업무 목적 문자열 하나이며, 입증할 수 없으면 빈 문자열이다.
 
   {function_table_usage_contract}
 
 user_template_dynamic_inputs: |
-  # [INPUT — TABLE usage frame packet]
+  # [INPUT]
 
   response_locale: {response_locale}
 
   assigned_table_usages_json: {assigned_table_usages}
 
-  linked_table_context_json: {table_contexts}
-
-  ## [SOURCE]
-  아래 번호가 붙은 각 source line은 원문 literal delimiter와 escape를 치환하지 않은 exact text다.
+  ## 번호가 붙은 원문
+  각 줄은 literal delimiter와 escape를 바꾸지 않은 exact text다.
   ```
   {code_body}
   ```

@@ -17,7 +17,6 @@ from pipeline.models.table_description_frame import (
     table_description_prompt_values,
     table_description_frame_response_model,
 )
-from pipeline.models.semantic_frame import semantic_slot_wire_ids
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
     _collect_usage_candidates,
     _direct_operations_by_table,
@@ -77,19 +76,15 @@ def _wire(evidence: dict, *, unknown_column: bool = False) -> tuple[object, obje
     table_plan, column_plans = build_table_description_plans("db:public.orders", evidence)
     model = table_description_frame_response_model(evidence, table_plan, column_plans)
 
-    def leaves(specs, prefix: str, insufficient: bool = False) -> dict:
-        return {
-            wire_id: "" if insufficient else f"{prefix} {spec.role}"
-            for wire_id, spec in zip(
-                semantic_slot_wire_ids(specs), specs, strict=True,
-            )
-        }
-
     payload = {
-        "slots": leaves(table_plan[1], "주문"),
+        "logical_name": "주문",
+        "description": "주문 원장",
         "columns": {
-            name: {"slots": leaves(plan[1], name, name == "status_cd")}
-            for name, plan in column_plans.items()
+            "order_id": {
+                "logical_name": "주문 식별자",
+                "description": "주문을 구별한다",
+            },
+            "status_cd": {"logical_name": "", "description": ""},
         },
     }
     if unknown_column:
@@ -119,8 +114,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertEqual("", result.columns[1].logical_name)
         self.assertNotIn("semantic_frame", parsed.model_dump())
 
-        missing = {**payload, "slots": dict(payload["slots"])}
-        missing["slots"].pop(next(iter(missing["slots"])))
+        missing = dict(payload)
+        missing.pop("logical_name")
         with self.assertRaises(ValidationError):
             model.model_validate(missing)
         with self.assertRaises(ValidationError):
@@ -238,8 +233,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertNotIn("code:orders.load", serialized)
         self.assertNotIn("evidence_file", serialized)
         self.assertNotIn('"evidence"', serialized)
-        self.assertNotIn("usage_evidence", serialized)
-        self.assertIn("direct_usage_sources", serialized)
+        self.assertIn("usage_evidence", serialized)
+        self.assertNotIn("direct_usage_sources", serialized)
         self.assertNotIn("source_id", serialized)
         self.assertNotIn("direct_operations", serialized)
         self.assertNotIn("usage_refs", serialized)
@@ -408,8 +403,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertNotIn("structural_profile", rule["user_template"])
                 self.assertNotIn("applicable_slots", rule["user_template"])
 
-        frame_contract = (
-            ROOT / "llm/prompts/common/semantic_frame_contract.md"
+        table_contract = (
+            ROOT / "llm/prompts/common/table_description_contract.md"
         ).read_text(
             encoding="utf-8",
         ).strip()
@@ -420,14 +415,16 @@ class TableSemanticGroundingTest(unittest.TestCase):
             rule = _load_rule(ROOT / "llm/prompts" / directory, name)
             with self.subTest(strategy=directory, rule=name):
                 self.assertEqual(
-                    frame_contract,
-                    rule["static_values"]["semantic_frame_contract"],
+                    table_contract,
+                    rule["static_values"]["table_description_contract"],
                 )
-                self.assertIn("`slots`", rule["user_template"])
+                self.assertNotIn("semantic_frame_contract", rule["static_values"])
+                self.assertNotIn("`slots`", rule["user_template"])
+                self.assertIn("`logical_name`", table_contract)
+                self.assertIn("`description`", table_contract)
         self.assertIn("잘못", usage_contract)
         self.assertIn("좋음", usage_contract)
-        self.assertIn("잘못", frame_contract)
-        self.assertIn("좋음", frame_contract)
+        self.assertIn("예:", table_contract)
 
 
 if __name__ == "__main__":

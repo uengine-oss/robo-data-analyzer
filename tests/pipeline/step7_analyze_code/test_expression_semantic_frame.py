@@ -11,7 +11,6 @@ from pipeline.models.analysis_context import (
 from pipeline.models.semantic_frame import (
     normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_expression_fact_wire_bindings,
     semantic_frame_response_model,
     semantic_slot_wire_ids,
     slot_specs_json,
@@ -43,7 +42,7 @@ def _expression(
     }
 
 
-def test_processing_slot_receives_only_its_structural_expression_closure() -> None:
+def test_processing_slot_keeps_expression_canonical_without_duplicate_model_input() -> None:
     fn = CodeNode(
         id="routine",
         signature="void routine(void)",
@@ -110,18 +109,10 @@ def test_processing_slot_receives_only_its_structural_expression_closure() -> No
     )
     assert "expression_closure" not in canonical_prompt
     prompt = json.loads(profile_prompt_json(profile, (effect,)))
-    prompt_expressions = list(prompt["expression_closure"].values())
-    assert prompt_expressions == [
-        ["assignment_target", ["ref", "x"]],
-        ["assignment_value", ["lit", "1"]],
-    ]
-    expression_keys = set(prompt["expression_closure"])
-    assert expression_keys == set(
-        semantic_expression_fact_wire_bindings((effect,)).values()
-    )
+    assert "expression_closure" not in prompt
     assigned = json.loads(slot_specs_json((effect,)))
     assigned_slot = next(iter(assigned.values()))
-    assert expression_keys.issubset(set(assigned_slot["fact_refs"]))
+    assert len(assigned_slot["fact_refs"]) == 1
     assert not any(
         fact["kind"] == "EXPRESSION" for fact in prompt["facts"].values()
     )
@@ -132,9 +123,8 @@ def test_processing_slot_receives_only_its_structural_expression_closure() -> No
 
     model = semantic_frame_response_model((effect,))
     slot_wire_id = semantic_slot_wire_ids((effect,))[0]
-    expression_wire_id = next(iter(expression_keys))
     response = model.model_validate({
-        "slots": {slot_wire_id: f"copy {expression_wire_id}"},
+        "slots": {slot_wire_id: f"copy {slot_wire_id}"},
     })
     normalized = normalize_semantic_frame_response(
         response, profile, (effect,),

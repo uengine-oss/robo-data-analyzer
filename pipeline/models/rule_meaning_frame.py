@@ -247,12 +247,6 @@ def _project_effect(
         call_source = str(payload.get("call_source") or "").strip()
         if call_source:
             result["source"] = call_source
-        receiver = payload.get("receiver_source")
-        if receiver is not None and str(receiver).strip():
-            result["receiver"] = str(receiver)
-        arguments = [str(value) for value in payload.get("argument_sources") or ()]
-        if arguments:
-            result["arguments"] = arguments
         callee_id = str(payload.get("callee_id") or "")
         outcome = callee_outcomes.get(callee_id)
         if isinstance(outcome, Mapping):
@@ -271,9 +265,11 @@ def _project_effect(
         result["value"] = str(value)
     if op in {"select", "insert", "update", "delete", "upsert"}:
         table = str(target or "")
-        description = table_descriptions.get(table)
-        if isinstance(description, Mapping) and description:
-            result["table_context"] = dict(description)
+        table_context = table_descriptions.get(table)
+        if isinstance(table_context, Mapping):
+            meaning = str(table_context.get("description") or "").strip()
+            if meaning:
+                result["table_meaning"] = meaning
     return result
 
 

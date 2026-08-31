@@ -112,7 +112,12 @@ class RuleMeaningFrameTest(unittest.TestCase):
             "declared_value": '"N"',
         }], packet["used_symbols"])
         effect = packet["effects"]["E1"]
-        self.assertEqual(["ctx"], effect["arguments"])
+        self.assertEqual(
+            "c520_mms_psbl_yn_check(ctx)",
+            effect["source"],
+        )
+        self.assertNotIn("receiver", effect)
+        self.assertNotIn("arguments", effect)
         self.assertEqual(
             "가입 상태를 바탕으로 MMS 가능 여부를 반환한다",
             effect["callee_outcome"],
@@ -122,6 +127,47 @@ class RuleMeaningFrameTest(unittest.TestCase):
             {"kind": "decision", "when": ["C17"], "effects": ["E1"]},
             packet["rows"]["R17"],
         )
+
+    def test_rule_table_effect_gets_only_the_existing_table_meaning(self) -> None:
+        evidence = {
+            "conditions": {"C1": "ready"},
+            "effects": {
+                "E1": {
+                    "op": "update",
+                    "target": "db:orders",
+                    "value": None,
+                    "from_source": None,
+                },
+            },
+            "rows": {
+                "R1": {
+                    "role": "decision",
+                    "when": ["C1"],
+                    "narrative_focus": ["C1"],
+                    "direct": ["E1"],
+                    "source": "UPDATE orders SET status = 'DONE'",
+                },
+            },
+        }
+        packet = build_rule_meaning_packet(
+            evidence,
+            numbered_source="1 | UPDATE orders SET status = 'DONE';",
+            table_descriptions={
+                "db:orders": {
+                    "name": "orders",
+                    "description": "주문 상태",
+                    "columns": ["order_id", "status", "unused_note"],
+                    "sample_rows": [{"order_id": 1, "status": "READY"}],
+                },
+            },
+        )
+
+        effect = packet["effects"]["E1"]
+        self.assertEqual("주문 상태", effect["table_meaning"])
+        self.assertNotIn("table_context", effect)
+        rendered = str(packet)
+        self.assertNotIn("unused_note", rendered)
+        self.assertNotIn("sample_rows", rendered)
 
     def test_removed_effect_metadata_is_rejected(self) -> None:
         evidence = {

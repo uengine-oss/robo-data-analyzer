@@ -48,14 +48,16 @@ def function_table_usage_prompt_assignments(
     slot_specs: Iterable[SlotSpec],
     reads: Iterable[str],
     writes: Iterable[str],
+    table_descriptions: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Return one self-contained prompt assignment per direct table access."""
     specs = tuple(slot_specs)
+    descriptions = table_descriptions or {}
     result: dict[str, dict[str, object]] = {}
     for ordinal, group in enumerate(
         _usage_groups(profile, specs, reads, writes), start=1,
     ):
-        result[f"FT{ordinal}"] = {
+        assignment: dict[str, object] = {
             "physical_table_id": group.physical_table_id,
             "access_mode": group.access_mode,
             "occurrences": [
@@ -67,6 +69,12 @@ def function_table_usage_prompt_assignments(
                 for fact in group.facts
             ],
         }
+        table_description = str(
+            descriptions.get(group.physical_table_id, {}).get("description") or ""
+        ).strip()
+        if table_description:
+            assignment["table_description"] = table_description
+        result[f"FT{ordinal}"] = assignment
     return result
 
 

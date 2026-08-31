@@ -11,15 +11,12 @@ from pipeline.models.code_analysis_output import GroundedColumnDescription, Tabl
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,
+    SemanticSlot,
     SlotSpec,
     StructuralProfile,
     StructuralTarget,
     evidence_id,
-    normalize_semantic_frame_response,
-    profile_prompt_json,
-    semantic_frame_response_model,
     slot_id,
-    slot_specs_json,
 )
 
 
@@ -108,23 +105,13 @@ def table_description_prompt_values(
     table_plan: tuple[StructuralProfile, tuple[SlotSpec, ...]],
     column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> dict[str, str]:
-    """Serialize each table/column fact and slot assignment exactly once."""
-    table_profile, table_specs = table_plan
+    """Serialize only meaning-bearing table and column facts exactly once."""
+    table_profile, _table_specs = table_plan
     packet = {
-        "table": {
-            "structural_profile": json.loads(
-                profile_prompt_json(table_profile, table_specs)
-            ),
-            "applicable_slots": json.loads(slot_specs_json(table_specs)),
-        },
+        "table": _meaning_input(table_profile),
         "columns": {
-            name: {
-                "structural_profile": json.loads(
-                    profile_prompt_json(profile, specs)
-                ),
-                "applicable_slots": json.loads(slot_specs_json(specs)),
-            }
-            for name, (profile, specs) in column_plans.items()
+            name: _meaning_input(profile)
+            for name, (profile, _specs) in column_plans.items()
         },
     }
     return {
@@ -139,6 +126,25 @@ def table_description_prompt_values(
     }
 
 
+def _meaning_input(profile: StructuralProfile) -> dict[str, object]:
+    """Drop internal identity and keep facts that can change a catalog meaning."""
+    facts = [
+        fact for fact in profile.evidence.values()
+        if fact.kind in {"TABLE", "COLUMN"}
+    ]
+    if len(facts) != 1:
+        raise ValueError("table meaning input requires exactly one entity fact")
+    attributes = facts[0].attributes
+    allowed = (
+        ("source_description", "observed_operations", "usage_meanings")
+        if facts[0].kind == "TABLE"
+        else ("source_description", "usage_evidence")
+    )
+    return {
+        key: value
+        for key in allowed
+        if (value := attributes.get(key)) not in (None, "", [], {})
+    }
 def _source_description(item: dict) -> str:
     parts = []
     for key in ("source_logical_name", "source_description", "source_comment"):
@@ -201,13 +207,17 @@ def table_description_frame_response_model(
     fingerprint = hashlib.sha256(
         json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:12]
-    table_wire = semantic_frame_response_model(table_plan[1])
+    entity_model = create_model(
+        f"TableMeaningFields_{fingerprint}",
+        __config__=ConfigDict(extra="forbid"),
+        logical_name=(str, Field(...)),
+        description=(str, Field(...)),
+    )
     column_fields = {}
-    for index, (name, (_profile, specs)) in enumerate(column_plans.items()):
-        wire = semantic_frame_response_model(specs)
+    for index, name in enumerate(column_plans):
         field_name = f"column_{index}"
         column_fields[field_name] = (
-            wire,
+            entity_model,
             Field(..., alias=name),
         )
     columns_wire = create_model(
@@ -218,7 +228,8 @@ def table_description_frame_response_model(
     model = create_model(
         f"TableFrameWire_{fingerprint}",
         __config__=ConfigDict(extra="forbid"),
-        slots=(table_wire.model_fields["slots"].annotation, Field(...)),
+        logical_name=(str, Field(...)),
+        description=(str, Field(...)),
         columns=(columns_wire, Field(...)),
     )
     return model
@@ -229,13 +240,13 @@ def normalize_table_description_frame_response(
     table_plan: tuple[StructuralProfile, tuple[SlotSpec, ...]],
     column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> TableDescription:
-    table_frame = normalize_semantic_frame_response(output, *table_plan)
+    table_frame = _meaning_frame(output, *table_plan)
     column_bindings = {
         name: f"column_{index}"
         for index, name in enumerate(column_plans)
     }
     column_frames = {
-        name: normalize_semantic_frame_response(
+        name: _meaning_frame(
             getattr(output.columns, column_bindings[name]), *column_plans[name],
         )
         for name in column_plans
@@ -264,6 +275,36 @@ def normalize_table_description_frame_response(
         semantic_frame=table_frame,
         column_semantic_frames=column_frames,
     )
+
+
+def _meaning_frame(
+    output: BaseModel,
+    profile: StructuralProfile,
+    specs: tuple[SlotSpec, ...],
+) -> SemanticFrame:
+    """Attach the two model-owned meaning fields to Analyzer-owned slot identities."""
+    values = {
+        "DISPLAY_NAME": str(output.logical_name).strip(),
+        "DESCRIPTION": str(output.description).strip(),
+    }
+    slots = {}
+    for spec in specs:
+        meaning = values[spec.role]
+        slots[spec.slot_id] = SemanticSlot(
+            slot_id=spec.slot_id,
+            family=spec.family,
+            role=spec.role,
+            target_ref=spec.target_ref,
+            evidence_refs=spec.evidence_refs,
+            meaning=meaning,
+            status="sufficient" if meaning else "insufficient",
+            missing_context=(
+                () if meaning else (
+                    f"assigned {spec.family}.{spec.role} returned no meaning",
+                )
+            ),
+        )
+    return SemanticFrame(target=profile.target, profile=profile, slots=slots)
 
 
 def _project_entity(frame: SemanticFrame) -> dict:

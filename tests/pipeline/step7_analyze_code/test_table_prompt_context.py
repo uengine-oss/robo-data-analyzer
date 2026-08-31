@@ -10,9 +10,6 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from pipeline.steps.step7_analyze_code.table_prompt_context import (
-    dump_linked_table_descriptions,
-)
 from pipeline.models.data_object_usage import (
     DatabaseLinkComponentEvidence,
     DataObjectUsageEvidence,
@@ -36,20 +33,6 @@ from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
 from shared.files.cache import SourceFileCache
 import unittest
 from tests.unittest_function_cases import load_function_cases
-
-
-def test_linked_table_descriptions_exclude_ddl_columns_and_sample_rows() -> None:
-    dumped = dump_linked_table_descriptions(
-        ("db:orders",),
-        {
-            "db:orders": {
-                "description": "주문",
-                "columns": ["order_id", "status"],
-                "sample_rows": [{"order_id": 1, "status": "READY"}],
-            },
-        },
-    )
-    assert json.loads(dumped) == {"db:orders": "주문"}
 
 
 def test_framework_table_packet_contains_only_nonduplicated_model_inputs() -> None:
@@ -110,11 +93,12 @@ def test_framework_table_packet_contains_only_nonduplicated_model_inputs() -> No
     )
 
     assert set(values) == {
+        "target_id",
         "assigned_table_usages",
-        "table_contexts",
         "code_body",
     }
-    assert json.loads(values["table_contexts"]) == {"db:orders": "주문"}
+    assignments = json.loads(values["assigned_table_usages"])
+    assert assignments["FT1"]["table_description"] == "주문"
     packet = "\n".join(values.values())
     assert "must_not_be_sent" not in packet
     assert "unused_note" not in packet
@@ -197,13 +181,10 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
         assert set(packets[0]) == {
             "node_key",
             "assigned_table_usages",
-            "linked_table_contexts",
             "numbered_source",
         }
-        assert packets[0]["linked_table_contexts"] == {
-            "db:RWIS.RDD01DD_TB": "",
-        }
-        assert set(usage_values) == {"table_usage_packets"}
+        assert "table_description" not in packets[0]["assigned_table_usages"]["FT1"]
+        assert set(usage_values) == {"target_id", "table_usage_packets"}
         serialized_packet = usage_values["table_usage_packets"]
         assert "column_usage_candidates" not in serialized_packet
         assert "referenced_symbol" not in serialized_packet
@@ -252,11 +233,11 @@ def test_framework_table_prompt_uses_its_nonduplicated_projection() -> None:
     dbms = (
         _ROOT / "pipeline/steps/step7_analyze_code/table_usage_prompt_values.py"
     ).read_text(encoding="utf-8")
-    assert "dump_linked_table_descriptions(" in framework
+    assert "table_descriptions," in framework
     assert '"direct_reads"' not in framework
     assert '"direct_writes"' not in framework
     assert '"data_object_usages"' not in framework
-    assert "dump_linked_table_descriptions(" in dbms
+    assert "table_descriptions," in dbms
     assert '"direct_reads_json"' not in dbms
     assert '"direct_writes_json"' not in dbms
     assert '"direct_data_object_usages_json"' not in dbms

@@ -35,9 +35,6 @@ from pipeline.steps.step7_analyze_code.source_body import exact_source_body
 from pipeline.steps.step7_analyze_code.rw_table_filter import (
     serialize_rules,
 )
-from pipeline.steps.step7_analyze_code.table_prompt_context import (
-    dump_linked_table_descriptions,
-)
 from pipeline.models.data_object_usage import exact_direct_table_ids
 from pipeline.steps.step7_analyze_code.summary_quality import (
     copied_callee_summary_id,
@@ -197,6 +194,8 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
     return {
+        # Recorder identity only. No prompt template references this value.
+        "target_id": profile.target.id,
         "code_body": source_packet,
         "structural_profile": profile_prompt_json(profile, specs),
         "applicable_slots": slot_specs_json(specs),
@@ -216,17 +215,15 @@ def _table_usage_meaning_values(
     """Build one non-redundant Table meaning packet."""
     specs = tuple(slot_specs)
     return {
+        # Recorder identity only. No prompt template references this value.
+        "target_id": profile.target.id,
         "assigned_table_usages": json.dumps(
             function_table_usage_prompt_assignments(
-                profile, specs, direct_reads, direct_writes,
+                profile, specs, direct_reads, direct_writes, table_descriptions,
             ),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
-        ),
-        "table_contexts": dump_linked_table_descriptions(
-            tuple(dict.fromkeys((*direct_reads, *direct_writes))),
-            table_descriptions,
         ),
         "code_body": analysis_inputs["numbered_source_code"],
     }

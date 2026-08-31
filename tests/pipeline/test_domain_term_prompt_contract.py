@@ -161,8 +161,8 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         ))
         self.assertIn("linked_callee_outcomes_json", summary)
         self.assertIn("linked_external_source_json", summary)
-        self.assertIn("linked_table_context_json", table)
-        self.assertNotIn("linked_table_context_json", summary)
+        self.assertIn("table_description", table)
+        self.assertNotIn("table_description", summary)
         self.assertNotIn("linked_callee_outcomes_json", table)
         self.assertNotIn("linked_external_source_json", table)
 
@@ -178,7 +178,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         final_table = self._expanded(_load_rule(
             ROOT / "llm/prompts/framework", "table_description",
         ))
-        self.assertIn("TABLE/COLUMN dynamic semantic slots", final_table)
+        self.assertIn("한 TABLE과 허용 COLUMN의 최종 의미", final_table)
 
     def test_table_usage_prompts_match_the_meaning_only_response_schema(self) -> None:
         cases = (

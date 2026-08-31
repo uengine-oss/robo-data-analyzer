@@ -873,6 +873,7 @@ END;"""
             self.assertEqual(expected_source, values["code_body"])
             self.assertEqual(
                 {
+                    "target_id",
                     "code_body", "structural_profile", "applicable_slots",
                     "linked_callee_outcomes", "linked_external_sources",
                 },

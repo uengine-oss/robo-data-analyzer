@@ -320,12 +320,14 @@ def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
 def semantic_fact_wire_bindings(
     slot_specs: Iterable[SlotSpec],
 ) -> dict[str, str]:
-    """Map assigned canonical facts to request-local model-input references.
+    """Map irreducible assigned facts to request-local model-input references.
 
     Canonical evidence IDs remain in the Analyzer ledger and never become model field
     names.  The model receives only compact request-local fact references so a slot can
     point at one non-duplicated structural fact without receiving target digests or
-    producer identities.
+    producer identities. Canonical EXPRESSION facts stay in the Analyzer ledger instead
+    of being sent beside the exact source and the already-normalized control, statement,
+    and Rule facts. That duplicate tree does not add a model-owned decision.
     """
     specs = tuple(slot_specs)
     if not specs:
@@ -337,21 +339,10 @@ def semantic_fact_wire_bindings(
         ref
         for spec in specs
         for ref in spec.evidence_refs
-        if ref not in target_refs
+        if ref not in target_refs and ":EXPRESSION:" not in ref
     ))
     namespace = stable_digest(refs, length=8)
     return {ref: f"E{namespace}_{index}" for index, ref in enumerate(refs)}
-
-
-def semantic_expression_fact_wire_bindings(
-    slot_specs: Iterable[SlotSpec],
-) -> dict[str, str]:
-    """Return the EXPRESSION subset of the request-local fact bindings."""
-    return {
-        ref: wire_id
-        for ref, wire_id in semantic_fact_wire_bindings(slot_specs).items()
-        if ":EXPRESSION:" in ref
-    }
 
 
 def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
@@ -475,105 +466,21 @@ def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
     })
 
 
-def _compact_prompt_expression(value: Mapping[str, Any]) -> list[Any]:
-    """Project a full canonical expression to a compact, lossless semantic tree.
-
-    Nested coordinates stay in the canonical frame.  The enclosing EXPRESSION fact
-    already carries the exact line and character range used by the model call, so
-    repeating a range object at every wrapper more than doubled the measured SKT input.
-    """
-    kind = str(value.get("kind") or "")
-
-    def child(name: str) -> list[Any]:
-        item = value.get(name)
-        if not isinstance(item, Mapping):
-            raise ValueError(f"{kind} expression requires mapping field {name!r}")
-        return _compact_prompt_expression(item)
-
-    def children(name: str) -> list[list[Any]]:
-        items = value.get(name)
-        if not isinstance(items, list):
-            raise ValueError(f"{kind} expression requires list field {name!r}")
-        if any(not isinstance(item, Mapping) for item in items):
-            raise ValueError(f"{kind} expression has invalid {name!r} child")
-        return [_compact_prompt_expression(item) for item in items]
-
-    if kind == "reference":
-        return ["ref", str(value.get("name") or "")]
-    if kind == "literal":
-        return ["lit", str(value.get("spelling") or "")]
-    if kind == "group":
-        return ["group", child("value")]
-    if kind == "member":
-        return [
-            "member", str(value.get("access") or ""),
-            child("base"), str(value.get("member") or ""),
-        ]
-    if kind == "subscript":
-        return ["subscript", child("base"), child("index")]
-    if kind == "call":
-        return ["call", child("callee"), children("arguments")]
-    if kind == "unary":
-        return ["unary", str(value.get("operator") or ""), child("operand")]
-    if kind == "binary":
-        return ["binary", str(value.get("operator") or ""), children("operands")]
-    if kind == "conditional":
-        return [
-            "conditional", child("condition"), child("when_true"),
-            child("when_false"),
-        ]
-    if kind == "assignment":
-        return [
-            "assignment", str(value.get("operator") or ""),
-            child("target"), child("value"),
-        ]
-    if kind == "cast":
-        type_tokens = value.get("type_tokens")
-        if not isinstance(type_tokens, list):
-            raise ValueError("cast expression requires type_tokens")
-        return ["cast", [str(token) for token in type_tokens], child("value")]
-    if kind == "sequence":
-        return ["sequence", children("values")]
-    raise ValueError(f"unsupported prompt expression kind: {kind!r}")
-
-
-def _prompt_expression_entry(fact: EvidenceFact) -> list[Any]:
-    if fact.kind != "EXPRESSION":
-        raise ValueError(f"expected EXPRESSION fact, got {fact.kind!r}")
-    expression = fact.attributes.get("expression")
-    if not isinstance(expression, Mapping):
-        raise ValueError(f"EXPRESSION fact has invalid expression: {fact.id}")
-    # The applicable slot already carries the exact statement/control coordinate,
-    # while the canonical EXPRESSION fact retains its complete line and character
-    # provenance.  Repeating those coordinates in the model-only view adds no
-    # semantic distinction.  Keep only the role needed to distinguish, for example,
-    # assignment target from value, plus the lossless structural tree.
-    return [
-        str(fact.attributes.get("role") or ""),
-        _compact_prompt_expression(expression),
-    ]
-
-
 _PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
-    "TARGET": ("signature", "name", "params", "return_type"),
+    "TARGET": ("signature",),
     "CONTROL": (
         "type", "role", "condition", "condition_timing", "parent_ref",
         "complement_of", "implicit_false",
     ),
-    "STATEMENT": (
-        "type", "expression", "target", "operator", "effects", "terminates",
-    ),
-    "DATA_OBJECT": (
-        "table_id", "access", "operation", "direct", "resolution",
-        "qualified_columns",
-    ),
+    "STATEMENT": ("type", "effects"),
+    "DATA_OBJECT": ("table_id", "access", "operation"),
     "SYMBOL": (
         "name", "scope", "data_type", "declared_value", "value_semantics",
         "initialization_sources",
     ),
     "EXTERNAL": ("semantic_kind", "matched_key"),
     "RULE": (
-        "type", "role", "condition", "condition_timing", "effects", "when",
+        "type", "role", "condition", "condition_timing",
         "complement_of", "implicit_false", "nested_control", "fallthrough_to",
         "at_label", "after_control",
     ),
@@ -598,9 +505,6 @@ def _prompt_fact_attributes(
     if fact.kind == "CALL":
         selected: dict[str, Any] = {
             "callee": source.get("callee_source") or source.get("callee_name"),
-            "callee_kind": source.get("callee_kind"),
-            "arguments": source.get("argument_sources"),
-            "receiver": source.get("receiver_source"),
             "role": source.get("structural_role"),
             "dependency_status": source.get("dependency_status"),
             "recursive": source.get("recursive"),
@@ -664,14 +568,8 @@ def profile_prompt_json(
         for ref, fact in facts.items()
         if fact.attributes.get("node_id")
     }
-    expression_facts = {
-        ref: fact for ref, fact in facts.items() if fact.kind == "EXPRESSION"
-    }
-
     fact_payload: dict[str, dict[str, Any]] = {}
     for ref, fact in facts.items():
-        if fact.kind == "EXPRESSION":
-            continue
         record: dict[str, Any] = {"kind": fact.kind}
         if fact.start_line:
             if fact.start_line == fact.end_line:
@@ -695,14 +593,9 @@ def profile_prompt_json(
         "ordered_flow": [
             fact_bindings[ref]
             for ref in profile.ordered_flow
-            if ref in fact_bindings and ref not in expression_facts
+            if ref in fact_bindings
         ],
     }
-    if expression_facts:
-        payload["expression_closure"] = {
-            fact_bindings[ref]: _prompt_expression_entry(fact)
-            for ref, fact in expression_facts.items()
-        }
     if profile.unsupported:
         payload["unsupported"] = profile.unsupported
     return _canonical(payload)

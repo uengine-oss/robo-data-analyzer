@@ -3,21 +3,14 @@ system: |
   의미를 확정합니다. 이 설명은 데이터 카탈로그에서 사람이 읽는 최종 의미가 됩니다.
   입력에 없는 사실을 만들지 않고 response_format만 출력합니다.
 shared_values:
-  semantic_frame_contract: ../common/semantic_frame_contract.md
   table_description_contract: ../common/table_description_contract.md
 user_template_specific: |
-  # [TASK — TABLE/COLUMN dynamic semantic slots]
-
-  {semantic_frame_contract}
+  # [TASK — TABLE/COLUMN meaning]
 
   {table_description_contract}
 
-  최상위 exact TABLE `slots`와 `columns` map 안의 각 COLUMN exact `slots`만 의미로
-  채운다. 물리 식별자는 입력과 response_format의 column key가 이미 소유하므로 별도 값으로
-  다시 출력하지 않는다.
-
 user_template_inputs: |
-  # [INPUT — TABLE/COLUMN structural-fact packet]
+  # [INPUT — TABLE/COLUMN meaning facts]
 
   table_and_column_meaning_inputs_json:
   {table_and_column_meaning_inputs}
