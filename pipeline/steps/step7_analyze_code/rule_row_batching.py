@@ -119,6 +119,7 @@ def apply_rule_meaning_projections(
     projections: Sequence[RuleMeaningProjection],
     *,
     target_scope: str,
+    count_call: bool = True,
 ) -> RowCollection:
     """Publish only sufficiently grounded business rows; account for every other row."""
     by_line = {projection.anchor_line: projection for projection in projections}
@@ -141,14 +142,17 @@ def apply_rule_meaning_projections(
             }))
             continue
         excluded = projection.disposition == "implementation_detail"
+        unavailable = projection.status == "unavailable"
         findings.append(AnalysisFinding(
             concern="rules",
-            status="excluded" if excluded else "unverified",
+            status=(
+                "excluded" if excluded else "unavailable" if unavailable else "unverified"
+            ),
             target_id=f"{target_scope}::R-{rule.anchor_line}",
             coordinates=(rule.anchor_line,),
             reasons=((
                 "Structural row is implementation detail, not a product business Rule"
-                if excluded else
+                if excluded else projection.reason if unavailable else
                 "Business Rule meaning is not sufficiently grounded for publication: "
                 f"{projection.status}"
             ),),
@@ -173,36 +177,6 @@ def apply_rule_meaning_projections(
         raise ValueError(f"{target_scope}: Rule meaning exact-once accounting failed")
     return RowCollection(
         rules=rules,
-        findings=findings,
-        calls=collection.calls + 1,
-        evidence=collection.evidence,
-    )
-
-
-def mark_rule_meanings_unavailable(
-    collection: RowCollection,
-    *,
-    target_scope: str,
-    reason: str,
-    count_call: bool = True,
-) -> RowCollection:
-    """Keep failed meaning rows out of product Rules and account for each once."""
-    findings = [
-        *collection.findings,
-        *(
-            AnalysisFinding(
-                concern="rules",
-                status="unavailable",
-                target_id=f"{target_scope}::R-{rule.anchor_line}",
-                coordinates=(rule.anchor_line,),
-                reasons=(reason,),
-                evidence_rule="code_rule_meanings",
-            )
-            for rule in collection.rules
-        ),
-    ]
-    return RowCollection(
-        rules=[],
         findings=findings,
         calls=collection.calls + int(count_call),
         evidence=collection.evidence,

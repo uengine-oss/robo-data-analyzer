@@ -5,7 +5,10 @@ from __future__ import annotations
 import unittest
 
 from pipeline.models.analysis_context import ControlSubtreeNode, StatementFact
-from pipeline.models.rule_meaning_frame import RuleMeaningProjection
+from pipeline.models.rule_meaning_frame import (
+    RuleMeaningProjection,
+    unavailable_rule_meaning_projections,
+)
 from pipeline.models.rule_materialization import (
     StructuralEffect,
     materialize_rule_items,
@@ -18,7 +21,6 @@ from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     RowCollection,
     apply_rule_meaning_projections,
-    mark_rule_meanings_unavailable,
     materialize_and_validate_rules,
 )
 from tests.pipeline.parser_call_fixtures import parser_call_occurrences
@@ -155,10 +157,12 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
             source=SOURCE,
         )
 
-        result = mark_rule_meanings_unavailable(
+        result = apply_rule_meaning_projections(
             structural,
+            unavailable_rule_meaning_projections(
+                structural.evidence, reason="provider unavailable",
+            ),
             target_scope="code:sample:fn",
-            reason="provider unavailable",
         )
 
         self.assertEqual([], result.rules)

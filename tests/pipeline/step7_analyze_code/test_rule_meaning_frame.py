@@ -9,6 +9,7 @@ from pipeline.models.analysis_context import ReferencedSymbolContext
 from pipeline.models.rule_meaning_frame import (
     batch_rule_meaning_response_model,
     build_rule_meaning_packet,
+    prepare_rule_meaning_assignment,
     project_batch_rule_meanings,
     project_rule_meanings,
     rule_meaning_response_model,
@@ -219,6 +220,34 @@ class RuleMeaningFrameTest(unittest.TestCase):
         self.assertEqual("implementation_detail", row.disposition)
         self.assertEqual("not_business", row.status)
         self.assertEqual((), row.effects)
+
+    def test_parent_only_nested_control_is_removed_before_the_model_boundary(self) -> None:
+        evidence = {
+            "conditions": {"C1": "outer", "C2": "inner"},
+            "effects": {"E1": {
+                "op": "ret", "target": None, "value": "ok", "from_source": True,
+            }},
+            "rows": {
+                "R1": {
+                    "role": "decision", "when": ["C1"], "direct": [],
+                    "nested_control": True,
+                },
+                "R2": {
+                    "role": "decision", "when": ["C1", "C2"], "direct": ["E1"],
+                },
+            },
+        }
+
+        assignment = prepare_rule_meaning_assignment(evidence)
+
+        self.assertEqual({"R2"}, set(assignment.model_evidence["rows"]))
+        self.assertEqual({"C1", "C2"}, set(assignment.model_evidence["conditions"]))
+        self.assertEqual({"E1"}, set(assignment.model_evidence["effects"]))
+        self.assertEqual(1, len(assignment.deterministic_projections))
+        parent = assignment.deterministic_projections[0]
+        self.assertEqual("R1", parent.row_key)
+        self.assertEqual("implementation_detail", parent.disposition)
+        self.assertEqual("not_business", parent.status)
 
     def test_dbms_batch_uses_exact_node_maps_without_echo_fields(self) -> None:
         assignments = {

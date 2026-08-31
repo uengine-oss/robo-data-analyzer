@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-31
-**Status**: Analyzer 리팩터링의 작은 실제 SKT 책임 slice와 C-080 Parser→Analyzer 구조 사실 계약을 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 남은 작업은 Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계다.
+**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 중복 의미 칸, parent-only nested Rule의 모델 경계, failure·finding·inventory 회계를 닫은 첫 책임 slice는 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 다음 첫 좌표는 runtime wrapper 12건과 import 25건이다. 이후 LLM 경계·후처리·graph·저장소/SDD를 순서대로 감사하고, 모든 관련 수정 뒤에만 OpenAI 소규모 실제 검증과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계를 수행한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2139,3 +2139,35 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   사람용 최종 HTML도 새 경로 구성요소와 DB link 내부 필드를 포함하도록 동기화했다. 61,917 bytes,
   section `14/14`, details `12/12`, SHA-256
   `d580045cb63a3b3e026b17181b2b25a9ce2db4bcccb0208ebe4d4d54440413c3`다.
+
+## 117. Summary·nested Rule·failure·finding·inventory 책임 경계 폐쇄 (2026-08-31)
+
+- 원인: 17개 실제 Summary 본문은 모두 존재했지만 `FUNCTION.RESPONSIBILITY`가 최종 `summary`와 의미를
+  중복 소유했고, source fact 없이 만든 `FUNCTION.INPUT_ROLE`까지 빈 detail 칸으로 판정되어 16개
+  `unverified`가 생겼다. 직접 effect가 없는 nested parent control은 child의 완전한 `when` 경로에 이미
+  포함되는데도 Rule 모델에 다시 배정됐다. 모델 실패 helper는 이 결정론적 제외까지 `unavailable`로
+  덮어썼고, 정상 `excluded` ledger가 제품 차단 finding으로 합산됐다. inventory는 현재 TABLE/COLUMN
+  `logical_name + description` 응답 대신 폐기된 `slots` wire를 읽었다.
+- 수정: Summary 응답의 필수 `summary`가 whole-function 책임을 한 번만 소유한다. 중복
+  `RESPONSIBILITY/INPUT_ROLE` detail 칸을 제거했고 detail 칸이 0개인 함수도 정확한 전체 numbered source와
+  target을 보내 한 Summary를 생성한다. direct effect 없는 `nested_control` 행은 모델 경계 전에
+  `implementation_detail/not_business`로 결정론 종결하고, 모델 실패는 model-owned 행에만
+  `unavailable`을 만든 뒤 결정론적 제외와 합친다. `blocking_total`은 `excluded`를 제외하며 call/import
+  unresolved는 별도 run-quality 차단을 유지한다. inventory는 현재 TABLE/COLUMN wire와 Rule의
+  model-owned/deterministic 경계를 직접 읽는다.
+- sealed 재생: generation `20260831_063541_470a779494a7`의 164 Rule 의무는 현재 projection에서 모델 소유
+  149행 + 결정론 제외 15행으로 정확히 분할된다. 15행 중 `R866`, `R943`은 기존 응답도 이미
+  `implementation_detail`이었고 나머지 13행이 기존 Rule `unverified` 전부다. recorded response schema가
+  과거 모델에 배정했음을 증명하는 15행은 `legacy_deterministic_response_rows`로 분리되어 현재 응답
+  missing/extra가 각각 0이다. judge의 유일한 false는 재실행하지 않은 기존 graph/findings가 여전히
+  `excluded 48 + unverified 13`인 데 따른 `rule_disposition_accounting`이다. 이를 현재 결과처럼
+  승격하거나 graph를 쓰지 않았다.
+- 검증: 수정된 8개 테스트 모듈의 집중 회귀는 `89 passed, 17 subtests passed`, 전체 Step 7과 관련
+  finding/inventory/judge 확대 회귀는 `226 passed, 82 subtests passed`, `git diff --check` 오류는 0이다.
+  Neo4j 인증 뒤 `SHOW DATABASES`에서 `neo4j/test/framework/dbms/system`만 존재하고 모두 online임을
+  확인한 뒤 sealed inventory/judge를 read-only로 실행했다. LLM 호출·SKT 재분석·Neo4j write·새 DB·
+  Strategy A 재실행은 0회이며 추가 API 비용도 0이다.
+- 다음 첫 좌표는 sealed call ledger의 `runtime_wrapper_target` 12건이다. Parser가 보존한 call argument의
+  grammar-owned literal/identifier 구조와 Analyzer adapter 소비를 연결하되 현재 Parser working tree의
+  출처가 다른 WIP는 먼저 별도 보호한다. 그 다음 import 25건을 binding environment와 언어별 구조 사실로
+  닫는다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.

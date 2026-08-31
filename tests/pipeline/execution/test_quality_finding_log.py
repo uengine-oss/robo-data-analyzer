@@ -61,6 +61,7 @@ class QualityFindingLedgerTest(unittest.TestCase):
             )
             self.assertEqual("completed_with_findings", summary["run_quality_status"])
             self.assertEqual(2, summary["total"])
+            self.assertEqual(2, summary["blocking_total"])
             self.assertEqual({"rejected": 1, "unavailable": 1}, summary["by_status"])
             self.assertEqual(2, summary["affected_targets"])
             self.assertEqual(summary, returned)
@@ -74,7 +75,28 @@ class QualityFindingLedgerTest(unittest.TestCase):
             )
             self.assertEqual("completed", summary["run_quality_status"])
             self.assertEqual(0, summary["total"])
+            self.assertEqual(0, summary["blocking_total"])
             self.assertEqual(summary, returned)
+
+    def test_exact_exclusion_is_accounted_but_does_not_degrade_run_quality(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            token = set_run_dir(run_dir)
+            try:
+                record_analysis_findings([AnalysisFinding(
+                    concern="rules",
+                    status="excluded",
+                    target_id="code:test::R-1",
+                    reasons=("implementation_detail",),
+                )])
+            finally:
+                reset_run_dir(token)
+
+            returned = _summarize_analysis_findings(run_dir)
+
+        self.assertEqual(1, returned["total"])
+        self.assertEqual(0, returned["blocking_total"])
+        self.assertEqual("completed", returned["run_quality_status"])
 
     def test_unresolved_call_occurrence_is_visible_run_finding(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

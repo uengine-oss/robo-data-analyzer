@@ -96,11 +96,11 @@ def test_processing_slot_keeps_expression_canonical_without_duplicate_model_inpu
         if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
     )
     assert set(profile.expression_refs).issubset(effect.evidence_refs)
-    responsibility = next(
-        spec for spec in specs
-        if spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+    assert not any(
+        spec.family == "FUNCTION"
+        and spec.role in {"RESPONSIBILITY", "INPUT_ROLE"}
+        for spec in specs
     )
-    assert set(profile.expression_refs).isdisjoint(responsibility.evidence_refs)
     canonical_prompt = json.loads(profile_prompt_json(profile))
     assert set(canonical_prompt["expression_refs"]) == set(profile.expression_refs)
     assert all(
@@ -110,6 +110,9 @@ def test_processing_slot_keeps_expression_canonical_without_duplicate_model_inpu
     assert "expression_closure" not in canonical_prompt
     prompt = json.loads(profile_prompt_json(profile, (effect,)))
     assert "expression_closure" not in prompt
+    target_only_prompt = json.loads(profile_prompt_json(profile, ()))
+    assert target_only_prompt["facts"] == {}
+    assert target_only_prompt["ordered_flow"] == []
     assigned = json.loads(slot_specs_json((effect,)))
     assigned_slot = next(iter(assigned.values()))
     assert len(assigned_slot["fact_refs"]) == 1

@@ -316,11 +316,10 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 return {
                     "n": BatchSummaryItem(
                         node_key="1-3", summary="업무 처리를 수행한다",
-                        stereotype="DataQuery", evidence_status="partial",
-                        missing_context=["상태 코드 정의"],
+                        stereotype="DataQuery", evidence_status="sufficient",
+                        missing_context=[],
                         semantic_frame=semantic_frame_for_node(
                             node, meaning="업무 처리를 수행한다",
-                            status="partial",
                         ),
                     )
                 }
@@ -354,7 +353,7 @@ class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(ready_waiter, finished, "summary-ready signal timed out")
                 self.assertEqual("업무 처리를 수행한다", node.summary)
                 self.assertEqual(
-                    "partial",
+                    "accepted",
                     ctx.extra["summary_status"],
                 )
                 self.assertFalse(task.done(), "table-insight tail should still be running")

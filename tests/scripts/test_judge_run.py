@@ -71,9 +71,10 @@ def _run_fixture(root: Path, *, excluded: bool) -> Path:
     (run_dir / "analysis-findings.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in findings), encoding="utf-8",
     )
-    status = "completed_with_findings" if excluded else "completed"
+    status = "completed"
     _write_json(run_dir / "analysis_findings_summary.json", {
         "total": len(findings),
+        "blocking_total": 0,
         "by_status": {"excluded": 1} if excluded else {},
         "by_concern": {"rules": 1} if excluded else {},
     })
@@ -132,7 +133,7 @@ class SealedRunJudgeTest(unittest.TestCase):
         self.assertTrue(result["acceptance_ready"])
         self.assertEqual(1, result["counts"]["published_rules"])
 
-    def test_accounted_exclusion_closes_ledger_but_not_acceptance(self) -> None:
+    def test_accounted_exclusion_closes_ledger_and_does_not_block_acceptance(self) -> None:
         with TemporaryDirectory() as temporary_directory:
             result = judge(
                 _run_fixture(Path(temporary_directory), excluded=True),
@@ -140,7 +141,7 @@ class SealedRunJudgeTest(unittest.TestCase):
             )
 
         self.assertTrue(result["deterministic_closed"])
-        self.assertFalse(result["acceptance_ready"])
+        self.assertTrue(result["acceptance_ready"])
         self.assertEqual({"excluded": 1}, result["counts"]["rule_findings_by_status"])
 
 

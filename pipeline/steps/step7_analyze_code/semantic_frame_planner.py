@@ -611,37 +611,6 @@ def build_code_semantic_plan(
 
     is_routine = fn.label in {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
     if is_routine:
-        _add_slot(
-            slots,
-            target_id=fn.id,
-            family="FUNCTION",
-            role="RESPONSIBILITY",
-            anchor="TARGET",
-            target_ref=target_ref,
-            evidence_refs=(target_ref,),
-        )
-        if parameter_refs:
-            for ref in parameter_refs:
-                _add_slot(
-                    slots,
-                    target_id=fn.id,
-                    family="FUNCTION",
-                    role="INPUT_ROLE",
-                    anchor={"evidence": ref},
-                    target_ref=target_ref,
-                    evidence_refs=(target_ref, ref),
-                )
-        elif fn.params.strip():
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="INPUT_ROLE",
-                anchor="INTERFACE",
-                target_ref=target_ref,
-                evidence_refs=(target_ref,),
-            )
-
         for row, rule_ref, supporting_refs in planned_rule_refs:
             if str(row.get("role") or "") not in {
                 "decision", "complement", "handler",

@@ -29,7 +29,7 @@ RuleRowDispositionValue = Literal[
     "business_rule", "implementation_detail", "insufficient",
 ]
 RuleProjectionStatus = Literal[
-    "sufficient", "partial", "insufficient", "not_business",
+    "sufficient", "partial", "insufficient", "not_business", "unavailable",
 ]
 
 
@@ -325,6 +325,95 @@ class RuleMeaningProjection:
     effects: tuple[str, ...]
     disposition: RuleRowDispositionValue
     status: RuleProjectionStatus
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class RuleMeaningAssignment:
+    """Model-owned rows plus Analyzer-owned parent-control exclusions."""
+
+    model_evidence: dict[str, object]
+    deterministic_projections: tuple[RuleMeaningProjection, ...]
+
+
+def prepare_rule_meaning_assignment(
+    evidence: Mapping[str, object],
+) -> RuleMeaningAssignment:
+    """Remove parent-only control rows from the model decision boundary.
+
+    A nested controller with no direct effect cannot publish a standalone Rule.
+    Its condition remains in each child row's complete ``when`` path, so asking a
+    model to classify the parent again adds cost and can create a duplicate Rule.
+    """
+    conditions, effects, rows = _evidence_maps(evidence)
+    model_rows: dict[str, Mapping[str, object]] = {}
+    deterministic: list[RuleMeaningProjection] = []
+    for row_key, row in rows.items():
+        if row.get("nested_control") and not tuple(row.get("direct") or ()):
+            deterministic.append(RuleMeaningProjection(
+                row_key=row_key,
+                anchor_line=int(row_key[1:]),
+                effects=(),
+                disposition="implementation_detail",
+                status="not_business",
+            ))
+        else:
+            model_rows[row_key] = row
+
+    condition_refs = {
+        str(reference).lstrip("!")
+        for row in model_rows.values()
+        for reference in row.get("when") or ()
+    }
+    effect_refs = {
+        str(reference)
+        for row in model_rows.values()
+        for reference in row.get("direct") or ()
+    }
+    unknown_conditions = condition_refs - set(conditions)
+    unknown_effects = effect_refs - set(effects)
+    if unknown_conditions or unknown_effects:
+        raise ValueError(
+            "Rule meaning assignment references unknown atoms: "
+            f"conditions={sorted(unknown_conditions)} effects={sorted(unknown_effects)}"
+        )
+    return RuleMeaningAssignment(
+        model_evidence={
+            "conditions": {
+                key: value for key, value in conditions.items()
+                if key in condition_refs
+            },
+            "effects": {
+                key: value for key, value in effects.items()
+                if key in effect_refs
+            },
+            "rows": model_rows,
+        },
+        deterministic_projections=tuple(deterministic),
+    )
+
+
+def unavailable_rule_meaning_projections(
+    evidence: Mapping[str, object],
+    *,
+    reason: str,
+) -> tuple[RuleMeaningProjection, ...]:
+    """Account only model-owned rows when their one semantic call is unavailable."""
+    _conditions, _effects, rows = _evidence_maps(evidence)
+    concrete_reason = " ".join(str(reason).split())
+    if not concrete_reason:
+        raise ValueError("unavailable Rule meaning requires a concrete reason")
+    return tuple(
+        RuleMeaningProjection(
+            row_key=row_key,
+            anchor_line=int(row_key[1:]),
+            effects=(),
+            disposition="insufficient",
+            status="unavailable",
+            reason=concrete_reason,
+        )
+        for row_key in rows
+    )
 
 
 def project_rule_meanings(

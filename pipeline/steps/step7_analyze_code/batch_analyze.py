@@ -68,13 +68,14 @@ from pipeline.models.function_table_usage_response_schema import (
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     RowCollection,
     apply_rule_meaning_projections,
-    mark_rule_meanings_unavailable,
     materialize_and_validate_rules,
 )
 from pipeline.models.rule_meaning_frame import (
     batch_rule_meaning_response_model,
     build_rule_meaning_packet,
+    prepare_rule_meaning_assignment,
     project_batch_rule_meanings,
+    unavailable_rule_meaning_projections,
 )
 from graph.schema.graph_nodes import CodeNode
 from shared.config.settings import SETTINGS
@@ -854,14 +855,20 @@ async def _collect_dbms_rule_meanings(
         return materialization
     key_to_id = batch_node_keys(node_ids, contexts)
     assignments = {
-        node_key: materialization.evidence[node_id]
+        node_key: prepare_rule_meaning_assignment(
+            materialization.evidence[node_id]
+        )
         for node_key, node_id in key_to_id.items()
     }
     packets = []
     active_assignments: dict[str, dict[str, object]] = {}
     unavailable_keys: set[str] = set()
     for node_key, node_id in key_to_id.items():
-        evidence = assignments[node_key]
+        assignment = assignments[node_key]
+        evidence = assignment.model_evidence
+        rows = evidence.get("rows") or {}
+        if not rows:
+            continue
         conditions = evidence.get("conditions") or {}
         effects = evidence.get("effects") or {}
         if not conditions and not effects:
@@ -938,23 +945,45 @@ async def _collect_dbms_rule_meanings(
             evidence=materialization.evidence[node_id],
         )
         if node_key in unavailable_keys:
-            collection = mark_rule_meanings_unavailable(
+            assignment = assignments[node_key]
+            collection = apply_rule_meaning_projections(
                 collection,
+                (
+                    *unavailable_rule_meaning_projections(
+                        assignment.model_evidence,
+                        reason=(
+                            "Rule row has no condition/effect atom from which to derive "
+                            "business meaning"
+                        ),
+                    ),
+                    *assignment.deterministic_projections,
+                ),
                 target_scope=node_id,
-                reason="Rule row has no condition/effect atom from which to derive business meaning",
                 count_call=False,
             )
         elif model_error is not None:
-            collection = mark_rule_meanings_unavailable(
-                collection,
-                target_scope=node_id,
-                reason=str(model_error),
-            )
-        else:
+            assignment = assignments[node_key]
             collection = apply_rule_meaning_projections(
                 collection,
-                projected_by_key[node_key],
+                (
+                    *unavailable_rule_meaning_projections(
+                        assignment.model_evidence, reason=str(model_error),
+                    ),
+                    *assignment.deterministic_projections,
+                ),
                 target_scope=node_id,
+            )
+        else:
+            assignment = assignments[node_key]
+            model_projections = projected_by_key.get(node_key, ())
+            collection = apply_rule_meaning_projections(
+                collection,
+                (
+                    *model_projections,
+                    *assignment.deterministic_projections,
+                ),
+                target_scope=node_id,
+                count_call=bool(model_projections),
             )
         items[node_id] = item.model_copy(update={"rules": collection.rules})
         if collection.findings:

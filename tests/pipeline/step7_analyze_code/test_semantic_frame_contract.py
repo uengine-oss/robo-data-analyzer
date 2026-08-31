@@ -247,8 +247,8 @@ return rc;
         )
 
         roles = {(spec.family, spec.role) for spec in specs}
-        self.assertIn(("FUNCTION", "RESPONSIBILITY"), roles)
-        self.assertIn(("FUNCTION", "INPUT_ROLE"), roles)
+        self.assertNotIn(("FUNCTION", "RESPONSIBILITY"), roles)
+        self.assertNotIn(("FUNCTION", "INPUT_ROLE"), roles)
         self.assertIn(("FUNCTION", "GUARDS_AND_BRANCHES"), roles)
         self.assertIn(("FUNCTION", "PROCESSING_EFFECTS"), roles)
         self.assertIn(("FUNCTION", "RESULT"), roles)
@@ -852,21 +852,7 @@ END;"""
                 set(prompt_profile["facts"]),
             )
 
-            owns_target = any(
-                spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
-                for spec in assigned_specs
-            )
-            if owns_target:
-                expected_lines = list(range(10, 17))
-            else:
-                expected_lines = sorted({
-                    line
-                    for ref in assigned_refs
-                    for fact in (profile.evidence[ref],)
-                    if fact.kind != "TARGET" and fact.start_line > 0
-                    for line in range(fact.start_line, fact.end_line + 1)
-                    if 10 <= line <= 16
-                })
+            expected_lines = list(range(10, 17))
             expected_source = "\n".join(
                 f"{line} | {source_lines[line - 10]}" for line in expected_lines
             )
@@ -934,9 +920,7 @@ END;"""
             if spec.family == "FUNCTION"
         ]
 
-        self.assertEqual(
-            {"RESPONSIBILITY", "INPUT_ROLE", "RESULT"}, set(roles),
-        )
+        self.assertEqual({"RESULT"}, set(roles))
         self.assertNotIn("GUARDS_AND_BRANCHES", roles)
         self.assertNotIn("PROCESSING_EFFECTS", roles)
         self.assertLessEqual(len(roles), 5)
@@ -1202,13 +1186,13 @@ return RC_NRM;
     def test_whole_summary_is_model_owned_while_gap_metadata_comes_from_frame(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         model = frame_summary_response_model("framework", specs)
-        responsibility = next(
+        result_slot = next(
             spec for spec in specs
-            if spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY"
+            if spec.family == "FUNCTION" and spec.role == "RESULT"
         )
         payload = {
             "slots": {
-                wire_id: "" if spec == responsibility else f"{spec.family}.{spec.role}을 수행한다"
+                wire_id: "" if spec == result_slot else f"{spec.family}.{spec.role}을 수행한다"
                 for spec, wire_id in zip(
                     specs, semantic_slot_wire_ids(specs), strict=True,
                 )

@@ -149,7 +149,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", context.summary)
         self.assertEqual("needs_context", context.extra["summary_status"])
         self.assertEqual(
-            ("assigned FUNCTION.RESPONSIBILITY returned no meaning",),
+            ("whole-function summary returned no meaning",),
             finding.reasons,
         )
 

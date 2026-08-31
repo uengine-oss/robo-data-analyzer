@@ -28,12 +28,9 @@ SlotFamily = Literal[
 ]
 
 
-# This order is part of the legacy summary and aggregate-member projection contract.
-# Keeping it beside the canonical frame types prevents planner, projection, batching,
-# and aggregate consumers from drifting into different definitions of completeness.
+# Whole-function responsibility is owned once by the response's required ``summary``.
+# These are the non-duplicated structural details that can qualify that summary.
 FUNCTION_SUMMARY_ROLES = (
-    "RESPONSIBILITY",
-    "INPUT_ROLE",
     "GUARDS_AND_BRANCHES",
     "PROCESSING_EFFECTS",
     "RESULT",
@@ -311,8 +308,10 @@ def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
     order is trusted.
     """
     specs = tuple(slot_specs)
-    if not specs or len({spec.slot_id for spec in specs}) != len(specs):
-        raise ValueError("semantic frame slot specs must be non-empty and unique")
+    if len({spec.slot_id for spec in specs}) != len(specs):
+        raise ValueError("semantic frame slot specs must be unique")
+    if not specs:
+        return ()
     namespace = stable_digest([spec.slot_id for spec in specs], length=10)
     return tuple(f"W{namespace}_{index}" for index in range(len(specs)))
 
@@ -331,7 +330,7 @@ def semantic_fact_wire_bindings(
     """
     specs = tuple(slot_specs)
     if not specs:
-        raise ValueError("semantic evidence bindings require at least one slot")
+        return {}
     target_refs = {spec.target_ref for spec in specs}
     if len(target_refs) != 1:
         raise ValueError("one prompt assignment cannot mix target evidence")
@@ -355,7 +354,7 @@ def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
 
 def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseModel]:
     specs = tuple(slot_specs)
-    wire_ids = semantic_slot_wire_ids(specs)
+    wire_ids = semantic_slot_wire_ids(specs) if specs else ()
     fingerprint = stable_digest([spec.model_dump(mode="json") for spec in specs])
     fields = {wire_id: (str, Field(...)) for wire_id in wire_ids}
     slots_model = create_model(
@@ -380,7 +379,7 @@ def normalize_semantic_frame_response(
     slot_specs: Iterable[SlotSpec],
 ) -> SemanticFrame:
     specs = tuple(slot_specs)
-    wire_ids = semantic_slot_wire_ids(specs)
+    wire_ids = semantic_slot_wire_ids(specs) if specs else ()
     evidence_ids = set(profile.evidence)
     target_ref = evidence_id(profile.target.id, "TARGET", 0)
     if target_ref not in evidence_ids:
@@ -388,7 +387,7 @@ def normalize_semantic_frame_response(
     slots: dict[str, SemanticSlot] = {}
     private_wire_ids = (
         *wire_ids,
-        *semantic_fact_wire_bindings(specs).values(),
+        *(semantic_fact_wire_bindings(specs).values() if specs else ()),
     )
     for spec, wire_id in zip(specs, wire_ids, strict=True):
         if spec.target_ref != target_ref:
@@ -451,6 +450,8 @@ def normalize_semantic_frame_response(
 
 def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
     specs = tuple(slot_specs)
+    if not specs:
+        return "{}"
     wire_ids = semantic_slot_wire_ids(specs)
     fact_bindings = semantic_fact_wire_bindings(specs)
     return _canonical({
@@ -550,6 +551,20 @@ def profile_prompt_json(
         return _canonical(profile.model_dump(mode="json", by_alias=True))
 
     specs = tuple(slot_specs)
+    if not specs:
+        target_ref = evidence_id(profile.target.id, "TARGET", 0)
+        if target_ref not in profile.evidence:
+            raise ValueError(f"prompt target evidence is missing: {target_ref}")
+        return _canonical({
+            "target": {
+                "kind": profile.target.type,
+                **_prompt_fact_attributes(
+                    profile.evidence[target_ref], {}, {},
+                ),
+            },
+            "facts": {},
+            "ordered_flow": [],
+        })
     fact_bindings = semantic_fact_wire_bindings(specs)
     target_refs = {spec.target_ref for spec in specs}
     if len(target_refs) != 1:

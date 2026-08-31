@@ -243,10 +243,13 @@ def judge(
         })
 
     findings_summary = prompt_inventory["finding"]["summary"] or {}
+    blocking_findings = int(
+        findings_summary.get("blocking_total", findings_summary.get("total", 0)) or 0
+    )
     deterministic_closed = all(checks.values())
     acceptance_ready = (
         deterministic_closed
-        and int(findings_summary.get("total") or 0) == 0
+        and blocking_findings == 0
         and manifest.get("status") == "completed"
         and product_closure.get("quality_status") == "completed"
     )
@@ -265,6 +268,7 @@ def judge(
             "rule_findings_by_status": dict(sorted(finding_statuses.items())),
             "published_examples": len(published_examples),
             "analysis_findings": int(findings_summary.get("total") or 0),
+            "blocking_analysis_findings": blocking_findings,
             "call_occurrences": (product_closure.get("call_occurrences") or {}).get("count"),
             "import_occurrences": (product_closure.get("import_occurrences") or {}).get("count"),
             "product_records": (product_closure.get("product_records") or {}).get("count"),

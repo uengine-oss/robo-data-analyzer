@@ -372,6 +372,18 @@
   - 검색 집중 회귀 `45 passed, 25 subtests passed`, 전체 자동 회귀
     `1430 passed, 4 skipped, 340 subtests passed`다. 실제 LLM 호출·SKT 재분석·새 DB·Docker는 0회다.
 
+- [x] **B32 Summary·nested Rule·failure·finding·inventory 책임 경계 폐쇄**
+  - whole-function `summary`와 중복되던 `FUNCTION.RESPONSIBILITY/INPUT_ROLE` detail 칸을 제거하고,
+    detail 칸이 0개여도 전체 numbered source로 Summary 한 번을 생성한다.
+  - direct effect 없는 nested parent 15행을 모델 경계 밖 `implementation_detail`로 종결한다. 기존
+    `unverified` 13행은 모두 이 집합에 포함되고, 나머지 2행은 원래도 모델이 제외한 행이다.
+  - 모델 실패는 model-owned 행에만 `unavailable`을 적용하고 결정론적 제외를 보존한다. `excluded`는
+    exact-once ledger에 남되 `blocking_total`에서 제외한다.
+  - current TABLE/COLUMN wire와 sealed historical Rule response schema를 읽는 inventory로 164 = 149 + 15,
+    current missing/extra 0을 확인했다. 변경 모듈 집중 회귀 `89 passed, 17 subtests passed`, Step 7 확대
+    회귀 `226 passed, 82 subtests passed`; LLM 호출·SKT 재분석·Neo4j write·새 DB·Strategy A 재실행은
+    0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**
@@ -411,6 +423,15 @@
     마지막에 한 번만 분석한다.
   - baseline diff, 단계별 wall time·queue·token·KV cache·publication, exact-once 누락·중복, 새 실패 좌표를
     함께 판정한다. 임의 cap·truncation·skip·fallback으로 시간을 줄이지 않는다.
+
+- [ ] **C07 runtime wrapper call 12건의 Parser→Analyzer binding 폐쇄**
+  - wrapper argument의 grammar-owned literal/identifier/range를 소비해 실제 target을 검증한다.
+  - 이름·괄호·문자열 정규식 추측 없이 exact occurrence를 internal/external/excluded/unresolved 중 하나로
+    종결하고 nested call과 partial-upload 반례를 함께 검증한다.
+
+- [ ] **C08 import 25건의 binding environment 폐쇄**
+  - 실제 import fact와 선택 scope를 언어별 symbol/type/module 환경에 연결한다.
+  - basename heuristic 없이 internal/external/unresolved를 exact-once 분류하고 최소 실제 범위를 검증한다.
 
 ## D. 인도
 

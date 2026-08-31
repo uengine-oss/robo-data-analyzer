@@ -26,6 +26,7 @@ from pipeline.quality_gates.rule_audit_artifact import (
     RULE_AUDIT_DIRECTORY,
     load_rule_audit_records,
 )
+from pipeline.models.rule_meaning_frame import prepare_rule_meaning_assignment
 from search.corpus.generation import completed_generation_session
 
 
@@ -63,6 +64,56 @@ def _slot_values(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError(f"semantic slots must be an object: {type(value).__name__}")
     return {str(key): str(item or "") for key, item in value.items()}
+
+
+def _table_meaning_fields(value: Any, *, owner: str) -> dict[str, str]:
+    """Read the current table/column response contract by its explicit names."""
+    if not isinstance(value, dict):
+        raise ValueError(f"{owner} meaning must be an object")
+    required = ("logical_name", "description")
+    missing = [name for name in required if name not in value]
+    if missing:
+        raise ValueError(f"{owner} meaning fields are missing: {missing}")
+    return {name: str(value.get(name) or "") for name in required}
+
+
+def _recorded_required_keys(record: dict[str, Any], field: str) -> set[str] | None:
+    """Read the exact map keys assigned by the recorded response schema.
+
+    A sealed historical response can legitimately contain rows that a newer
+    deterministic projection has moved outside the model boundary.  The recorded
+    schema proves whether those keys were assigned to that historical call; without
+    that proof they remain unexpected response keys.
+    """
+    response_schema = record.get("response_schema")
+    if not isinstance(response_schema, dict):
+        return None
+    schema = response_schema.get("schema")
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    field_schema = properties.get(field)
+    if not isinstance(field_schema, dict):
+        return None
+    reference = field_schema.get("$ref")
+    prefix = "#/$defs/"
+    if not isinstance(reference, str) or not reference.startswith(prefix):
+        return None
+    definitions = schema.get("$defs")
+    definition = (
+        definitions.get(reference[len(prefix):])
+        if isinstance(definitions, dict) else None
+    )
+    if not isinstance(definition, dict):
+        return None
+    required = definition.get("required")
+    if not isinstance(required, list) or not all(
+        isinstance(key, str) for key in required
+    ):
+        return None
+    return set(required)
 
 
 def _run_identity(run_dir: Path, database: str) -> tuple[str, str]:
@@ -107,12 +158,31 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
         for record in audit_records.values()
         for rule in record["rules"]
     ]
+    rule_assignments = {
+        target_id: prepare_rule_meaning_assignment(record["evidence"])
+        for target_id, record in audit_records.items()
+    }
+    expected_model_rows = {
+        target_id: set((assignment.model_evidence.get("rows") or {}).keys())
+        for target_id, assignment in rule_assignments.items()
+    }
+    deterministic_rows = {
+        target_id: {
+            projection.row_key for projection in assignment.deterministic_projections
+        }
+        for target_id, assignment in rule_assignments.items()
+    }
+    deterministic_excluded_rows = sum(
+        len(assignment.deterministic_projections)
+        for assignment in rule_assignments.values()
+    )
     rule_calls = 0
     rule_response_rows = 0
     rule_effect_meanings = 0
     empty_rule_effect_meanings = 0
     missing_rule_response_rows = 0
     extra_rule_response_rows = 0
+    legacy_deterministic_response_rows = 0
     unexpected_rule_targets = 0
     duplicate_rule_targets = 0
     rule_dispositions: Counter[str] = Counter()
@@ -134,8 +204,6 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
                     f"Rule meaning response must contain exact-key row/effect maps: "
                     f"{target_id!r}"
                 )
-            rule_response_rows += len(response_rows)
-            rule_dispositions.update(str(value) for value in response_rows.values())
             rule_effect_meanings += len(effect_meanings)
             empty_rule_effect_meanings += sum(
                 _blank(value) for value in effect_meanings.values()
@@ -144,10 +212,29 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             if audit is None:
                 unexpected_rule_targets += 1
                 continue
-            expected_rows = set((audit["evidence"].get("rows") or {}).keys())
+            expected_rows = expected_model_rows[target_id]
             actual_rows = set(str(key) for key in response_rows)
+            recorded_rows = _recorded_required_keys(record, "rows")
+            legacy_rows = (
+                actual_rows
+                & deterministic_rows[target_id]
+                & recorded_rows
+                if recorded_rows is not None else set()
+            )
+            current_response_rows = actual_rows - legacy_rows
+            rule_response_rows += len(current_response_rows)
+            rule_dispositions.update(
+                str(response_rows[key]) for key in current_response_rows
+            )
+            legacy_deterministic_response_rows += len(legacy_rows)
             missing_rule_response_rows += len(expected_rows - actual_rows)
-            extra_rule_response_rows += len(actual_rows - expected_rows)
+            extra_rule_response_rows += len(
+                actual_rows - expected_rows - legacy_rows
+            )
+
+    for target_id, expected_rows in expected_model_rows.items():
+        if expected_rows and target_id not in seen_rule_targets:
+            missing_rule_response_rows += len(expected_rows)
 
     tables: list[dict[str, Any]] = []
     columns: list[dict[str, Any]] = []
@@ -157,7 +244,9 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
     for record in _records(table_path):
         parsed = (record.get("response") or {}).get("parsed") or {}
         table_id = str(record.get("target_id") or "")
-        tables.append({"slots": _slot_values(parsed.get("slots"))})
+        tables.append({
+            "meaning_fields": _table_meaning_fields(parsed, owner="table"),
+        })
         if table_id:
             target_table_ids.add(table_id)
         raw_columns = parsed.get("columns")
@@ -168,7 +257,9 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
                 raise ValueError(f"column semantic frame must be an object: {name!r}")
             columns.append({
                 "name": str(name),
-                "slots": _slot_values(column.get("slots")),
+                "meaning_fields": _table_meaning_fields(
+                    column, owner=f"column {name!r}",
+                ),
             })
             if table_id and name:
                 target_column_ids.add(f"{table_id}.{name}")
@@ -198,10 +289,21 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             "rule": {
                 "model_calls": rule_calls,
                 "obligation_rows": len(structural_rules),
+                "model_obligation_rows": sum(
+                    len(rows) for rows in expected_model_rows.values()
+                ),
+                "deterministic_excluded_rows": deterministic_excluded_rows,
+                "legacy_deterministic_response_rows": (
+                    legacy_deterministic_response_rows
+                ),
                 "response_rows": rule_response_rows,
                 "business_rule_rows": rule_dispositions.get("business_rule", 0),
-                "implementation_detail_rows": rule_dispositions.get(
+                "model_implementation_detail_rows": rule_dispositions.get(
                     "implementation_detail", 0
+                ),
+                "implementation_detail_rows": (
+                    rule_dispositions.get("implementation_detail", 0)
+                    + deterministic_excluded_rows
                 ),
                 "unknown_disposition_rows": sum(
                     count
@@ -226,27 +328,37 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
             "table": {
                 "outputs": len(tables),
                 "empty_meaning": sum(
-                    all(_blank(value) for value in item["slots"].values())
+                    all(
+                        _blank(value)
+                        for value in item["meaning_fields"].values()
+                    )
                     for item in tables
                 ),
-                "slots": sum(len(item["slots"]) for item in tables),
-                "empty_slots": sum(
+                "meaning_fields": sum(
+                    len(item["meaning_fields"]) for item in tables
+                ),
+                "empty_meaning_fields": sum(
                     _blank(value)
                     for item in tables
-                    for value in item["slots"].values()
+                    for value in item["meaning_fields"].values()
                 ),
             },
             "column": {
                 "outputs": len(columns),
                 "empty_meaning": sum(
-                    all(_blank(value) for value in item["slots"].values())
+                    all(
+                        _blank(value)
+                        for value in item["meaning_fields"].values()
+                    )
                     for item in columns
                 ),
-                "slots": sum(len(item["slots"]) for item in columns),
-                "empty_slots": sum(
+                "meaning_fields": sum(
+                    len(item["meaning_fields"]) for item in columns
+                ),
+                "empty_meaning_fields": sum(
                     _blank(value)
                     for item in columns
-                    for value in item["slots"].values()
+                    for value in item["meaning_fields"].values()
                 ),
             },
             "finding": {

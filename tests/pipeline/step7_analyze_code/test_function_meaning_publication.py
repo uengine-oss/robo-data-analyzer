@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
+from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.function_meaning import function_meaning_product_properties
 from pipeline.execution.run_output_context import reset_run_dir, set_run_dir
 from pipeline.steps.step7_analyze_code.function_meaning import finalize_function_meaning
@@ -53,7 +54,13 @@ def test_insufficient_function_meaning_writes_content_addressed_detail() -> None
         run_dir = Path(temp)
         token = set_run_dir(run_dir)
         try:
-            finalize_function_meaning(function)
+            finalize_function_meaning(function, findings=(AnalysisFinding(
+                concern="summary",
+                status="unverified",
+                target_id=function.id,
+                reasons=("whole-function summary returned no meaning",),
+                evidence_rule="code_summary",
+            ),))
         finally:
             reset_run_dir(token)
 

@@ -76,13 +76,14 @@ from pipeline.models.function_table_usage_response_schema import (
 )
 from pipeline.models.rule_meaning_frame import (
     build_rule_meaning_packet,
+    prepare_rule_meaning_assignment,
     project_rule_meanings,
     rule_meaning_response_model,
+    unavailable_rule_meaning_projections,
 )
 from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.steps.step7_analyze_code.rule_row_batching import (
     apply_rule_meaning_projections,
-    mark_rule_meanings_unavailable,
     materialize_and_validate_rules,
 )
 from llm.runners.yaml_llm_runner import run_yaml_rule
@@ -117,6 +118,8 @@ def _assigned_external_source_texts(
 ) -> dict[str, str]:
     """Map request-local fact keys to their exact external source text."""
     specs = tuple(slot_specs)
+    if not specs:
+        return {}
     assigned_refs = {
         ref
         for spec in specs
@@ -171,12 +174,6 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
     # Split only on LF so CR and a trailing empty physical line remain exact payload data.
     source_lines = source_text.split("\n") if source_text else []
     target_start = max(int(profile.target.start_line), 1)
-    if not any(
-        (spec.family == "FUNCTION" and spec.role == "RESPONSIBILITY")
-        or spec.family in {"STATEMENT", "CALL"}
-        for spec in specs
-    ):
-        raise ValueError("summary assignment lacks a whole-target owner slot")
     source_packet = "\n".join(
         f"{target_start + index} | {source_lines[index]}"
         for index in range(len(source_lines))
@@ -233,8 +230,6 @@ async def _run_frame_summary(
     *, profile, slot_specs, strategy_name: str, analysis_inputs: dict, invoke,
 ) -> SummaryOutput:
     specs = tuple(slot_specs)
-    if not specs:
-        raise ValueError("summary concern requires at least one semantic slot")
     values = _summary_prompt_values(profile, specs, analysis_inputs)
     output = await invoke(
         values,
@@ -538,20 +533,38 @@ async def analyze_code_three_split(
     )
 
     async def _collect_rule_meanings():
-        conditions = collection.evidence.get("conditions") or {}
-        effects = collection.evidence.get("effects") or {}
-        rows = collection.evidence.get("rows") or {}
         if not collection.rules:
             return collection
-        if not conditions and not effects:
-            return mark_rule_meanings_unavailable(
+        assignment = prepare_rule_meaning_assignment(collection.evidence)
+        model_evidence = assignment.model_evidence
+        conditions = model_evidence.get("conditions") or {}
+        effects = model_evidence.get("effects") or {}
+        rows = model_evidence.get("rows") or {}
+        if not rows:
+            return apply_rule_meaning_projections(
                 collection,
+                assignment.deterministic_projections,
                 target_scope=code_id,
-                reason="Rule row has no condition/effect atom from which to derive business meaning",
+                count_call=False,
+            )
+        if not conditions and not effects:
+            return apply_rule_meaning_projections(
+                collection,
+                (
+                    *unavailable_rule_meaning_projections(
+                        model_evidence,
+                        reason=(
+                            "Rule row has no condition/effect atom from which to derive "
+                            "business meaning"
+                        ),
+                    ),
+                    *assignment.deterministic_projections,
+                ),
+                target_scope=code_id,
                 count_call=False,
             )
         packet = build_rule_meaning_packet(
-            collection.evidence,
+            model_evidence,
             numbered_source=analysis_inputs["numbered_source_code"],
             referenced_symbols=ctx.referenced_symbols,
             callee_outcomes_by_id=_direct_callee_outcomes_by_id(ctx, contexts),
@@ -585,14 +598,22 @@ async def analyze_code_three_split(
                 payload_chars=len(values["rule_packet"]),
             )
         except ModelOutputError as error:
-            return mark_rule_meanings_unavailable(
+            return apply_rule_meaning_projections(
                 collection,
+                (
+                    *unavailable_rule_meaning_projections(
+                        model_evidence, reason=str(error),
+                    ),
+                    *assignment.deterministic_projections,
+                ),
                 target_scope=code_id,
-                reason=str(error),
             )
         return apply_rule_meaning_projections(
             collection,
-            project_rule_meanings(output, collection.evidence),
+            (
+                *project_rule_meanings(output, model_evidence),
+                *assignment.deterministic_projections,
+            ),
             target_scope=code_id,
         )
 

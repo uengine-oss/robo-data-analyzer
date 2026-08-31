@@ -61,7 +61,11 @@ def project_summary(
         if item.strip()
     )
 
-    if candidates and all(slot.status == "sufficient" for slot in candidates):
+    if not candidates:
+        status = "sufficient" if summary.strip() else "insufficient"
+        if status == "insufficient":
+            missing = ["whole-function summary returned no meaning"]
+    elif all(slot.status == "sufficient" for slot in candidates):
         status = "sufficient"
     elif grounded:
         status = "partial"

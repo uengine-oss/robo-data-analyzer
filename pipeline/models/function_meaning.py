@@ -184,7 +184,7 @@ def derive_function_meaning_state(
         ))
 
     if normalized_summary:
-        if summary_frame is None or not summary_slots:
+        if summary_frame is None:
             raise ValueError(f"{function_id}: mapped summary lacks its closed semantic frame")
         meaning_status: MeaningStatus = "partial" if items else "sufficient"
     else:

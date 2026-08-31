@@ -1130,6 +1130,7 @@ def _summarize_analysis_findings(
     path = run_dir / "analysis-findings.jsonl"
     counts = {
         "total": 0,
+        "blocking_total": 0,
         "by_status": {},
         "by_concern": {},
         "affected_targets": 0,
@@ -1157,6 +1158,8 @@ def _summarize_analysis_findings(
                         "status/concern/target_id required"
                     )
                 counts["total"] += 1
+                if status != "excluded":
+                    counts["blocking_total"] += 1
                 counts["by_status"][status] = counts["by_status"].get(status, 0) + 1
                 counts["by_concern"][concern] = counts["by_concern"].get(concern, 0) + 1
                 targets.add(target)
@@ -1172,7 +1175,7 @@ def _summarize_analysis_findings(
     counts["run_quality_status"] = (
         "completed_with_findings"
         if (
-            counts["total"] or call_resolution["unresolved"]
+            counts["blocking_total"] or call_resolution["unresolved"]
             or import_resolution["unresolved"]
         )
         else "completed"
@@ -1185,6 +1188,7 @@ def _summarize_analysis_findings(
         "run",
         "analysis_findings_summarized",
         total=counts["total"],
+        blocking_total=counts["blocking_total"],
         status=counts["run_quality_status"],
         by_status=counts["by_status"] or None,
     )
