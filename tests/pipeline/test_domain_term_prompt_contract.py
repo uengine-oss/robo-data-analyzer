@@ -2,7 +2,7 @@
 from pathlib import Path
 import unittest
 
-from llm.runners.yaml_llm_runner import _load_rule
+from tests.pipeline.semantic_prompt_paths import contract_path, load_semantic_rule
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,18 +21,18 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         return text
 
     def test_summary_strategies_share_one_grounding_contract(self) -> None:
-        shared = (ROOT / "llm/prompts/common/summary_grounding_contract.md").read_text(
+        shared = contract_path("summary", "summary_grounding_contract.md").read_text(
             encoding="utf-8",
         ).strip()
         for strategy, rule_name in SUMMARY_CASES:
             with self.subTest(strategy=strategy):
-                rule = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)
+                rule = load_semantic_rule(strategy, rule_name)
                 self.assertEqual(shared, rule["static_values"]["summary_grounding_contract"])
                 self.assertEqual(1, rule["user_template"].count("{summary_grounding_contract}"))
 
     def test_summary_wire_has_only_one_whole_summary_and_stereotype(self) -> None:
         for strategy, rule_name in SUMMARY_CASES:
-            text = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)["user_template"]
+            text = load_semantic_rule(strategy, rule_name)["user_template"]
             with self.subTest(strategy=strategy):
                 self.assertNotIn("`slots`", text)
                 self.assertIn("`stereotype`", text)
@@ -42,17 +42,17 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
 
     def test_removed_freeform_synthesis_contracts_do_not_reappear(self) -> None:
         for path in (
-            ROOT / "llm/prompts/common/domain_terms_contract.md",
-            ROOT / "llm/prompts/common/semantic_text_contract.md",
-            ROOT / "llm/prompts/common/glossary_synthesis_contract.md",
-            ROOT / "llm/prompts/framework/glossary_synthesis.yaml",
-            ROOT / "llm/prompts/dbms/glossary_synthesis.yaml",
+            ROOT / "pipeline/semantic_tasks/common/domain_terms_contract.md",
+            ROOT / "pipeline/semantic_tasks/common/semantic_text_contract.md",
+            ROOT / "pipeline/semantic_tasks/common/glossary_synthesis_contract.md",
+            ROOT / "pipeline/semantic_tasks/framework/glossary_synthesis.yaml",
+            ROOT / "pipeline/semantic_tasks/dbms/glossary_synthesis.yaml",
         ):
             with self.subTest(path=path):
                 self.assertFalse(path.exists())
 
     def test_summary_contract_forbids_internal_identity_and_model_self_status(self) -> None:
-        shared = (ROOT / "llm/prompts/common/summary_grounding_contract.md").read_text(
+        shared = contract_path("summary", "summary_grounding_contract.md").read_text(
             encoding="utf-8",
         )
         for marker in (
@@ -65,7 +65,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             self.assertNotIn(retired, shared)
 
     def test_function_summary_contract_closes_noop_and_complete_flow_roles(self) -> None:
-        shared = (ROOT / "llm/prompts/common/function_summary_contract.md").read_text(
+        shared = contract_path("summary", "function_summary_contract.md").read_text(
             encoding="utf-8",
         )
         for marker in (
@@ -79,7 +79,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             self.assertIn(marker, shared)
         for strategy, rule_name in SUMMARY_CASES:
             with self.subTest(strategy=strategy):
-                rule = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)
+                rule = load_semantic_rule(strategy, rule_name)
                 self.assertEqual(
                     shared.strip(),
                     rule["static_values"]["function_summary_contract"],
@@ -91,18 +91,14 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
 
     def test_model_visible_source_explains_literal_and_coordinate_projection(self) -> None:
         for strategy, rule_name in SUMMARY_CASES:
-            text = self._expanded(_load_rule(
-                ROOT / "llm/prompts" / strategy, rule_name,
-            ))
+            text = self._expanded(load_semantic_rule(strategy, rule_name))
             with self.subTest(strategy=strategy):
                 self.assertIn("절대 파일 줄번호 | 원문", text)
                 self.assertNotIn("target_sha256", text)
                 self.assertNotIn("QUOTED_LITERAL value=", text)
 
     def test_framework_stereotype_keeps_low_level_string_work_as_util(self) -> None:
-        text = _load_rule(
-            ROOT / "llm/prompts/framework", "code_summary",
-        )["user_template"]
+        text = load_semantic_rule("framework", "code_summary")["user_template"]
         self.assertIn("저수준 자료구조·문자열 연산은 `Util`", text)
         self.assertIn("횡단 시스템 기능은 `Utility`", text)
 
@@ -111,11 +107,9 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         self.assertIn("shared prompt value escapes prompts root", loader)
 
     def test_verified_transport_overrides_are_preserved(self) -> None:
-        framework = _load_rule(ROOT / "llm/prompts/framework", "code_summary")
-        dbms = _load_rule(ROOT / "llm/prompts/dbms", "code_summary_node")
-        dbms_table = _load_rule(
-            ROOT / "llm/prompts/dbms", "code_table_usage_meanings_batch",
-        )
+        framework = load_semantic_rule("framework", "code_summary")
+        dbms = load_semantic_rule("dbms", "code_summary_node")
+        dbms_table = load_semantic_rule("dbms", "code_table_usage_meanings_batch")
         self.assertEqual("function_calling", framework["structured_output_method"])
         self.assertIsNone(dbms["structured_output_method"])
         self.assertEqual("function_calling", dbms_table["structured_output_method"])
@@ -130,7 +124,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ("dbms", "table_description"),
         )
         for strategy, name in cases:
-            text = self._expanded(_load_rule(ROOT / "llm/prompts" / strategy, name))
+            text = self._expanded(load_semantic_rule(strategy, name))
             with self.subTest(strategy=strategy, rule=name):
                 self.assertIn("[TASK", text)
                 self.assertIn("[OUTPUT CONTRACT", text)
@@ -150,14 +144,12 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         )
         for relative in retired:
             with self.subTest(relative=relative):
-                self.assertFalse((ROOT / "llm/prompts" / relative).exists())
+                self.assertFalse((ROOT / "pipeline/semantic_tasks" / relative).exists())
 
     def test_summary_and_table_usage_keep_distinct_input_scopes(self) -> None:
-        summary = self._expanded(_load_rule(
-            ROOT / "llm/prompts/framework", "code_summary",
-        ))
-        table = self._expanded(_load_rule(
-            ROOT / "llm/prompts/framework", "code_table_usage_meanings",
+        summary = self._expanded(load_semantic_rule("framework", "code_summary"))
+        table = self._expanded(load_semantic_rule(
+            "framework", "code_table_usage_meanings",
         ))
         self.assertIn("linked_callee_outcomes_json", summary)
         self.assertIn("linked_external_sources_json", summary)
@@ -171,12 +163,12 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ("framework", "code_table_usage_meanings"),
             ("dbms", "code_table_usage_meanings_batch"),
         ):
-            text = self._expanded(_load_rule(ROOT / "llm/prompts" / strategy, name))
+            text = self._expanded(load_semantic_rule(strategy, name))
             with self.subTest(strategy=strategy):
                 self.assertIn("COLUMN", text)
                 self.assertIn("만들지 않는다", text)
-        final_table = self._expanded(_load_rule(
-            ROOT / "llm/prompts/framework", "table_description",
+        final_table = self._expanded(load_semantic_rule(
+            "framework", "table_description",
         ))
         self.assertIn("한 TABLE과 허용 COLUMN의 최종 의미", final_table)
 
@@ -192,9 +184,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             "semantic_not_derivable",
         )
         for strategy, name in cases:
-            text = self._expanded(_load_rule(
-                ROOT / "llm/prompts" / strategy, name,
-            ))
+            text = self._expanded(load_semantic_rule(strategy, name))
             with self.subTest(strategy=strategy):
                 self.assertIn("FT key exact required map", text)
                 self.assertIn("빈 문자열", text)

@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.pause_controller import PauseController, RunStopped
-from pipeline.steps.step2_load_ast.node_builders import ParseResult
+from pipeline.analysis_ir.parser_facts.node_builders import ParseResult
 from pipeline.steps.step2_load_ast import load_ast_step as subject
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
-from pipeline.steps.step2_load_ast.token_matcher import link_references
-from pipeline.steps.step2_load_ast.import_binding import build_import_resolution_ledger
+from pipeline.analysis_ir.resolution.token_matcher import link_references
+from pipeline.analysis_ir.language_adapters.import_binding import build_import_resolution_ledger
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
 
 

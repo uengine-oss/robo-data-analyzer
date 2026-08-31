@@ -23,8 +23,8 @@ from pipeline.steps.step6_build_context.external_evidence import (
     build_external_evidence_context,
 )
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
-from pipeline.steps.step7_analyze_code.framework_per_node import framework_analysis_targets
-from pipeline.steps.step7_analyze_code.three_split_llm_fanout import (
+from pipeline.semantic_tasks.framework_per_node import framework_analysis_targets
+from pipeline.semantic_tasks.three_split_llm_fanout import (
     _prepare_analysis_inputs,
     _summary_prompt_values,
 )

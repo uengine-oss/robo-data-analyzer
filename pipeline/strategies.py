@@ -35,12 +35,12 @@ from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
 from pipeline.steps.step5_linking.link_external.link_external_step import link_external_step
 from pipeline.steps.step6_build_context.build_context_step import build_context_step
 from pipeline.steps.step6_build_context.framework_context_builder import FrameworkContextBuilder
-from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
-from pipeline.steps.step7_analyze_code.framework_per_node import (
+from pipeline.semantic_tasks.step_entry import analyze_code_step
+from pipeline.semantic_tasks.framework_per_node import (
     framework_analysis_targets,
     run_framework_per_node_analysis,
 )
-from pipeline.steps.step7_analyze_code.batch_analyze import (
+from pipeline.semantic_tasks.batch_analyze import (
     dbms_analysis_targets,
     run_dbms_batch_analysis,
 )
@@ -107,7 +107,7 @@ class Strategy:
         analysis_targets: ``code_nodes`` → 그 엔진이 실제로 분석할 노드 id 집합.
             엔진과 ``build_context_step`` 이 같은 답을 봐야 하는 단일 진실 —
             대상 밖 노드는 어느 렌더에도 등장하지 않으므로 사전 압축 대상도 아니다.
-        prompts_dir: yaml 프롬프트 위치 (``"llm/prompts/framework"`` / ``"llm/prompts/dbms"``).
+        prompts_dir: 봉인할 family-owned semantic prompt resource root.
         steps: 활성 step 함수 tuple (이 순서대로 LangGraph StateGraph 노드).
 
     Note: AST 파싱은 ``antlr_json_reader`` 공통 — parser 주입 없음.
@@ -130,7 +130,7 @@ FRAMEWORK_PIPELINE = Strategy(
     context_builder=FrameworkContextBuilder(),    # build_context_step 이 주입받음
     code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
     analysis_targets=framework_analysis_targets,    # routine 만 — 위 엔진의 필터와 같은 함수
-    prompts_dir="llm/prompts/framework",
+    prompts_dir="pipeline/semantic_tasks",
     call_classification_context=_framework_call_classification_context,
     steps=(
         parse_ddl_step,
@@ -171,7 +171,7 @@ DBMS_PIPELINE = Strategy(
     context_builder=FrameworkContextBuilder(),     # parent + sibling 컨텍스트
     code_analyzer=run_dbms_batch_analysis,    # analyze_code_step 이 주입받음 (형제 배치 1콜)
     analysis_targets=dbms_analysis_targets,   # 유효 트리 잔존 노드 — 위 엔진과 같은 집합
-    prompts_dir="llm/prompts/dbms",
+    prompts_dir="pipeline/semantic_tasks",
     call_classification_context=_dbms_call_classification_context,
     steps=(
         parse_ddl_step,

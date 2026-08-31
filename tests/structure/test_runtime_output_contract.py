@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 class RuntimeOutputContractTest(unittest.TestCase):
-    def test_default_setting_and_analysis_run_use_per_run_directory(self) -> None:
+    def test_explicit_setting_and_analysis_run_use_per_run_directory(self) -> None:
         # 2026-08-07 개편: 루트는 logs 그대로, 산출물은 logs/<run_id>/ 에 격리된다.
         # run 끼리 서로의 증거를 지우지 않아야 전후 비교가 백업 없이 성립한다.
         with patch.dict(os.environ, {"ROBO_RUN_OUTPUT_DIR": "./logs"}, clear=False):
@@ -35,6 +35,21 @@ class RuntimeOutputContractTest(unittest.TestCase):
             Codebase(root=REPO, corpus_root=REPO, strategy="framework"), settings.dir
         )
         self.assertEqual(Path("./logs") / run.run_id, run.run_dir)
+
+    def test_default_run_root_is_outside_the_product_repository(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            previous = os.environ.pop("ROBO_RUN_OUTPUT_DIR", None)
+            try:
+                output = AnalysisRunOutputSettings().dir.resolve()
+            finally:
+                if previous is not None:
+                    os.environ["ROBO_RUN_OUTPUT_DIR"] = previous
+        self.assertNotEqual(REPO, output)
+        self.assertNotIn(REPO, output.parents)
+        self.assertEqual(
+            (REPO.parents[1] / "_playground/analyzer/runs/live").resolve(),
+            output,
+        )
 
     def test_reset_prepares_run_directory_under_owned_root(self) -> None:
         with tempfile.TemporaryDirectory() as parent:

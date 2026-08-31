@@ -11,27 +11,27 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.models.rule_meaning_frame import (
+from pipeline.semantic_tasks.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     rule_meaning_response_model,
 )
-from pipeline.models.summary_response_schema import (
+from pipeline.semantic_tasks.summary.response_schema import (
     frame_summary_response_model,
 )
 from pipeline.models.semantic_frame import (
     SlotSpec,
 )
-from pipeline.models.table_description_frame import (
+from pipeline.semantic_tasks.table.description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
 from search.query.rewrite import GlossaryRewriteResponse
-from pipeline.models.function_table_usage_response_schema import (
+from pipeline.semantic_tasks.table.response_schema import (
     batch_function_table_usages_response_model,
     function_table_usages_response_model,
 )
 from pipeline.steps.step4_scan_project.external_skills import ExternalFormatProposal
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+from pipeline.semantic_tasks.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )

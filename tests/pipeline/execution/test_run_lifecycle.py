@@ -415,7 +415,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             (source / "missing.c").write_text(
                 "int f(void) { return 0; }\n", encoding="utf-8"
             )
-            strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
+            strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
 
             with patch.object(run_executor, "Neo4jClient") as neo4j_client:
                 with self.assertRaisesRegex(ValueError, "missing.c"):
@@ -439,7 +439,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             def as_dict() -> dict:
                 return {"schema_version": "source-ast-closure/v1", "artifacts": []}
 
-        strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
+        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with (
@@ -489,7 +489,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
         begin = AsyncMock()
         publish = AsyncMock()
         terminate = AsyncMock()
-        strategy = SimpleNamespace(name="framework", prompts_dir="llm/prompts/framework")
+        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
 
         with tempfile.TemporaryDirectory() as temporary:
             with (
@@ -590,7 +590,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
 
         neo = SimpleNamespace(close=AsyncMock())
         strategy = SimpleNamespace(
-            name="framework", prompts_dir="llm/prompts/framework",
+            name="framework", prompts_dir="pipeline/semantic_tasks/framework",
         )
 
         with tempfile.TemporaryDirectory() as temporary:

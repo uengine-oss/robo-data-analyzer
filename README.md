@@ -70,14 +70,15 @@ LLM에는 내부 fact ID, 원문 byte offset, resolution ledger 같은 결합용
 |---|---|
 | `agents/` | Framework scanning과 검증 도구 |
 | `pipeline/steps/` | 입력부터 후처리까지 실행 단계 |
-| `pipeline/steps/step2_load_ast/` | Parser JSON을 Analyzer 구조 사실로 투영 |
-| `pipeline/steps/step5_linking/` | 호출·테이블·외부 참조의 결정론 연결 |
+| `pipeline/steps/step2_load_ast/` | Parser input orchestration |
+| `pipeline/analysis_ir/` | Parser facts, language adapters, neutral resolution |
+| `pipeline/steps/step5_linking/` | deterministic linking orchestration |
 | `pipeline/steps/step6_build_context/` | 함수별 LLM 문맥 조립 |
-| `pipeline/steps/step7_analyze_code/` | 3분할 의미 분석과 응답 투영 |
+| `pipeline/semantic_tasks/{summary,table,rule}/` | family-owned prompt, schema, validator, and projection |
 | `pipeline/publication/` | 제품 publication stage 계획 |
 | `graph/` | Neo4j schema, writer, generation publication |
+| `llm/` | provider transport, binding, cache, usage, runtime capability |
 | `search/` | 공개된 검색 segment 조회와 ranking |
-| `llm/prompts/` | 공통 prefix와 concern별 입력·출력 계약 |
 | `cli/` | 운영자용 공식 분석 CLI |
 | `tools/verify/` | 봉인 run의 read-only 검증 도구 |
 | `tools/admin/` | 명시적 안전 gate가 필요한 관리 도구 |

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from pipeline.execution.analysis_profile import (
+    _validate_output_path,
     load_analysis_profile,
     preflight_lines,
     resolve_analysis_inputs,
@@ -18,6 +19,11 @@ class AnalysisProfileContractTest(unittest.TestCase):
         (data / "source").mkdir(parents=True)
         (data / "ddl").mkdir()
         return data, root / "runs"
+
+    def test_product_repository_cannot_own_run_output(self) -> None:
+        repository_root = Path(__file__).resolve().parents[3]
+        with self.assertRaisesRegex(ValueError, "outside the Analyzer product"):
+            _validate_output_path(repository_root / "specs" / "run-output")
 
     def test_relative_paths_selection_validation_refs_and_explicit_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

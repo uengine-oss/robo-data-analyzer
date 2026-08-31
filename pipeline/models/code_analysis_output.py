@@ -4,7 +4,7 @@
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/steps/step7_analyze_code``: SummaryOutput / FunctionTableUsagesOutput 및
+- ``pipeline/semantic_tasks``: SummaryOutput / FunctionTableUsagesOutput 및
   결정론 Rule projection
 - ``pipeline/steps/step8_post_processing``: TableDescription
 
@@ -37,7 +37,7 @@ from pipeline.models.rule_expression import (
     RULE_LEAF_PATTERN,
 )
 from pipeline.models.semantic_frame import SemanticFrame
-from pipeline.models.function_table_usage import FunctionTableUsage
+from pipeline.semantic_tasks.table.usage import FunctionTableUsage
 
 
 def _normalize_summary_format(v: str) -> str:

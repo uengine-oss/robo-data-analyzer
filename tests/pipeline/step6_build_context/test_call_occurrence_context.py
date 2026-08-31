@@ -19,7 +19,7 @@ from pipeline.quality_gates.rule_prompt_evidence import rule_evidence
 from pipeline.steps.step6_build_context.build_context_step import (
     build_parser_call_evidence,
 )
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+from pipeline.semantic_tasks.semantic_frame_planner import (
     build_code_semantic_plan,
 )
 

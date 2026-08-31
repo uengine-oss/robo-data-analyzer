@@ -1,7 +1,7 @@
 # spec 131 — Analyzer 의미 무손실 작업 진입점
 
 **Status**: Active
-**Updated**: 2026-08-31
+**Updated**: 2026-09-01
 **Role**: 현재 Analyzer SDD와 작업 상태의 단일 진입점
 
 이 디렉터리에는 현재 실행 가능한 Analyzer spec만 둔다. 과거 보고서·실험·실행 결과를 다시
@@ -31,9 +31,9 @@
 
 | 위치 | 역할 |
 |---|---|
-| `_runs/framework|dbms/` | 로컬 분석 실행물; Git 제외 |
+| `D:\work\robo\_playground\analyzer\{profiles,runs,experiments,archive}` | product-external run and diagnostic resources |
 | `D:\work\robo\docs\작업보고내용\2026-08-26-Analyzer-최종-구조-고해성사.html` | 현재 Analyzer를 사람이 읽는 최종 보고서 |
 
-`_runs`의 과거 수치는 현재 제품 합격 근거가 아니다. 재분석 없이 원인을 추적하거나 마지막 봉인
+playground runs의 과거 수치는 현재 제품 합격 근거가 아니다. 재분석 없이 원인을 추적하거나 마지막 봉인
 검증을 수행할 때만 필요한 파일을 선택해서 읽는다. 소비처가 없던 과거 실험 `_artifacts`는 제거했다.
 Architect와 goal-verify는 이 spec의 범위 밖이다.

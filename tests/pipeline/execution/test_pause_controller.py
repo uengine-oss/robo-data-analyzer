@@ -132,8 +132,8 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
     def test_both_step7_engines_use_the_shared_async_cleanup(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         for relative_path in (
-            "pipeline/steps/step7_analyze_code/framework_per_node.py",
-            "pipeline/steps/step7_analyze_code/batch_analyze.py",
+            "pipeline/semantic_tasks/framework_per_node.py",
+            "pipeline/semantic_tasks/batch_analyze.py",
         ):
             source = (repository_root / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
@@ -142,7 +142,7 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("await pause.cancel_and_wait(", source)
 
         framework_source = (
-            repository_root / "pipeline/steps/step7_analyze_code/framework_per_node.py"
+            repository_root / "pipeline/semantic_tasks/framework_per_node.py"
         ).read_text(encoding="utf-8")
         self.assertIn("await pause.gate()", framework_source)
         self.assertIn("pause.set_inflight(list(pending))", framework_source)

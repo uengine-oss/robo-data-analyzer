@@ -22,7 +22,7 @@ from graph.product_write_batch import (
 )
 from graph.schema.graph_edges import BelongsTo, HasMember, ParentOf, StatementNext
 from graph.schema.graph_nodes import CodeNode, Module, Package
-from pipeline.steps.step2_load_ast.source_ast_closure import SourceAstClosure
+from pipeline.analysis_ir.parser_facts.source_ast_closure import SourceAstClosure
 
 
 class CodeStructureProjectionError(ValueError):

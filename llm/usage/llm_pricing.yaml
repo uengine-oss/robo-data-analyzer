@@ -3,7 +3,7 @@
 # 가격 변동 시 이 파일 한 곳만 갱신 + `last_updated` 날짜 변경 후 커밋.
 # 새 모델 추가 = `models:` 아래 1 블록 추가.
 #
-# 갱신 보조: `python scripts/refresh_pricing.py`
+# 갱신 보조: `python tools/admin/refresh_pricing.py`
 #   → 현재 표 출력 + 공식 페이지 URL 안내 + 갱신 절차 가이드.
 #
 # 매칭 로직 (`llm/usage/pricing.py:lookup_price`):

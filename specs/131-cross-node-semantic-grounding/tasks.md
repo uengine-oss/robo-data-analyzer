@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 작업 목록
 
-**Updated**: 2026-08-29
+**Updated**: 2026-09-01
 
 완료 표시는 현재 worktree와 정적 증거가 직접 입증한 범위에만 사용한다.
 
@@ -507,6 +507,9 @@
   - [x] canonical/provider semantic schema는 title-free로 유지하고 adapter deep copy에만 고정
     `structured_response` 이름 하나를 넣는다. 실제 OpenAI adapter의 세 structured-output method가
     내부 의미 schema에 title을 남기지 않고 local bind되는 회귀와 production request inventory를 닫는다.
+  - [x] 사용자는 전체 남은 목표를 닫기 위한 실제 재분석을 최대 10회까지 승인했다. 이미 실행한
+    pre-provider 실패를 1/10로 회계하며, 나머지 횟수는 수정마다 관성적으로 쓰지 않고 서로 다른
+    실패 원인·반례·최종 3층 검증을 닫는 데 필요한 경우에만 사용한다.
   - [ ] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF,
     `ROBO_EMBED_PROVIDER=openai`, `ROBO_EMBED_MODEL=text-embedding-3-small`, 봉인 profile로 정확히 한 번
     provider-bearing 검증을 완료한다. 첫 pre-provider 실패 뒤 재시도는 새 사용자 확인을 받는다. 모델
@@ -516,6 +519,25 @@
   - [ ] 새 usage의 생성 family 40건과 embedding request/token/비용, baseline diff, exact-once closure,
     partial-upload external, 86·94행과 Rule↔Example 직접 의미를 판정하고 SDD·HTML·handoff를 갱신한 뒤
     검증 commit을 push한다.
+
+- [x] **B41 승인 목표 트리의 물리적 책임 이관**
+  - [x] 현재 파일별 생산자·소비자·동적 import·CI·runbook을 전수 inventory하고 목표 위치 이동표를
+    SDD에 고정한다. 단순 미관용 대이동이나 compatibility import shim은 만들지 않는다.
+  - [x] Parser fact 수용·언어 adapter·중립 resolution을 `pipeline/analysis_ir` 한 책임으로 모으고
+    step2/step5 orchestration은 이 계약을 호출만 하게 한다.
+  - [x] Summary·Table·Rule의 builder·schema·prompt·validator를 `pipeline/semantic_tasks` 아래 각 family가
+    함께 소유하게 한다. `llm`에는 provider transport·binding·cache·usage·runtime capability만 남긴다.
+  - [x] 공식 분석 CLI를 `cli`, 재사용 검증기를 `tools/verify`, 파괴 가능 운영 도구를 `tools/admin`으로
+    이동하고 모든 README·test·CI·root skill·SDD 경로를 같은 slice에서 갱신한다.
+  - [x] tests가 새 책임 트리를 거울처럼 따르게 하고 옛 module/path import, 죽은 prompt, legacy alias,
+    중복 wrapper가 0임을 정적 gate와 전체 회귀로 증명한다.
+
+- [x] **B42 실행·실험·진단 리소스의 제품 트리 분리**
+  - [x] Analyzer root의 `_runs`, cache, 임시 산출물과 root 문서 자산을 승인된
+    `D:\work\robo\_playground\analyzer\{profiles,runs,experiments,archive}` 및 역할별 docs로 분류한다.
+  - [x] source·AST·gold를 복제하지 않고 profile과 sealed artifact가 원본 경로/hash만 참조하게 한다.
+  - [x] run-output preflight가 제품 package·`specs` 아래 출력을 거부하고, 현재 SDD allow-list와
+    obsolete resource/주석/옛 경로 0을 종료 감사한다.
 
 ## C. 작은 실제 SKT 검증
 
@@ -551,11 +573,10 @@
   - 계약 제공 뒤 Analyzer는 모든 page를 누락·중복 0으로 병합하고 기존 DDL 합집합·sample 의미를
     유지한다. 기존 Catalog WIP는 이 작업에서 수정하거나 stage하지 않는다.
 
-- [ ] **C06 GPU 복구 후 약 5만 LOC SKT 최종 성능·전수 회계**
-  - 모든 관련 수정과 C05 외부 계약 연결 뒤 전체 tree로 봉인한 같은 required population과 정답지를
-    마지막에 한 번만 분석한다.
-  - baseline diff, 단계별 wall time·queue·token·KV cache·publication, exact-once 누락·중복, 새 실패 좌표를
-    함께 판정한다. 임의 cap·truncation·skip·fallback으로 시간을 줄이지 않는다.
+- [x] **C06 약 5만 LOC GPU 성능 gate의 현재 목표 제외**
+  - 2026-09-01 사용자가 GPU 여부와 약 5만 LOC 성능 gate를 이번 완료 조건에서 명시적으로 제외했다.
+  - 실행하지 않은 제품 규모 성능을 합격으로 승격하지 않고 `not_in_current_scope`로 기록한다. 이 결정은
+    1,503줄 실제 정확도·비용·exact-once·직접 의미 검증을 생략하거나 일반화할 권한이 아니다.
 
 - [x] **C07 runtime wrapper call 12건의 Parser→Analyzer binding 폐쇄**
   - sealed Parser IR `2.0.0`의 range-only replay는 유지하고 current `2.1.0`의

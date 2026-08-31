@@ -102,7 +102,7 @@ class ConditionValueAxis(unittest.TestCase):
         )
         # 배선 계약(2026-08-03 실측 갭 수리): 생산 경로 build_control_inventory 가
         # ctx.referenced_symbols 의 immutable_constant 선언값을 실제로 전달하는지는
-        # tests/pipeline/step7_analyze_code/test_control_prompt_declared_values.py 가 고정.
+        # tests/pipeline/semantic_tasks/test_control_prompt_declared_values.py 가 고정.
         self.assertIn("zapae0021", inv.source_values)
         plain = build_inventory(body, [], "c", statements=())
         self.assertNotIn("zapae0021", plain.source_values)

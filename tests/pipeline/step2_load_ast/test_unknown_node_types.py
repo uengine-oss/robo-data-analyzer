@@ -12,7 +12,7 @@ import unittest
 
 from pipeline.steps.step2_load_ast.dispatch import read_antlr_json
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
-from tests.pipeline.step2_load_ast.evidence_fixture import add_common_evidence
+from tests.pipeline.analysis_ir.parser_facts.evidence_fixture import add_common_evidence
 
 
 def _raw_with_unknown_container():

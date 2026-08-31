@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import tempfile
 import unittest
@@ -7,7 +7,7 @@ from pathlib import Path
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.steps.step2_load_ast.load_ast_step import _with_code_text
-from pipeline.steps.step7_analyze_code.source_body import exact_source_body
+from pipeline.semantic_tasks.source_body import exact_source_body
 from shared.files.cache import SourceFileCache
 from shared.files.source_excerpt import SourceExcerpt
 

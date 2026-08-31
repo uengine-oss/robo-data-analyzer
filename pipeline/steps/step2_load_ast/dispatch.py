@@ -45,14 +45,14 @@ _DBMS_VAR_TYPES: frozenset[str] = frozenset({
 #  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
 
 
-from pipeline.steps.step2_load_ast.node_builders import ParseResult
+from pipeline.analysis_ir.parser_facts.node_builders import ParseResult
 from pipeline.steps.step2_load_ast.framework_reader import _read_framework
 from pipeline.steps.step2_load_ast.dbms_reader import _read_dbms
-from pipeline.steps.step2_load_ast.evidence_ir import (
+from pipeline.analysis_ir.parser_facts.evidence_ir import (
     CommonEvidenceContractError,
     validate_common_evidence,
 )
-from pipeline.steps.step2_load_ast.structural_call_projection import (
+from pipeline.analysis_ir.resolution.structural_call_projection import (
     project_callable_definitions,
     project_scope_owned_calls,
 )

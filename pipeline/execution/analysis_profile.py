@@ -110,6 +110,12 @@ def _validate_output_path(path: Path) -> Path:
         raise ValueError("run_output must not be a filesystem root")
     if resolved.exists() and not resolved.is_dir():
         raise ValueError(f"run_output is not a directory: {resolved}")
+    repository_root = Path(__file__).resolve().parents[2]
+    if resolved == repository_root or repository_root in resolved.parents:
+        raise ValueError(
+            "run_output must be outside the Analyzer product repository: "
+            f"{resolved}"
+        )
     return resolved
 
 

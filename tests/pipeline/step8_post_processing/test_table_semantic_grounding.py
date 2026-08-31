@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from graph.schema.graph_edges import HasColumn, ReadsWrites
 from graph.schema.graph_nodes import Column, Table
-from llm.runners.prompt_rules import _load_rule
-from pipeline.models.table_description_frame import (
+from tests.pipeline.semantic_prompt_paths import contract_path, load_semantic_rule
+from pipeline.semantic_tasks.table.description_frame import (
     build_table_description_plans,
     normalize_table_description_frame_response,
     table_description_prompt_values,
@@ -379,13 +379,13 @@ class TableSemanticGroundingTest(unittest.TestCase):
 
     def test_table_prompts_use_the_contract_owned_by_their_output(self):
         usage_contract = (
-            ROOT / "llm/prompts/common/function_table_usage_contract.md"
+            contract_path("table", "function_table_usage_contract.md")
         ).read_text(encoding="utf-8").strip()
         for directory, name in (
             ("framework", "code_table_usage_meanings"),
             ("dbms", "code_table_usage_meanings_batch"),
         ):
-            rule = _load_rule(ROOT / "llm/prompts" / directory, name)
+            rule = load_semantic_rule(directory, name)
             with self.subTest(strategy=directory, rule=name):
                 self.assertEqual(
                     usage_contract,
@@ -397,7 +397,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertNotIn("applicable_slots", rule["user_template"])
 
         table_contract = (
-            ROOT / "llm/prompts/common/table_description_contract.md"
+            contract_path("table", "table_description_contract.md")
         ).read_text(
             encoding="utf-8",
         ).strip()
@@ -405,7 +405,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
             ("framework", "table_description"),
             ("dbms", "table_description"),
         ):
-            rule = _load_rule(ROOT / "llm/prompts" / directory, name)
+            rule = load_semantic_rule(directory, name)
             with self.subTest(strategy=directory, rule=name):
                 self.assertEqual(
                     table_contract,

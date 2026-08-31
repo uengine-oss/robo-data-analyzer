@@ -1,6 +1,6 @@
-"""byte-identical CI 체크 — 시스템 프롬프트 / yaml SHA256 비교.
+"""byte-identical CI check for family-owned and agent prompt assets.
 
-캐시 깨짐 방지의 보호장치. ``llm/prompts/`` 아래 .md/.yaml 변경 시 CI 빌드 실패.
+Only an explicit ``--update`` may write the baseline.
 
 사용::
 
@@ -20,11 +20,11 @@ from pathlib import Path
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-PROMPTS_DIR = _ROOT / "llm" / "prompts"
+PROMPTS_DIR = _ROOT / "pipeline" / "semantic_tasks"
 AGENT_PROMPTS_DIR = _ROOT / "agents" / "prompts"
-HASHES_PATH = PROMPTS_DIR / "prompt_hashes.json"
+HASHES_PATH = _ROOT / "tools" / "verify" / "prompt_hashes.json"
 PROMPT_ROOTS = (
-    ("prompts", PROMPTS_DIR),
+    ("semantic_tasks", PROMPTS_DIR),
     ("agents", AGENT_PROMPTS_DIR),
 )
 

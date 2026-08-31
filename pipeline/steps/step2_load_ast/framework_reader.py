@@ -25,27 +25,27 @@ from pipeline.languages import control_ownership_contracts, role_of
 from graph.schema.node_ids import child_id, code_ns_id, positioned
 
 
-from pipeline.steps.step2_load_ast.node_builders import (
+from pipeline.analysis_ir.parser_facts.node_builders import (
     ParseResult, _derive_structure_edges, _file_module_id,
     _folder_package, _make_code_node, _make_constant, _make_data_type,
     _make_module, _make_variable, _node_id, _absolute_source_path,
     _required_source_id, _unique_id,
 )
-from pipeline.steps.step2_load_ast.evidence_ir import (
+from pipeline.analysis_ir.parser_facts.evidence_ir import (
     CommonEvidenceContractError,
     ValidatedCommonEvidence,
 )
-from pipeline.steps.step2_load_ast.structural_call_projection import (
+from pipeline.analysis_ir.resolution.structural_call_projection import (
     build_call_occurrence_record,
     physical_line,
     physical_line_starts,
     project_callable_definitions,
 )
-from pipeline.steps.step2_load_ast.c_structural_expression_adapter import (
+from pipeline.analysis_ir.language_adapters.c_structural_expression_adapter import (
     StructuralExpressionAdapterError,
     adapt_c_structural_expression,
 )
-from pipeline.steps.step2_load_ast.expression_semantic_core import (
+from pipeline.analysis_ir.resolution.expression_semantic_core import (
     ExpressionSemanticError,
     resolve_semantic_expression,
 )

@@ -58,7 +58,7 @@ from pipeline.publication.rule_examples import (
     build_rule_meanings_write_batch,
 )
 from pipeline.publication.search_segments import build_search_segments_write_batch
-from pipeline.steps.step2_load_ast.source_ast_closure import SourceAstClosure
+from pipeline.analysis_ir.parser_facts.source_ast_closure import SourceAstClosure
 from pipeline.structure.call_links import build_call_links_write_batch
 from pipeline.structure.code_structure import build_code_structure_write_batch
 from pipeline.structure.data_access_links import build_data_access_links_write_batch

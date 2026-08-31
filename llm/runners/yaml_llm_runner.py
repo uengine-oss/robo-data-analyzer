@@ -1,8 +1,8 @@
 """yaml 기반 LLM 호출 헬퍼 — 단순 LLM 호출 (Agent 외부).
 
-용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
+용도: ``pipeline/semantic_tasks/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/steps/step7_analyze_code`` (code_summary /
+- ``pipeline/semantic_tasks`` (code_summary /
   code_table_usage_meanings)
 - ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
 
@@ -16,13 +16,13 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `llm/prompts/<strategy>/_common.yaml` — 단일 진실
+    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/_common.yaml` — 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
-    # `llm/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
     extends: _common
     user_template_specific: |
       <이 분할 고유 user_template 지침>
@@ -93,7 +93,7 @@ async def run_yaml_rule(
     """yaml 룰 로딩 + LLM 호출 → Pydantic 응답 (또는 평문 텍스트).
 
     Args:
-        prompts_dir: ``strategy.prompts_dir`` (예: ``Path("llm/prompts/framework")``).
+        prompts_dir: ``strategy.prompts_dir`` (예: ``family-owned prompt directory``).
         rule_name: yaml 파일 이름 (확장자 X — "code_summary" 식).
         user_values: user_template 의 ``{placeholder}`` 치환 값.
         response_model: 응답 Pydantic 클래스. **None = 평문 텍스트 모드** — 스칼라 1개짜리

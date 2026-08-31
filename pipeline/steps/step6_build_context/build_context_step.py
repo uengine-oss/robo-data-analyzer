@@ -3,7 +3,7 @@
 흐름:
 1. 코드노드 메타 + Linking 결과 (reads/writes/callers/callees) 로 결정적 컨텍스트 생성.
 2. ``strategy.context_builder.augment()`` 호출 → strategy 별 ``extra`` 슬롯 채움.
-summary 슬롯은 None 으로 둠 → ``step7_analyze_code`` 이 Bottom-up DAG 로 채움.
+summary 슬롯은 None 으로 둠 → ``semantic_tasks``가 Bottom-up DAG 로 채움.
 
 이 단계는 LLM을 호출하지 않는다. ``SourceFileCache`` 가 file_path → 텍스트 라인을 캐싱한다.
 """

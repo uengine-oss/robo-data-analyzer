@@ -1,7 +1,7 @@
 """Run 1회 실행 어댑터 — run 경로 준비 + LangGraph workflow + 원자적 공개.
 
 흐름:
-1. 선택된 run-output 루트를 초기화한다. 미지정 시 기존 기본 ``logs/``를 사용한다.
+1. 선택된 run-output 루트를 초기화한다. 미지정 시 제품 밖 playground를 사용한다.
 2. ``Run`` 메타 생성 + Neo4j 인덱스 / 제약 보장.
 3. ``CostBudget`` + ``MemorySaver`` (Checkpointer) + ``PauseController`` 생성.
 4. Strategy 의 workflow 빌더 호출 → ``astream(stream_mode="updates")``.
@@ -92,7 +92,7 @@ from pipeline.execution.run_output_context import (
     set_run_dir,
 )
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
-from pipeline.steps.step2_load_ast.source_ast_closure import (
+from pipeline.analysis_ir.parser_facts.source_ast_closure import (
     SourceAstClosure,
     verify_source_ast_closure,
 )
@@ -454,7 +454,9 @@ async def execute_run(
             source_ast_closure_ref=source_ast_closure_ref,
             source_ast_closure_bytes=source_ast_closure_bytes,
             source_ast_closure_sha256=source_ast_closure_sha256,
-            strategy_prompts_dir=Path(getattr(strategy, "prompts_dir", "llm/prompts")),
+            strategy_prompts_dir=Path(
+                getattr(strategy, "prompts_dir", "pipeline/semantic_tasks")
+            ),
             human_glossary_manifest=human_glossary.manifest_dict(corpus_root),
             source_cache=source_cache,
             model_runtime=model_runtime,

@@ -2,7 +2,7 @@
 
 사용: .venv\\Scripts\\python.exe tools\\verify\\audit_coverage.py [run_dir=최신 run]
 
-인자를 생략하면 `logs/` 아래 최신 run 폴더(run_id 이름)를 자동 선택한다.
+인자를 생략하면 설정된 제품 밖 run root의 최신 run 폴더를 선택한다.
 
 함수별 잔차를 shape(구문 모양)로 묶어 "어떤 미지 구문이 몇 곳에서 안 덮였는가"를
 corpus 단위로 보여준다. 위험 구문(unsupported_constructs) 장부도 함께 집계한다.
@@ -15,6 +15,8 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from shared.config.settings import SETTINGS
 
 _RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
 
@@ -30,7 +32,11 @@ def _latest_run_dir(root: Path) -> Path:
 
 
 def main() -> int:
-    run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else _latest_run_dir(Path("logs"))
+    run_dir = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else _latest_run_dir(SETTINGS.run_output.dir)
+    )
     coverage_dir = run_dir / "coverage"
     files = sorted(coverage_dir.glob("*.json"))
     if not files:

@@ -16,24 +16,24 @@ from langchain_core.runnables import RunnableConfig
 from pipeline.execution.step_config import require_step_config_value, step_config
 
 from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots, read_antlr_json
-from pipeline.steps.step2_load_ast.source_ast_closure import (
+from pipeline.analysis_ir.parser_facts.source_ast_closure import (
     SourceAstClosure,
     ast_json_paths,
     verify_source_ast_closure,
 )
-from pipeline.steps.step2_load_ast.token_matcher import link_references
-from pipeline.steps.step2_load_ast.expression_ownership import (
+from pipeline.analysis_ir.resolution.token_matcher import link_references
+from pipeline.analysis_ir.parser_facts.expression_ownership import (
     attach_routine_expression_ledger,
 )
-from pipeline.steps.step2_load_ast.rule_condition_projection import (
+from pipeline.analysis_ir.resolution.rule_condition_projection import (
     attach_routine_rule_condition_bundles,
 )
-from pipeline.steps.step2_load_ast.import_binding import (
+from pipeline.analysis_ir.language_adapters.import_binding import (
     build_import_binding_environment,
     build_import_resolution_ledger,
 )
 from shared.events.runtime_logger import log_error, log_info, log_warning
-from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
+from pipeline.analysis_ir.parser_facts.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
 from shared.files.cache import SourceFileCache
 from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
 from pipeline.execution.pause_controller import NULL_PAUSE, PauseController

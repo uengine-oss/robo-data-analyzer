@@ -57,7 +57,7 @@ class _Module:
 class _Strategy:
     steps: tuple
     name: str = "framework"
-    prompts_dir: str = "llm/prompts/framework"
+    prompts_dir: str = "pipeline/semantic_tasks/framework"
     analysis_targets: Callable = lambda nodes: {
         node.id for node in nodes if node.label == "FUNCTION"
     }

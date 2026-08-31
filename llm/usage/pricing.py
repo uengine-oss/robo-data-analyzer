@@ -13,7 +13,7 @@
 3. provider prefix 제거 (``anthropic/`` / ``openai/`` / ``qwen/``)
 
 가격 변동 시: ``llm_pricing.yaml`` 한 곳만 갱신 + 커밋. 코드 무변경.
-갱신 보조: ``python scripts/refresh_pricing.py``.
+갱신 보조: ``python tools/admin/refresh_pricing.py``.
 """
 from __future__ import annotations
 

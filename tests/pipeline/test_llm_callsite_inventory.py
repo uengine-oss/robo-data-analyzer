@@ -45,27 +45,27 @@ class ProductionLlmCallsiteInventoryTest(unittest.TestCase):
         self.assertEqual(Counter({
             ("agents/residual.py", "<_RESIDUAL_RULE>"): 1,
             (
-                "pipeline/steps/step7_analyze_code/batch_analyze.py",
+                "pipeline/semantic_tasks/batch_analyze.py",
                 "code_summary_node",
             ): 1,
             (
-                "pipeline/steps/step7_analyze_code/batch_analyze.py",
+                "pipeline/semantic_tasks/batch_analyze.py",
                 "<rule_name>",
             ): 1,
             (
-                "pipeline/steps/step7_analyze_code/batch_analyze.py",
+                "pipeline/semantic_tasks/batch_analyze.py",
                 "code_rule_meanings_batch",
             ): 1,
             (
-                "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
+                "pipeline/semantic_tasks/three_split_llm_fanout.py",
                 "code_summary",
             ): 1,
             (
-                "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
+                "pipeline/semantic_tasks/three_split_llm_fanout.py",
                 "code_rule_meanings",
             ): 1,
             (
-                "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
+                "pipeline/semantic_tasks/three_split_llm_fanout.py",
                 "code_table_usage_meanings",
             ): 1,
             (

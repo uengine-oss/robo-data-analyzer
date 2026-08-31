@@ -1,8 +1,8 @@
 """yaml 기반 LLM 호출 헬퍼 — 단순 LLM 호출 (Agent 외부).
 
-용도: ``llm/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
+용도: ``pipeline/semantic_tasks/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/steps/step7_analyze_code`` (code_summary /
+- ``pipeline/semantic_tasks`` (code_summary /
   code_table_usage_meanings)
 - ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
 
@@ -16,13 +16,13 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `llm/prompts/<strategy>/_common.yaml` — 단일 진실
+    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/_common.yaml` — 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
-    # `llm/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
     extends: _common
     user_template_specific: |
       <이 분할 고유 user_template 지침>

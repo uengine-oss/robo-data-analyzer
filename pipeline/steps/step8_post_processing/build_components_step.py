@@ -18,7 +18,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.step_config import step_config
 from pipeline.languages import ROUTINE_LABELS
-from pipeline.steps.step5_linking.link_calls.verified_call_edges import (
+from pipeline.analysis_ir.resolution.verified_call_edges import (
     verified_user_routine_call_pairs,
 )
 from shared.events.processing_events import step_processing_scope

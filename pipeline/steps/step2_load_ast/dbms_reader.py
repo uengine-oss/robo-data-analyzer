@@ -37,7 +37,7 @@ _COMPONENT = "pipeline.steps.step2_load_ast.antlr_json_reader"
 #  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
 
 
-from pipeline.steps.step2_load_ast.node_builders import (
+from pipeline.analysis_ir.parser_facts.node_builders import (
     ParseResult, _clean_signature, _derive_structure_edges, _file_module_id,
     _folder_package, _make_code_node, _make_constant, _make_data_type,
     _make_module, _make_variable, _node_id, _absolute_source_path,

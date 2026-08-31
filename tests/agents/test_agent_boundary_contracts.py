@@ -123,8 +123,8 @@ class LlmBoundaryContractTest(unittest.TestCase):
         # Scan Agent prose is metadata, never authoritative input to another LLM.
         for relative_path in (
             "agents/prompts/residual.yaml",
-            "llm/prompts/framework/_common.yaml",
-            "llm/prompts/dbms/_common.yaml",
+            "pipeline/semantic_tasks/summary/prompts/framework/_common.yaml",
+            "pipeline/semantic_tasks/summary/prompts/dbms/_common.yaml",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(
@@ -133,9 +133,9 @@ class LlmBoundaryContractTest(unittest.TestCase):
                 )
         for relative_path in (
             "agents/residual.py",
-            "pipeline/steps/step7_analyze_code/step_entry.py",
-            "pipeline/steps/step7_analyze_code/table_usage_prompt_values.py",
-            "pipeline/steps/step7_analyze_code/three_split_llm_fanout.py",
+            "pipeline/semantic_tasks/step_entry.py",
+            "pipeline/semantic_tasks/table/prompt_values.py",
+            "pipeline/semantic_tasks/three_split_llm_fanout.py",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(

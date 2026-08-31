@@ -26,7 +26,7 @@ from pipeline.quality_gates.rule_audit_artifact import (
     RULE_AUDIT_DIRECTORY,
     load_rule_audit_records,
 )
-from pipeline.models.rule_meaning_frame import prepare_rule_meaning_assignment
+from pipeline.semantic_tasks.rule.meaning_frame import prepare_rule_meaning_assignment
 from search.corpus.generation import completed_generation_session
 
 

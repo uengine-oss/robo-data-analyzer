@@ -3,7 +3,7 @@
 흐름:
 1. 결정론 ``READS/WRITES``와 ``direct_column_usage_evidence_by_table``을 읽는다.
 2. ``table_fqn``별로 직접 operation과 컬럼 원문 근거를 모은다.
-3. ``llm/prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
+3. table family prompt로 LLM 호출 → 통합 description.
 4. Table/Column 최종 상태 반환 — 제품 저장은 최종 공개 경로만 수행.
 
 LLM 호출 = 테이블당 1 회 (병렬, ``max_concurrency``).
@@ -28,10 +28,11 @@ from pipeline.execution.analysis_handoff import (
 from pipeline.execution.step_config import require_step_config_value, step_config
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step8_post_processing.handoff_skip import log_handoff_skip
+from pipeline.semantic_tasks.prompt_assets import semantic_prompt_dir
 
 from llm.fanout import gather_with_warmup
 from pipeline.models.code_analysis_output import TableDescription
-from pipeline.models.table_description_frame import (
+from pipeline.semantic_tasks.table.description_frame import (
     build_table_description_plans,
     normalize_table_description_frame_response,
     table_description_prompt_values,
@@ -126,7 +127,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         tables=len(table_fqns),
         column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
-    prompts_dir = Path(strategy.prompts_dir)
+    prompts_dir = semantic_prompt_dir(family="table", strategy=strategy.name)
     # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
     slots = handoff.slots
 

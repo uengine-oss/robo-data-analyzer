@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 구현 계획
 
-**Updated**: 2026-08-31
+**Updated**: 2026-09-01
 **Requirements**: `spec.md`
 **Current state**: `CURRENT_STATUS.md`
 
@@ -12,8 +12,8 @@
 4. 닫히지 않을 때만 영향 좌표→집중 계측→최소 재현→history/bisect→외부 1차 근거 순으로 깊어진다.
 5. 원인이 확정된 관련 수정만 한 책임 slice로 묶는다.
 6. formal red와 작은 실제 데이터에서 통과한 뒤 점진 확대한다.
-7. 작은 실제 생성 검증은 봉인한 SKT 2파일 1,503줄로 먼저 닫는다. 모든 관련 수정이 끝나고 GPU가
-   복구되면 약 5만 LOC SKT 전체 성능·전수 회계를 마지막에 한 번만 수행한다.
+7. 작은 실제 생성 검증은 봉인한 SKT 2파일 1,503줄로 닫는다. 2026-09-01 사용자 결정에 따라 GPU와
+   약 5만 LOC 제품 규모 성능 gate는 현재 완료 범위에서 제외하며 실행하지 않은 성능을 합격으로 말하지 않는다.
 
 ## 2. 구현 순서
 
@@ -114,6 +114,12 @@
 - `specs`에는 README, spec, plan, tasks, CURRENT_STATUS, v2 contracts만 남긴다.
 - audit·archive·run·experiment를 각 전용 위치로 이관한다.
 - 소비처가 없는 script와 호환 껍데기는 보호 WIP를 제외하고 제거한다.
+- 승인된 물리 구조는 `pipeline/analysis_ir`, `pipeline/semantic_tasks/{summary,table,rule}`, `cli`,
+  `tools/{verify,admin}`이다. 먼저 파일별 이동·import·경로 리터럴·CI·runbook 소비자표를 만들고
+  dependency 역순으로 `git mv`한다. 옛 import path를 살리는 shim은 만들지 않는다.
+- 제품 밖 실행 자산은 `D:\work\robo\_playground\analyzer\{profiles,runs,experiments,archive}`가
+  소유한다. source·AST·gold를 복사하지 않고 profile과 봉인 hash로 참조하며 제품/spec 경로로 run output을
+  쓰는 설정은 preflight에서 거부한다.
 - constitution과 최종 HTML을 실제 코드·필드·호출 순서와 동기화한다.
 
 ## 3. 검증 확대
@@ -124,10 +130,11 @@
 4. 전체 정적 회귀와 prompt hash
 5. 봉인한 SKT 2파일 1,503줄 실제 생성과 직접 의미 판정
 6. 선택 source의 baseline diff, exact-once ledger, 새 실패 좌표부터 전수 감사
-7. GPU 복구와 Catalog pagination 계약 연결 뒤 약 5만 LOC SKT 전체 성능·전수 회계 1회
+7. Catalog pagination 계약과 봉인 1,503줄 provider-bearing 3층 검증 완료; GPU/약 5만 LOC 성능은
+   사용자 결정으로 현재 범위 밖이며 미실행 상태를 그대로 기록
 
 현재 완료된 속도 판정은 같은 1,503줄 required population을 손실 없이 처리한 단계별 시간과 token으로만
-한정한다. 약 5만 LOC 최종 실행 전까지 제품 규모 성능은 미검증이다. 결과 수를 줄이는 cap이나 skip은
+한정한다. 약 5만 LOC 제품 규모 성능은 현재 범위 밖이자 미검증이다. 결과 수를 줄이는 cap이나 skip은
 성능 개선으로 인정하지 않는다.
 
 ## 4. 최종 인도

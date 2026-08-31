@@ -12,7 +12,7 @@ from graph.product_write_batch import (
 from graph.schema.graph_edges import ReadsWrites
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import ROUTINE_LABELS
-from pipeline.models.function_table_usage import FunctionTableUsage
+from pipeline.semantic_tasks.table.usage import FunctionTableUsage
 
 
 class FunctionTableUsagesProjectionError(ValueError):

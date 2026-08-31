@@ -494,7 +494,7 @@ def log_error(
     NDJSON 스트림 / analyzer.log 의 한 줄에는 type+msg 만 박혀 노이즈 없음.
 
     Args:
-        component: 모듈 경로 (예: ``"pipeline.steps.step7_analyze_code"``).
+        component: 모듈 경로 (예: ``"pipeline.semantic_tasks"``).
         operation: 함수/작업 이름 (예: ``"analyze_code_three_split"``).
         error: Exception 또는 메시지 문자열.
         stream_emit: NDJSON 스트림 emit 함수 (없으면 file handler / stderr 만).

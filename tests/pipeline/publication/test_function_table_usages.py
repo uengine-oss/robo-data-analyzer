@@ -9,10 +9,10 @@ from pipeline.models.data_object_usage import (
     DataObjectUsageEvidence,
     QualifiedColumnUsage,
 )
-from pipeline.models.function_table_usage import project_function_table_usages
+from pipeline.semantic_tasks.table.usage import project_function_table_usages
 from pipeline.models.semantic_frame import SemanticFrame, SemanticSlot
 from pipeline.publication.function_meanings import build_function_meanings_write_batch
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+from pipeline.semantic_tasks.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )

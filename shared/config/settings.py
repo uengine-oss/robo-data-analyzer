@@ -326,7 +326,10 @@ class RuntimeEventSettings:
 def _resolve_run_output_dir() -> Path:
     raw = os.environ.get("ROBO_RUN_OUTPUT_DIR")
     if raw is None:
-        return Path("./logs")
+        return (
+            Path(__file__).resolve().parents[4]
+            / "_playground" / "analyzer" / "runs" / "live"
+        )
     if not raw.strip():
         raise ValueError("ROBO_RUN_OUTPUT_DIR must not be blank")
     return Path(raw)

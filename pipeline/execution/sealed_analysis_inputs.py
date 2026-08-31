@@ -241,10 +241,19 @@ def build_sealed_analysis_inputs(
         [path for path in ddl_root.rglob("*.sql") if path.is_file()]
         if ddl_root is not None else []
     )
-    prompts_root = strategy_prompts_dir.expanduser().resolve().parent
-    if prompts_root.name != "prompts":
-        prompts_root = (repository_root / "llm" / "prompts").resolve()
-    prompt_paths = [path for path in prompts_root.rglob("*") if path.is_file()]
+    semantic_tasks_root = (repository_root / "pipeline" / "semantic_tasks").resolve()
+    configured_prompt_root = strategy_prompts_dir.expanduser().resolve()
+    if not configured_prompt_root.is_dir():
+        configured_prompt_root = semantic_tasks_root
+    elif (
+        configured_prompt_root.name in {"framework", "dbms"}
+        and configured_prompt_root.parent.name == "prompts"
+    ):
+        configured_prompt_root = configured_prompt_root.parent
+    prompt_paths = [
+        path for path in configured_prompt_root.rglob("*")
+        if path.is_file() and "prompts" in path.relative_to(configured_prompt_root).parts
+    ]
     contract_paths = [(repository_root / relative).resolve() for relative in _CONTRACT_FILES]
 
     llm_config_name = settings.analysis_llm.config
@@ -301,8 +310,10 @@ def build_sealed_analysis_inputs(
             "sha256": _sha256(effective_settings_bytes),
             "values": effective_settings,
         },
-        "prompt_contracts": _tree_seal(
-            root=prompts_root, paths=prompt_paths, content_cache=source_cache,
+            "prompt_contracts": _tree_seal(
+                root=configured_prompt_root,
+                paths=prompt_paths,
+                content_cache=source_cache,
         ),
         "analyzer_contracts": _tree_seal(
             root=repository_root, paths=contract_paths, content_cache=source_cache,

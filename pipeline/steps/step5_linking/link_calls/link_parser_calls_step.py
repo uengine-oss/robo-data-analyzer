@@ -16,7 +16,7 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
-from pipeline.steps.step5_linking.link_calls.call_classifier import classify_call_sites
+from pipeline.analysis_ir.resolution.call_classifier import classify_call_sites
 from shared.events.runtime_logger import log_info, log_warning
 from graph.edges.calls import emit_calls
 from pipeline.execution.graph_delta_stream import emit_message

@@ -34,8 +34,8 @@ REMOVED_IMPLEMENTATIONS = {
     "pipeline/steps/step5_linking/link_calls/call_linker.py",
     "pipeline/steps/step5_linking/link_calls/link_calls_by_ast_step.py",
     "pipeline/steps/step5_linking/link_calls/link_calls_by_name_step.py",
-    "pipeline/steps/step7_analyze_code/batch_prompt_values.py",
-    "pipeline/steps/step7_analyze_code/range_body.py",
+    "pipeline/semantic_tasks/batch_prompt_values.py",
+    "pipeline/semantic_tasks/range_body.py",
     "pipeline/steps/step8_post_processing/build_glossary_step.py",
     "pipeline/steps/step8_post_processing/embed_step.py",
     "pipeline/steps/step8_post_processing/health_metrics_step.py",
@@ -72,6 +72,32 @@ class RepositoryLayoutTest(unittest.TestCase):
     def test_removed_implementations_do_not_reappear(self) -> None:
         remaining = sorted(path for path in REMOVED_IMPLEMENTATIONS if (REPO / path).exists())
         self.assertEqual([], remaining)
+
+    def test_pipeline_uses_the_approved_responsibility_tree(self) -> None:
+        required = {
+            "pipeline/analysis_ir/parser_facts",
+            "pipeline/analysis_ir/language_adapters",
+            "pipeline/analysis_ir/resolution",
+            "pipeline/semantic_tasks/summary",
+            "pipeline/semantic_tasks/table",
+            "pipeline/semantic_tasks/rule",
+        }
+        self.assertEqual([], sorted(
+            path for path in required if not (REPO / path).is_dir()
+        ))
+        retired_step = REPO / "pipeline/steps/step7_analyze_code"
+        self.assertFalse(any(retired_step.glob("*.py")))
+        self.assertFalse((REPO / "llm/prompts").exists())
+
+    def test_llm_package_contains_transport_not_semantic_prompt_assets(self) -> None:
+        semantic_assets = [
+            path for path in (REPO / "llm").rglob("*")
+            if path.is_file() and path.suffix.lower() in {".md", ".yaml", ".yml"}
+            and "configs" not in path.parts
+            and "runtime_capabilities" not in path.parts
+            and "usage" not in path.parts
+        ]
+        self.assertEqual([], semantic_assets)
 
     def test_unconsumed_historical_experiment_directory_does_not_reappear(self) -> None:
         self.assertFalse((REPO / "_artifacts").exists())

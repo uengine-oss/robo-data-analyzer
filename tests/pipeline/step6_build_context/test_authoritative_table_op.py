@@ -18,7 +18,7 @@ from pipeline.steps.step6_build_context.build_context_step import build_context_
 from pipeline.steps.step6_build_context.framework_context_builder import (
     FrameworkContextBuilder,
 )
-from pipeline.steps.step7_analyze_code.framework_per_node import (
+from pipeline.semantic_tasks.framework_per_node import (
     framework_analysis_targets,
 )
 from pipeline.models.data_object_usage import (

@@ -20,28 +20,29 @@ from agents.tools.sampling import make_sample_exploration_tools
 from agents.tools.validation import make_verify_external_rule_tool
 from graph.schema.graph_nodes import CodeNode
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
+from tests.pipeline.semantic_prompt_paths import prompt_dir
 from llm.structured_output import (
     STRUCTURED_RESPONSE_NAME,
     provider_structured_output_binding_schema,
 )
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.models.function_table_usage_response_schema import (
+from pipeline.semantic_tasks.table.response_schema import (
     batch_function_table_usages_response_model,
     function_table_usages_response_model,
 )
-from pipeline.models.rule_meaning_frame import (
+from pipeline.semantic_tasks.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     rule_meaning_response_model,
 )
 from pipeline.models.semantic_frame import SlotSpec
-from pipeline.models.summary_response_schema import frame_summary_response_model
-from pipeline.models.table_description_frame import (
+from pipeline.semantic_tasks.summary.response_schema import frame_summary_response_model
+from pipeline.semantic_tasks.table.description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
 from pipeline.steps.step4_scan_project.external_skills import ExternalFormatProposal
-from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
+from pipeline.semantic_tasks.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
@@ -219,8 +220,12 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
             "linked_external_sources": "[]",
             "code_body": "1 | return 0;",
         }
-        framework = ROOT / "llm" / "prompts" / "framework"
-        dbms = ROOT / "llm" / "prompts" / "dbms"
+        framework_summary = prompt_dir("framework", "code_summary")
+        dbms_summary = prompt_dir("dbms", "code_summary_node")
+        framework_table = prompt_dir("framework", "code_table_usage_meanings")
+        dbms_table = prompt_dir("dbms", "code_table_usage_meanings_batch")
+        framework_rule = prompt_dir("framework", "code_rule_meanings")
+        dbms_rule = prompt_dir("dbms", "code_rule_meanings_batch")
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -286,16 +291,16 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 }, ResidualPatternResult,
             ),
             _yaml_request(
-                "framework_summary", framework, "code_summary",
+                "framework_summary", framework_summary, "code_summary",
                 summary_values, _summary_model("framework"),
                 sealed_skt_calls=17,
             ),
             _yaml_request(
-                "dbms_summary", dbms, "code_summary_node",
+                "dbms_summary", dbms_summary, "code_summary_node",
                 summary_values, _summary_model("dbms"),
             ),
             _yaml_request(
-                "framework_table_usage", framework,
+                "framework_table_usage", framework_table,
                 "code_table_usage_meanings", {
                     "assigned_table_usages": (
                         '{"FT1":{"access_mode":"READ","occurrences":'
@@ -305,7 +310,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 }, usage_model, sealed_skt_calls=4,
             ),
             _yaml_request(
-                "dbms_table_usage", dbms,
+                "dbms_table_usage", dbms_table,
                 "code_table_usage_meanings_batch", {
                     "table_usage_packets": (
                         '{"N1":{"assigned_table_usages":{"FT1":'
@@ -316,7 +321,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 }, batch_usage_model,
             ),
             _yaml_request(
-                "framework_rule", framework, "code_rule_meanings", {
+                "framework_rule", framework_rule, "code_rule_meanings", {
                     "rule_packet": json.dumps({
                         "source": "1 | return OK;",
                         "conditions": {"C1": "ready"},
@@ -330,7 +335,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 sealed_skt_calls=17,
             ),
             _yaml_request(
-                "dbms_rule", dbms, "code_rule_meanings_batch", {
+                "dbms_rule", dbms_rule, "code_rule_meanings_batch", {
                     "rule_packets": json.dumps(
                         {"N1": rule_evidence},
                         ensure_ascii=False, separators=(",", ":"),
@@ -338,7 +343,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 }, batch_rule_meaning_response_model({"N1": rule_evidence}),
             ),
             _yaml_request(
-                "table_description", framework, "table_description", {
+                "table_description", framework_table, "table_description", {
                     "table_and_column_meaning_inputs": (
                         '{"columns":{"order_id":{}},"table":'
                         '{"observed_operations":[{"access":"READ",'

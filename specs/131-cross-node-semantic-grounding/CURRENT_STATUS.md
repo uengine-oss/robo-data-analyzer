@@ -1,6 +1,36 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-09-01
+
+## 129. Approved physical tree and product-external resources (2026-09-01)
+
+- The implementation now uses `pipeline/analysis_ir/{parser_facts,language_adapters,resolution}`.
+  Step2 and Step5 retain orchestration only; no compatibility import shim was added.
+- Independent Summary, Table Usage, and Rule products live under
+  `pipeline/semantic_tasks/{summary,table,rule}` with family-owned prompts, dynamic response
+  schemas, validators, and projections. `llm/prompts` was removed; `llm` owns provider
+  transport, binding, cache, usage, and runtime capability only.
+- Official surfaces are `cli`, `tools/verify`, and `tools/admin`. Tests mirror `analysis_ir`
+  and `semantic_tasks`; layout gates reject retired Step7 and LLM prompt trees.
+- The prior `_runs` tree (about 656 MB) moved without deletion to
+  `D:\work\robo\_playground\analyzer\runs`. The reusable SKT profile is under
+  `...\profiles\skt-1503-gpt54-mini\profile.yaml`; source, Parser AST, and gold remain at
+  their authoritative locations and are referenced by path/hash.
+- Run output defaults to `D:\work\robo\_playground\analyzer\runs\live`. Profile preflight
+  rejects any output inside the Analyzer product repository, including `specs`.
+- Validation: pytest `1472 passed, 4 skipped, 339 subtests`; authoritative unittest
+  `1245 tests, skipped 2`. No provider call or intentional Neo4j write occurred.
+- Reanalysis budget: 1 of at most 10 attempts consumed. Attempt 1 is the sealed pre-provider
+  schema-binding failure in section 128; provider calls and cost were zero. The next
+  provider-bearing attempt waits until all static gates and Catalog C05 are closed.
+- Safety incident: invoking the old `reset_neo4j_schema.py --help` executed its argument-blind
+  body against `neo4j`. It dropped the two then-existing constraints, retained lookup indexes,
+  and created the current Analyzer schema (16 constraints, 19 indexes); no graph data was
+  deleted. A post-incident gate found exactly `dbms|framework|neo4j|system|test`, all online.
+  The tool now requires target DB, exact confirmation, full online inventory, and drops only
+  exact Analyzer-owned names. Foreign constraints and indexes are never dropped.
+- Still open: C05 Catalog snapshot/cursor pagination. Required server files are protected
+  pre-existing WIP and remain deliberately unmodified and unstaged.
 **Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 승인된 1,503줄 실행은 provider 호출 전 LangChain schema binding에서 중단되어 비용은 0원이며, adapter-only 고정 이름 수정과 전체 회귀를 통과했다. 기존 `framework` DB의 active generation은 그대로 유지한다. 재실행은 새 사용자 확인 전 보류하고, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
@@ -34,7 +64,7 @@ archive나 과거 실행물을 현재 정본으로 참조하지 않는다.
 - 현재 Analyzer HEAD/origin은 다음 세션 시작 시 Git에서 한 번 확인한다. 이 문서를 커밋할 때마다 낡는
   동적 HEAD 값을 현재상태 문서에 반복 복사하지 않는다.
 - Analyzer 보존 WIP:
-  - modified `pipeline/steps/step2_load_ast/evidence_ir.py`: 기존 미완성 IR 1.3 decoder WIP를 보존해
+  - modified `pipeline/analysis_ir/parser_facts/evidence_ir.py`: 기존 미완성 IR 1.3 decoder WIP를 보존해
     IR 2.0 strict structural decoder로 교체했다. Analyzer commit 전까지 다른 변경과 섞지 않는다.
   - untracked `scripts/recompute_strategy_a_notation.py`: 출처 미확정. 읽기·실행·stage하지 말고 보존한다.
 - Parser HEAD/origin: `da453950f70d6b38831d33a0c06fda230122f2ec`, clean.
@@ -864,7 +894,7 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   선언 순서가 무관하고 다른 class scope의 visible method도 가능한 Java형 반례로 C 규칙 재적용 0을
   고정했다.
 - Java·Python의 class scope를 strict decoder가 읽기 위해 사용자 WIP인
-  `pipeline/steps/step2_load_ast/evidence_ir.py`에는 `_SCOPE_KINDS`의 `class` 한 항목만 추가했으며 다른
+  `pipeline/analysis_ir/parser_facts/evidence_ir.py`에는 `_SCOPE_KINDS`의 `class` 한 항목만 추가했으며 다른
   WIP 줄은 덮어쓰지 않았다.
 - Python Parser가 대문자 호출을 `NEW_INSTANCE`로 만들고 초기화 변수의 `variableType`으로 복제하던
   추측 경로를 실제 `HTTP()` 대문자 함수와 `lower()` 소문자 callable class 반례로 확정했다. 이 값은
@@ -1496,7 +1526,7 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   진행했다. 함께 집계하던 `failed_count`와 `skipped_count`는 실제 producer가 없어 항상 0이었다.
 - 수정: 죽은 두 계수를 제거하고 정상 반환된 함수 수가 배정 대상 전체와 다르면 `RuntimeError`로 즉시
   실패하게 했다. DBMS 엔진의 기존 fail-closed 완전성 계약과 동일하다.
-- 영향 좌표: `pipeline/steps/step7_analyze_code/framework_per_node.py`의 Framework 함수 분석에만 적용된다.
+- 영향 좌표: `pipeline/semantic_tasks/framework_per_node.py`의 Framework 함수 분석에만 적용된다.
   LLM 호출 수·입력·출력, DBMS 배치, Parser, graph 쓰기 계약은 바뀌지 않았다.
 - 집중 검증: dataflow scheduling과 semantic failure 회귀 `25 passed`.
 - 실제 LLM·SKT 재분석·Neo4j 제품 쓰기는 수행하지 않았다.
@@ -1879,7 +1909,7 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 
 - baseline: Analyzer `HEAD == origin/main == 3e7bada7bc30371eed998212ab7bcaf9f6c7e9a9`에서 시작한 전체
   refactor diff이며 `git diff --check`는 오류 0이다.
-- 보호 경계: `pipeline/steps/step2_load_ast/evidence_ir.py`의 기존 modified WIP는 unstaged 상태로
+- 보호 경계: `pipeline/analysis_ir/parser_facts/evidence_ir.py`의 기존 modified WIP는 unstaged 상태로
   보존했고, `scripts/recompute_strategy_a_notation.py`는 untracked·unstaged 상태이며 읽기·실행·stage하지
   않았다. `integrations/catalog.py`의 기존 WIP도 unstaged로 보존한다. Architect repository와
   goal-verify는 실행·수정하지 않았다.
@@ -1985,7 +2015,7 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 
 - Analyzer 전면 리팩터링 1,022개 path만 staged했다. 삭제된 과거 spec·죽은 로직과 새 단일 제품 경로,
   회귀, 현재 7개 SDD가 한 책임 slice다.
-- `integrations/catalog.py`, `pipeline/steps/step2_load_ast/evidence_ir.py`,
+- `integrations/catalog.py`, `pipeline/analysis_ir/parser_facts/evidence_ir.py`,
   `scripts/recompute_strategy_a_notation.py`의 staged path는 0건이다. 세 파일은 각각 기존 사용자 WIP 또는
   출처 미확정 untracked 보호 대상 그대로 남겼다.
 - Architect·goal-verify·Fabric는 읽기·실행·수정·stage하지 않았다. `_runs` 실제 입력과 generation
@@ -2028,7 +2058,7 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 
 - 검증된 Analyzer 책임 slice는 `f993ac949a0ec395881adfb307fac06796cd87f5`로 `origin/main`에 push됐고,
   push 직후 `HEAD == origin/main`을 확인했다. 보호 대상 `integrations/catalog.py`,
-  `pipeline/steps/step2_load_ast/evidence_ir.py`, `scripts/recompute_strategy_a_notation.py`는 staged diff에
+  `pipeline/analysis_ir/parser_facts/evidence_ir.py`, `scripts/recompute_strategy_a_notation.py`는 staged diff에
   포함하지 않았다.
 - 현행 Rule 계약은 모델 응답 `effects + rows`, 제품 Rule의 `anchor_line + structural_condition +
   structural_effects + business_effects`, Example의 byte-identical projection 하나다. 폐기된

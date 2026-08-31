@@ -14,7 +14,7 @@ from pipeline.publication.product_plan import (
     CompleteProductPlanInput,
     build_complete_product_write_plan,
 )
-from pipeline.steps.step2_load_ast.source_ast_closure import (
+from pipeline.analysis_ir.parser_facts.source_ast_closure import (
     SourceAstArtifact,
     SourceAstClosure,
 )
