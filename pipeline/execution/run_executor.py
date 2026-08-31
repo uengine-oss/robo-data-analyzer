@@ -55,6 +55,7 @@ from shared.events.runtime_logger import (
     detach_run_file_handlers,
     log_error,
     log_info,
+    redact_sensitive_text,
 )
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
@@ -755,7 +756,9 @@ async def execute_run(
                         neo_client,
                         generation_id=run.run_id,
                         status="failed",
-                        reason=f"{type(run_error).__name__}: {run_error}",
+                        reason=redact_sensitive_text(
+                            f"{type(run_error).__name__}: {run_error}"
+                        ),
                     )
                     generation_terminal = True
                     _update_run_manifest(run.run_dir, status="failed")
@@ -982,7 +985,7 @@ def _write_preflight_failure_manifest(run: AnalysisRun, error: BaseException) ->
         "status": "failed_preflight",
         "started_at": run.started_at.isoformat(),
         "strategy": run.codebase.strategy,
-        "error": f"{type(error).__name__}: {error}",
+        "error": redact_sensitive_text(f"{type(error).__name__}: {error}"),
         "sealed_analysis_inputs": None,
     }
     target = run.run_dir / "manifest.json"

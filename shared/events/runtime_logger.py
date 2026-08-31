@@ -35,7 +35,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -48,6 +51,39 @@ _DATE_FORMAT = "%H:%M:%S"
 # run-scope 파일 핸들러 파일명 — 운영자 표준 (옛 base_analyzer 유산).
 _ANALYZER_LOG_FILENAME = "analyzer.log"
 _ERROR_LOG_FILENAME = "error.log"
+
+_SENSITIVE_ENV_NAME = re.compile(r"(?:API_KEY|PASSWORD|TOKEN|SECRET)$", re.IGNORECASE)
+_SENSITIVE_ERROR_PATTERNS = (
+    re.compile(
+        r"(?i)(incorrect\s+api\s+key\s+provided:\s*)[^.\s,'\"}]+"
+    ),
+    re.compile(
+        r"(?i)(authorization['\"]?\s*[:=]\s*['\"]?bearer\s+)[^\s,'\"}]+"
+    ),
+)
+
+
+def redact_sensitive_text(value: Any) -> str:
+    """Remove configured credentials and credential-shaped API errors."""
+    text = str(value)
+    configured_secrets = {
+        item
+        for name, item in os.environ.items()
+        if _SENSITIVE_ENV_NAME.search(name) and len(item) >= 6
+    }
+    for settings_name, attribute_name in (
+        ("analysis_llm", "api_key"),
+        ("embedding", "api_key"),
+        ("semantic_search", "llm_api_key"),
+    ):
+        secret = getattr(getattr(SETTINGS, settings_name, None), attribute_name, "")
+        if isinstance(secret, str) and len(secret) >= 6:
+            configured_secrets.add(secret)
+    for secret in sorted(configured_secrets, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    for pattern in _SENSITIVE_ERROR_PATTERNS:
+        text = pattern.sub(r"\1[REDACTED]", text)
+    return text
 
 
 # ── 한글 친화 라벨 매핑 (Formatter 가 사용 — 호출처는 영어 키 그대로 = grep 가능) ──
@@ -465,14 +501,23 @@ def log_error(
         **context: 추가 컨텍스트 (run_id / code_id 등).
     """
     if isinstance(error, BaseException):
-        error_str = f"{type(error).__name__}: {error}"
-        exc_info = (type(error), error, error.__traceback__)
+        raw_error_str = f"{type(error).__name__}: {error}"
+        error_str = redact_sensitive_text(raw_error_str)
+        raw_traceback = "".join(traceback.format_exception(error))
+        sanitized_traceback = redact_sensitive_text(raw_traceback)
+        if sanitized_traceback != raw_traceback:
+            exc_info = None
+            traceback_suffix = f"\n{sanitized_traceback.rstrip()}"
+        else:
+            exc_info = (type(error), error, error.__traceback__)
+            traceback_suffix = ""
     else:
-        error_str = str(error)
+        error_str = redact_sensitive_text(error)
         exc_info = None
+        traceback_suffix = ""
 
     kv = _format_kv(context)
-    msg = f"{_label_operation(operation)}: {error_str}{kv}"
+    msg = f"{_label_operation(operation)}: {error_str}{kv}{traceback_suffix}"
     # exc_info 가 있으면 logging 이 자동으로 traceback + __cause__ chain 출력.
     get_logger(component).error(msg, exc_info=exc_info)
 

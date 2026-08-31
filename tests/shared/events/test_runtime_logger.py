@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,6 +35,32 @@ class RuntimeLoggerLifecycleTest(unittest.TestCase):
 
         self.assertEqual(1, logger.error.call_count)
         self.assertEqual(3, logger.warning.call_count)
+
+    def test_error_credentials_are_redacted_from_log_traceback_and_stream(self) -> None:
+        logger = MagicMock()
+        events: list[dict] = []
+        secret = "secret-api-key-value"
+        with (
+            patch.dict(os.environ, {"ROBO_LLM_API_KEY": secret}),
+            patch.object(runtime_logger, "get_logger", return_value=logger),
+        ):
+            try:
+                raise RuntimeError(f"Incorrect API key provided: {secret}.")
+            except RuntimeError as error:
+                runtime_logger.log_error(
+                    "test.component",
+                    "failed_operation",
+                    error,
+                    stream_emit=events.append,
+                )
+
+        logged_message = logger.error.call_args.args[0]
+        self.assertNotIn(secret, logged_message)
+        self.assertIn("[REDACTED]", logged_message)
+        self.assertIsNone(logger.error.call_args.kwargs["exc_info"])
+        self.assertEqual(1, len(events))
+        self.assertNotIn(secret, events[0]["message"])
+        self.assertIn("[REDACTED]", events[0]["message"])
 
     def test_existing_root_handler_does_not_skip_level_and_noise_policy(self) -> None:
         root = MagicMock()
