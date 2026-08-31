@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
-**Updated**: 2026-08-29
-**Status**: Analyzer 리팩터링의 작은 실제 SKT 책임 slice 완료 — 기존 `framework` DB에 1,503줄 generation을 공개하고 자동 회귀·exact-once 전수 회계·직접 의미 판정 3층과 commit/push를 닫았다. Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계는 남아 있다.
+**Updated**: 2026-08-31
+**Status**: Analyzer 리팩터링의 작은 실제 SKT 책임 slice와 C-080 Parser→Analyzer 구조 사실 계약을 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 남은 작업은 Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2118,3 +2118,24 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 사람용 최종 HTML도 현재 검색·상세조회 경로와 동기화했다. 61,396 bytes, section `14/14`,
   details `12/12`, SHA-256
   `44830c7fb94f092b325d7a6cf4ec3ec6115b4706b8a615fee9f53017b754ecf6`다.
+
+## 116. C-080 Parser 구조 사실과 Analyzer 의미 어댑터 경계 완결 (2026-08-31)
+
+- 원인 확정: Parser의 언어별 구조 사실 생산 WIP와 Analyzer의 공통 evidence 소비 WIP가 각각 존재했지만
+  커밋되지 않아, 새 Parser 출력은 기존 Analyzer 정본이 거부하는 producer/consumer 단절 상태였다.
+  Oracle remote call 집중 검증에서는 `APP.PKG.FN@REMOTE_DB`의 경로가 `PKG.FN`으로 잘려 실제 첫 실패를
+  확인했다. 원인은 PL/SQL listener가 재귀 경로가 아닌 현재 단계의 `general_element_part`만 읽은 것이었다.
+- Parser 수정: ANTLR grammar와 parse-tree 좌표에서 callable 이름 경로, call 이름 경로와 DB link,
+  parameter, Python binding target·`global/nonlocal`, import scope를 구조 사실로 생산한다. Parser는
+  internal/external, 최종 binding, type, linkage와 업무 의미를 결정하지 않는다. PL/SQL 경로는 재귀적으로
+  평탄화해 `APP`, `PKG`, `FN` 세 구성요소와 `REMOTE_DB` 식별자를 원문 범위로 보존한다.
+- Analyzer 수정: 공통 evidence 검증기가 위 구조 사실의 필드·범위·scope·completeness를 fail-closed로
+  검증하고, 언어별 의미 어댑터가 최종 binding을 소유한다. Parser 5개 실제 golden의 AST 본문은 변경 전과
+  byte 구조가 같고 FILE root의 evidence만 확장됐다. 다섯 golden 모두 Analyzer 소비기를 직접 통과했다.
+- 검증: Parser 전체 `246 passed, 12 skipped`, Analyzer 집중 회귀
+  `225 passed, 2 skipped, 10 subtests passed`다. 새 DB·Docker·LLM 호출·SKT 재분석은 0회다.
+  Analyzer `3a361cc8ab2034a75db0643233d24b19fd1fc212`, Parser
+  `c155af4`를 각각 `origin/main`에 push했다. Catalog WIP와 출처 미확정 script는 수정·stage하지 않았다.
+  사람용 최종 HTML도 새 경로 구성요소와 DB link 내부 필드를 포함하도록 동기화했다. 61,917 bytes,
+  section `14/14`, details `12/12`, SHA-256
+  `d580045cb63a3b3e026b17181b2b25a9ce2db4bcccb0208ebe4d4d54440413c3`다.
