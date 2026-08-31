@@ -1,282 +1,255 @@
-"""Export deterministic semantic review packets from the current analyzer graph.
+"""Export sealed target packets for direct human semantic judgment.
 
-The script performs no semantic judgment and calls no LLM.  It keeps the
-source/gold side of existing canonical packets and replaces only the current
-graph output side, making repeated direct reviews comparable.
+The exporter calls no model and performs no semantic judgment. It joins the actual
+prompt/parsed response, deterministic Rule source, recorded findings, and the exact
+active graph generation identified by one run manifest. Targets are either supplied
+explicitly or taken exhaustively from that run's prompt records.
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
+from collections import defaultdict
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from graph.connection_context import Neo4jOverride, set_override
-from graph.neo4j_client import Neo4jClient
-from graph.ownership import ANALYZER_GRAPH_OWNER
-from shared.config.settings import SETTINGS
+from dotenv import load_dotenv
+from neo4j import GraphDatabase
 
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+from scripts.inventory_semantic_outputs import _records, _run_identity
+from search.corpus.generation import completed_generation_session
 
 
-def _canonical_hash(value: Any) -> str:
-    body = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+def _args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--target-id", action="append", default=[])
+    parser.add_argument("--database")
+    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    return parser.parse_args()
 
 
-def _text_item(output_id: str, text: str) -> dict[str, str]:
-    return {
-        "output_id": output_id,
-        "text": text,
-        "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    }
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(
-            json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
-            for row in rows
-        ),
-        encoding="utf-8",
-        newline="\n",
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
 
 
-async def _export(args: argparse.Namespace) -> None:
-    function_rows = _read_jsonl(args.function_packets.resolve())
-    schema_rows = _read_jsonl(args.schema_packets.resolve())
-    function_ids = [str(row["func_id"]) for row in function_rows]
-    schema_ids = [str(row["node_id"]) for row in schema_rows]
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    set_override(
-        Neo4jOverride(
-            uri=SETTINGS.graph_database.uri,
-            user=SETTINGS.graph_database.user,
-            password=SETTINGS.graph_database.password,
-            database=args.database,
+
+def _json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON artifact must be an object: {path}")
+    return value
+
+
+def _prompt_records(run_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for path in sorted((run_dir / "llm-prompts").glob("*.jsonl")):
+        concern = path.stem
+        for record in _records(path):
+            target_id = str(record.get("target_id") or "").strip()
+            if not target_id:
+                raise ValueError(f"prompt record has no audit target: {path}")
+            grouped[target_id].append({
+                "concern": concern,
+                "system_prompt": str(record.get("system_prompt") or ""),
+                "user_content": str(record.get("user_content") or ""),
+                "response_schema": record.get("response_schema"),
+                "parsed_response": (record.get("response") or {}).get("parsed"),
+                "raw_response_sha256": _sha256_text(
+                    str((record.get("response") or {}).get("raw") or "")
+                ),
+                "metadata": record.get("metadata") or {},
+            })
+    for records in grouped.values():
+        records.sort(key=lambda item: item["concern"])
+    return dict(grouped)
+
+
+def _finding_records(run_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in _records(run_dir / "analysis-findings.jsonl"):
+        target_id = str(record.get("target_id") or "")
+        owner_id = target_id.rpartition("::R-")[0] or target_id
+        grouped[owner_id].append(record)
+    return dict(grouped)
+
+
+def _selected_targets(
+    available: set[str], requested: list[str],
+) -> list[str]:
+    selected = sorted(set(str(value).strip() for value in requested if str(value).strip()))
+    if not selected:
+        return sorted(available)
+    missing = sorted(set(selected) - available)
+    if missing:
+        raise ValueError(
+            f"requested target has no prompt record: first={missing[0]!r}, "
+            f"count={len(missing)}"
         )
+    return selected
+
+
+def _graph_records(
+    *,
+    database: str,
+    env_file: Path,
+    analysis_scope_id: str,
+    generation_id: str,
+    target_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    load_dotenv(env_file)
+    driver = GraphDatabase.driver(
+        os.environ["ROBO_NEO4J_URI"],
+        auth=(os.environ["ROBO_NEO4J_USER"], os.environ["ROBO_NEO4J_PASSWORD"]),
     )
-    client = Neo4jClient()
     try:
-        from graph.generation import bind_active_completed_generation
-        await bind_active_completed_generation(client)
-        code_records = await client.run_read_query(
-            f"""
-            MATCH (n:ANALYZER_OWNED)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-              AND n.generation_id = $generation_id AND n.id IN $ids
-            RETURN n.id AS id, n.summary AS summary,
-                   n.stereotype AS stereotype
-            """,
-            {"ids": function_ids},
-        )
-        rule_records = await client.run_read_query(
-            f"""
-            MATCH (n:ANALYZER_OWNED)-[hr:HAS_RULE]->(r:RULE)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-              AND n.generation_id = $generation_id AND n.id IN $ids
-              AND r.generation_id = $generation_id
-            OPTIONAL MATCH (r)-[he:HAS_EXAMPLE]->(e:EXAMPLE {{generation_id: $generation_id}})
-            RETURN n.id AS id, r.id AS occurrence_id,
-                   coalesce(hr.ordinal, 0) AS rule_ordinal,
-                   r.anchor_line AS anchor_line,
-                   r.structural_condition AS structural_condition,
-                   r.structural_effects AS structural_effects,
-                   r.business_effects AS business_effects,
-                   e.id AS example_id,
-                   coalesce(he.ordinal, 0) AS example_ordinal,
-                   e.kind AS kind,
-                   e.given_conditions AS given_conditions,
-                   e.expected_effects AS expected_effects
-            ORDER BY id, rule_ordinal, occurrence_id, example_ordinal, example_id
-            """,
-            {"ids": function_ids},
-        )
-        schema_records = await client.run_read_query(
-            f"""
-            MATCH (n:ANALYZER_OWNED)
-            WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-              AND n.generation_id = $generation_id AND n.id IN $ids
-            RETURN n.id AS id, properties(n) AS props
-            """,
-            {"ids": schema_ids},
-        )
-        glossary_records = await client.run_read_query(
-            f"""
-            MATCH (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})
-            RETURN g.terms_json AS terms_json, g.n_terms AS n_terms,
-                   g.source_kind AS source_kind, g.source_sha256 AS source_sha256,
-                   g.schema_version AS schema_version
-            """
-        )
+        with completed_generation_session(
+            driver,
+            database,
+            analysis_scope_id=analysis_scope_id,
+            expected_generation_id=generation_id,
+        ) as session:
+            nodes = {
+                str(row["stable_id"]): {
+                    "labels": list(row["labels"]),
+                    "properties": dict(row["properties"]),
+                }
+                for row in session.run(
+                    "UNWIND $target_ids AS target_id "
+                    "MATCH (node {stable_id:target_id, "
+                    "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id}) "
+                    "RETURN node.stable_id AS stable_id, labels(node) AS labels, "
+                    "properties(node) AS properties",
+                    target_ids=target_ids,
+                )
+            }
+            rule_rows = [
+                dict(row)
+                for row in session.run(
+                    "UNWIND $target_ids AS target_id "
+                    "MATCH (owner:CodeNode {stable_id:target_id, "
+                    "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})"
+                    "-[owns:HAS_RULE]->(rule:Rule {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
+                    "OPTIONAL MATCH (rule)-[shows:HAS_EXAMPLE]->"
+                    "(example:Example {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
+                    "RETURN owner.stable_id AS target_id, properties(rule) AS rule, "
+                    "owns.ordinal AS rule_ordinal, properties(example) AS example, "
+                    "shows.ordinal AS example_ordinal "
+                    "ORDER BY target_id, rule_ordinal, example_ordinal",
+                    target_ids=target_ids,
+                )
+            ]
+            column_rows = [
+                dict(row)
+                for row in session.run(
+                    "UNWIND $target_ids AS target_id "
+                    "MATCH (table:Table {stable_id:target_id, "
+                    "analysis_scope_id:$analysis_scope_id, generation_id:$generation_id})"
+                    "-[:HAS_COLUMN]->(column:Column {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
+                    "RETURN table.stable_id AS target_id, properties(column) AS column "
+                    "ORDER BY target_id, column.stable_id",
+                    target_ids=target_ids,
+                )
+            ]
     finally:
-        await client.close()
+        driver.close()
 
-    code_by_id = {str(row["id"]): row for row in code_records}
-    rules_by_id: dict[str, list[dict[str, Any]]] = {}
-    for record in rule_records:
-        rules_by_id.setdefault(str(record["id"]), []).append(record)
-    schema_by_id = {
-        str(row["id"]): dict(row.get("props") or {}) for row in schema_records
+    rules_by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen_rules: set[tuple[str, str]] = set()
+    for row in rule_rows:
+        target_id = str(row["target_id"])
+        rule = dict(row.get("rule") or {})
+        rule_id = str(rule.get("stable_id") or "")
+        key = (target_id, rule_id)
+        if key not in seen_rules:
+            rules_by_target[target_id].append({
+                "ordinal": row.get("rule_ordinal"),
+                "properties": rule,
+                "examples": [],
+            })
+            seen_rules.add(key)
+        example = row.get("example")
+        if example:
+            rules_by_target[target_id][-1]["examples"].append({
+                "ordinal": row.get("example_ordinal"),
+                "properties": dict(example),
+            })
+    columns_by_target: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in column_rows:
+        columns_by_target[str(row["target_id"])].append(dict(row["column"]))
+
+    return {
+        target_id: {
+            "node": nodes.get(target_id),
+            "rules": rules_by_target.get(target_id, []),
+            "columns": columns_by_target.get(target_id, []),
+        }
+        for target_id in target_ids
     }
-
-    exported_functions: list[dict[str, Any]] = []
-    for old in function_rows:
-        func_id = str(old["func_id"])
-        current = code_by_id.get(func_id)
-        if current is None:
-            raise RuntimeError(f"function missing from current graph: {func_id}")
-
-        fields: dict[str, list[dict[str, str]]] = {
-            "summary(함수)": [],
-            "RULE": [],
-            "EXAMPLE": [],
-        }
-        for key, prop in (
-            ("summary(함수)", "summary"),
-        ):
-            text = str(current.get(prop) or "").strip()
-            if text:
-                fields[key].append(_text_item(f"{key}:0", text))
-
-        seen_rules: set[str] = set()
-        for record in rules_by_id.get(func_id, []):
-            occurrence_id = str(record["occurrence_id"])
-            if occurrence_id not in seen_rules:
-                structural_effects = ", ".join(
-                    str(s) for s in (record.get("structural_effects") or [])
-                )
-                structural_condition = (
-                    str(record.get("structural_condition") or "").strip() or "항상"
-                )
-                business_effects = ", ".join(
-                    str(s) for s in (record.get("business_effects") or [])
-                )
-                text = (
-                    f"구조: {structural_condition} → {structural_effects}; "
-                    f"업무 효과: {business_effects}"
-                )
-                fields["RULE"].append(_text_item(f"RULE:{occurrence_id}", text))
-                seen_rules.add(occurrence_id)
-            example_id = record.get("example_id")
-            if example_id:
-                given_conditions = ", ".join(
-                    str(s) for s in (record.get("given_conditions") or [])
-                )
-                expected_effects = ", ".join(
-                    str(s) for s in (record.get("expected_effects") or [])
-                )
-                text = (
-                    f"{str(record.get('kind') or '').strip()}: "
-                    f"조건 [{given_conditions}] 결과 [{expected_effects}]"
-                )
-                fields["EXAMPLE"].append(
-                    _text_item(f"EXAMPLE:{example_id}", text)
-                )
-
-        actual_stereotype = str(current.get("stereotype") or "")
-        output_hash = _canonical_hash(
-            {
-                "actual_stereotype": actual_stereotype,
-                "output_fields": fields,
-            }
-        )
-        exported_functions.append(
-            {
-                **old,
-                "actual_stereotype": actual_stereotype,
-                "output_fields": fields,
-                "output_hash": output_hash,
-            }
-        )
-
-    exported_schemas: list[dict[str, Any]] = []
-    for old in schema_rows:
-        node_id = str(old["node_id"])
-        props = schema_by_id.get(node_id)
-        if props is None:
-            raise RuntimeError(f"schema node missing from current graph: {node_id}")
-        actual = {
-            key: props.get(key)
-            for key in old.get("actual", {})
-        }
-        exported_schemas.append({**old, "actual": actual})
-
-    output_dir = args.output_dir.resolve()
-    function_path = output_dir / "review-packets.jsonl"
-    schema_path = output_dir / "schema-review-packets.jsonl"
-    _write_jsonl(function_path, exported_functions)
-    _write_jsonl(schema_path, exported_schemas)
-    if len(glossary_records) > 1:
-        raise RuntimeError("current graph contains multiple owned glossary nodes")
-    if glossary_records:
-        record = glossary_records[0]
-        glossary_payload = json.loads(str(record.get("terms_json") or ""))
-        if not isinstance(glossary_payload, dict) or not isinstance(
-            glossary_payload.get("terms"), list
-        ):
-            raise RuntimeError("invalid human glossary graph payload")
-        glossary = {
-            "supplied": True,
-            "source_kind": record.get("source_kind"),
-            "source_sha256": record.get("source_sha256"),
-            "schema_version": record.get("schema_version"),
-            "n_terms": record.get("n_terms"),
-            "payload": glossary_payload,
-        }
-    else:
-        glossary = {"supplied": False, "payload": {"terms": [], "actions": []}}
-    glossary_path = output_dir / "human-glossary.json"
-    glossary_path.write_text(
-        json.dumps(glossary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(
-        json.dumps(
-            {
-                "functions": len(exported_functions),
-                "schemas": len(exported_schemas),
-                "function_packets": str(function_path),
-                "schema_packets": str(schema_path),
-                "human_glossary": str(glossary_path),
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--function-packets", type=Path, required=True)
-    parser.add_argument("--schema-packets", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument(
-        "--database",
-        default=SETTINGS.graph_database.database,
+    args = _args()
+    run_dir = args.run_dir.resolve()
+    manifest = _json_object(run_dir / "manifest.json")
+    database = str(args.database or manifest.get("neo4j_database") or "").strip()
+    if not database:
+        raise ValueError("run manifest has no Neo4j database")
+    analysis_scope_id, generation_id = _run_identity(run_dir, database)
+    prompts = _prompt_records(run_dir)
+    findings = _finding_records(run_dir)
+    rule_structures = load_rule_audit_records(run_dir)
+    targets = _selected_targets(set(prompts), args.target_id)
+    graph = _graph_records(
+        database=database,
+        env_file=args.env_file,
+        analysis_scope_id=analysis_scope_id,
+        generation_id=generation_id,
+        target_ids=targets,
     )
-    args = parser.parse_args()
-    asyncio.run(_export(args))
+    packets = [
+        {
+            "analysis_scope_id": analysis_scope_id,
+            "generation_id": generation_id,
+            "target_id": target_id,
+            "model_interactions": prompts[target_id],
+            "deterministic_rule_structure": rule_structures.get(target_id),
+            "analysis_findings": findings.get(target_id, []),
+            "published_graph": graph[target_id],
+        }
+        for target_id in targets
+    ]
+    output = args.output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(_canonical_json(packet) + "\n" for packet in packets)
+    output.write_text(body, encoding="utf-8", newline="\n")
+    result = {
+        "run_dir": str(run_dir),
+        "analysis_scope_id": analysis_scope_id,
+        "generation_id": generation_id,
+        "targets": len(targets),
+        "output": str(output),
+        "output_sha256": _sha256_text(body),
+        "bytes": len(body.encode("utf-8")),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

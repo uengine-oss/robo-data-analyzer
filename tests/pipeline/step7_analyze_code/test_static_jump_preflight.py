@@ -10,8 +10,6 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.execution.analysis_handoff import AnalysisHandoff
 from pipeline.models.analysis_context import AnalysisContext, StatementFact
 from pipeline.steps.step7_analyze_code.step_entry import analyze_code_step
-from scripts.evidence_preflight import _Corpus
-from shared.files.cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 
@@ -56,33 +54,6 @@ class StaticJumpPreflightTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             code_analyzer.assert_not_awaited()
-
-    async def test_standalone_preflight_uses_the_same_jump_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp) / "sample.c"
-            source.write_text("goto done;\ndone:\n", encoding="utf-8")
-            routine = CodeNode(
-                id="code:sample.c:f", name="f", signature="f()",
-                file_path=str(source), start_line=1, end_line=2,
-                label="FUNCTION",
-            )
-            goto = CodeNode(
-                id="code:sample.c:f:GOTO@1", name="done", signature="",
-                file_path=str(source), start_line=1, end_line=1,
-                label="GOTO", parent_id=routine.id,
-            )
-            corpus = object.__new__(_Corpus)
-            corpus.nodes = [routine, goto]
-            corpus.variables = []
-            corpus.constants = []
-            corpus.cache = SourceFileCache()
-
-            with self.assertRaisesRegex(
-                ValueError,
-                r"static jump target contract failed.*code:sample.c:f.*GOTO@1",
-            ):
-                corpus.static_jump_summary()
-
 
 if __name__ == "__main__":
     unittest.main()

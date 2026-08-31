@@ -1,1081 +1,303 @@
-"""run 판정 도구 — 헌법 IX 3층 중 1·2층(자동 검사 가능한 축)의 상설 소유자.
+"""Audit one sealed Analyzer run without reparsing source or calling a model.
 
-새 검증 축이 생기면 일회용 스크립트를 쓰지 말고 여기에 추가해 매 run 상시로 돌게 한다.
-
-사용:
-    .venv\\Scripts\\python.exe scripts\\judge_run.py                  # 최신 run
-    .venv\\Scripts\\python.exe scripts\\judge_run.py <run_dir>
-    .venv\\Scripts\\python.exe scripts\\judge_run.py <run_dir> --baseline <run_dir>
-    .venv\\Scripts\\python.exe scripts\\judge_run.py <run_dir> --graph  # 그래프 대조 축 포함
-    .venv\\Scripts\\python.exe scripts\\judge_run.py <run_dir> --graph --gold <gold_dir>
-
-그래프 축은 Neo4j 를 읽는다(읽기는 자유 — 01 §3). 대상 DB 는 `ROBO_NEO4J_DATABASE`
-(framework=test, DBMS=neo4j — 04 §4.6). run 이 쓴 DB 와 다르면 결과가 무의미하므로
-manifest 의 `neo4j_database` 와 다르면 경고한다.
-
-판정 축 (골드셋 없이 결정론 — 04 §3, 08 §20.0)
-  [A] 회계    : 분기표 행 수(obligation) — 결정론 예측치와 일치해야 구조가 안 깨진 것
-  [B] findings: 품질 격리 상태별 집계 — 정확도 축
-  [C] 구조 품질: 조건·효과 구조가 sealed evidence와 일치하는지 전수 대조
-  [D] 비교    : baseline run 과 공통 행의 구조 조건 대조 — 경로 동일/변경 분리
-  [E] RETURN  : 원문 occurrence(독립 정답지) ↔ AST ↔ 행 증거 (04 §3.3)
-  [F] CALL    : AST FUNCTION_CALL(독립 정답지) ↔ 행 증거 call 효과 ↔ 그래프 CALLS (04 §3.1)
-  [G] R/W     : 결정론 링커 reads/writes ↔ 그래프 READS/WRITES, callee 오귀속 (04 §3.2)
-  [H] EXAMPLE : 채택 RULE ↔ EXAMPLE 전수 존재·파생 (04 §3.5)
+The run artifacts own the input, structural Rule obligations, findings, and verified
+product read-back. The active Neo4j generation is checked only against that sealed
+identity. This script contains no parser, regex reconstruction, historical prompt
+fallback, semantic retry, or second analysis path.
 """
 from __future__ import annotations
 
-import asyncio
+import argparse
+from collections import Counter
+import hashlib
 import json
-import re
+from pathlib import Path
 import sys
-from collections import Counter, defaultdict
-from pathlib import Path, PureWindowsPath
+from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from pipeline.quality_gates.rule_audit_artifact import (
-    RULE_AUDIT_DIRECTORY,
-    load_rule_audit_records,
-)
-from pipeline.quality_gates.rule_prompt_evidence import render_row_condition
-from pipeline.steps.step2_load_ast.load_ast_step import ast_json_paths
-
-RUN_DIR_NAME = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{12}$")
-STRING_LITERAL = re.compile(
-    r'"(?:\\.|[^"\\])*"|\'(?:\'\'|\\.|[^\'\\])*\'|`(?:``|[^`])*`'
+from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
+from scripts.inventory_semantic_outputs import (
+    _graph_inventory,
+    _prompt_inventory,
+    _rule_evidence,
+    _run_identity,
 )
 
 
-def _graph_rule_structure_delta(
-    graph_rows: list[dict], expected_rows: dict[tuple[str, str], dict],
-) -> dict[str, object]:
-    """Compare consumer-visible Rule structure with the immutable run artifact."""
-    actual = {
-        (
-            str(row.get("target_id") or ""),
-            f"R{int(row.get('anchor_line') or 0)}",
-        ): row
-        for row in graph_rows
-    }
-    missing = sorted(expected_rows.keys() - actual.keys())
-    extra = sorted(actual.keys() - expected_rows.keys())
-    mismatches: list[tuple[str, str]] = []
-    for key in sorted(expected_rows.keys() & actual.keys()):
-        expected = expected_rows[key]
-        delivered = actual[key]
-        if (
-            (delivered.get("structural_condition") or None)
-            != (expected.get("structural_condition") or None)
-            or list(delivered.get("structural_effects") or ())
-            != list(expected.get("structural_effects") or ())
-        ):
-            mismatches.append(key)
-    return {
-        "expected": len(expected_rows),
-        "actual": len(actual),
-        "missing": missing,
-        "extra": extra,
-        "mismatches": mismatches,
-    }
+_RULE_FINDING_STATUSES = frozenset({
+    "excluded", "rejected", "unverified", "unavailable",
+})
 
 
-def latest_run_dir(root: Path) -> Path:
-    runs = sorted(
-        entry for entry in root.iterdir()
-        if entry.is_dir() and RUN_DIR_NAME.match(entry.name)
-    ) if root.is_dir() else []
-    if not runs:
-        raise SystemExit(f"run 폴더가 없다: {root}")
-    return runs[-1]
+def _json_object(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid JSON artifact: {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"JSON artifact must be an object: {path}")
+    return value
 
 
-def _evidence_rows(content: str) -> dict[str, dict]:
-    """user_content 안의 모든 증거 블록에서 R키 → 행 사실을 모은다.
-
-    framework 는 record 당 블록 1개, DBMS 배치는 노드마다 1개다. R키는 절대 줄번호라
-    한 record(한 루틴) 안에서 유일하다.
-    """
-    decoder = json.JSONDecoder()
-    rows: dict[str, dict] = {}
-    cursor = 0
-    while True:
-        head = content.find('{"conditions"', cursor)
-        if head < 0:
-            return rows
-        try:
-            evidence, consumed = decoder.raw_decode(content[head:])
-        except json.JSONDecodeError:
-            cursor = head + 1
-            continue
-        cursor = head + consumed
-        for row_key, row in (evidence.get("rows") or {}).items():
-            rows[row_key] = row
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _response_rules(response: object) -> dict[str, dict]:
-    """framework(rules 평면)·DBMS 배치(nodes.*.rules) 응답에서 R키 → rule 을 모은다."""
-    response = _response_payload(response)
-    if not isinstance(response, dict):
-        return {}
-    rules: dict[str, dict] = {}
-    for row_key, rule in (response.get("rules") or {}).items():
-        if isinstance(rule, dict):
-            rules[row_key] = rule
-    for node in (response.get("nodes") or {}).values():
-        if isinstance(node, dict):
-            for row_key, rule in (node.get("rules") or {}).items():
-                if isinstance(rule, dict):
-                    rules[row_key] = rule
-    return rules
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
-def _response_payload(response: object) -> dict:
-    """저장 response 봉투에서 구조화 payload만 꺼낸다."""
-    if isinstance(response, dict):
-        response = response.get("parsed") or response.get("raw") or response
-    if isinstance(response, dict) and "content" in response:
-        try:
-            response = json.loads(response["content"])
-        except (TypeError, json.JSONDecodeError):
-            return {}
-    if not isinstance(response, dict):
-        return {}
-    return response
-
-
-_RULE_TARGET_HEAD = re.compile(
-    r"^### \[RULE_TARGET ([^]]+)\]\ntarget_id: ([^\n]+)", re.MULTILINE,
-)
-
-
-def _rule_target_blocks(content: str) -> list[tuple[str, str, dict[str, dict]]]:
-    """DBMS user_content의 node_key·실제 target_id·행 증거를 보존한다."""
-    matches = list(_RULE_TARGET_HEAD.finditer(content))
-    blocks: list[tuple[str, str, dict[str, dict]]] = []
-    for index, match in enumerate(matches):
-        stop = matches[index + 1].start() if index + 1 < len(matches) else len(content)
-        evidence = _evidence_rows(content[match.start():stop])
-        blocks.append((match.group(1), match.group(2).strip(), evidence))
-    return blocks
-
-
-def load_rule_obligations(run_dir: Path) -> set[tuple[str, str]]:
-    """저장 prompt가 요구한 모든 RULE 행의 실제 신원 집합."""
-    audit_records = load_rule_audit_records(run_dir)
-    if audit_records:
-        return {
-            (
-                str((record.get("row_owners") or {}).get(row_key) or target_id),
-                str(row_key),
-            )
-            for target_id, record in audit_records.items()
-            for row_key in (record["evidence"].get("rows") or {})
-        }
-    obligations: set[tuple[str, str]] = set()
-    for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
-        with record_path.open(encoding="utf-8") as fh:
-            for line in fh:
-                record = json.loads(line)
-                content = record.get("user_content") or ""
-                blocks = _rule_target_blocks(content)
-                if blocks:
-                    for _node_key, target_id, evidence_rows in blocks:
-                        obligations.update(
-                            (target_id, row_key) for row_key in evidence_rows
-                        )
-                else:
-                    target_id = str(record.get("target_id") or "unknown")
-                    obligations.update(
-                        (target_id, row_key)
-                        for row_key in _evidence_rows(content)
-                    )
-    return obligations
-
-
-def load_rule_rows(run_dir: Path) -> dict[tuple[str, str], dict]:
-    """Collect each Rule's structural fields and sealed evidence references."""
-    audit_records = load_rule_audit_records(run_dir)
-    if audit_records:
-        rows: dict[tuple[str, str], dict] = {}
-        for target_id, record in audit_records.items():
-            evidence = record["evidence"]
-            conditions = evidence.get("conditions") or {}
-            evidence_rows = evidence.get("rows") or {}
-            rules = {
-                f"R{int(rule['anchor_line'])}": rule for rule in record["rules"]
-            }
-            row_owners = record.get("row_owners") or {}
-            for row_key, evidence_row in evidence_rows.items():
-                rule = rules[row_key]
-                owner_id = str(row_owners.get(row_key) or target_id)
-                rows[(owner_id, str(row_key))] = {
-                    "structural_condition": rule.get("structural_condition"),
-                    "structural_effects": list(
-                        rule.get("structural_effects") or ()
-                    ),
-                    "when": list(evidence_row.get("when") or ()),
-                    "direct": list(evidence_row.get("direct") or ()),
-                    "expected_structural_condition": render_row_condition(
-                        evidence_row, conditions
-                    ),
-                }
-        return rows
-    rows: dict[tuple[str, str], dict] = {}
-    for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
-        with record_path.open(encoding="utf-8") as fh:
-            for line in fh:
-                record = json.loads(line)
-                content = record.get("user_content") or ""
-                blocks = _rule_target_blocks(content)
-                payload = _response_payload(record.get("response"))
-                if blocks:
-                    for node_key, target_id, evidence_rows in blocks:
-                        for row_key, evidence in evidence_rows.items():
-                            rows[(target_id, row_key)] = {
-                                "structural_condition": list(
-                                    evidence.get("when") or []
-                                ),
-                                "structural_effects": list(
-                                    evidence.get("direct") or []
-                                ),
-                                "when": evidence.get("when") or [],
-                                "direct": evidence.get("direct") or [],
-                            }
-                        node = (payload.get("nodes") or {}).get(node_key) or {}
-                        for row_key, rule in (node.get("rules") or {}).items():
-                            row = evidence_rows.get(row_key)
-                            if row is None or not isinstance(rule, dict):
-                                continue
-                            rows[(target_id, row_key)] = {
-                                "structural_condition": rule.get("cond") or [],
-                                "structural_effects": rule.get("then") or [],
-                                "when": row.get("when") or [],
-                                "direct": row.get("direct") or [],
-                            }
-                    continue
-                evidence_rows = _evidence_rows(content)
-                if not evidence_rows:
-                    continue
-                target_id = str(record.get("target_id") or "unknown")
-                for row_key, evidence in evidence_rows.items():
-                    rows[(target_id, row_key)] = {
-                        "structural_condition": list(evidence.get("when") or []),
-                        "structural_effects": list(evidence.get("direct") or []),
-                        "when": evidence.get("when") or [],
-                        "direct": evidence.get("direct") or [],
-                    }
-                for row_key, rule in _response_rules(record.get("response")).items():
-                    row = evidence_rows.get(row_key)
-                    if row is None:
-                        continue
-                    rows[(target_id, row_key)] = {
-                        "structural_condition": rule.get("cond") or [],
-                        "structural_effects": rule.get("then") or [],
-                        "when": row.get("when") or [],
-                        "direct": row.get("direct") or [],
-                    }
-    return rows
-
-
-def load_rule_findings(run_dir: Path) -> dict[tuple[str, str], dict]:
-    """Load current owner-scoped Rule findings keyed like deterministic audit rows."""
-    path = run_dir / "analysis-findings.jsonl"
+def _records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
-        return {}
-    audit_records = load_rule_audit_records(run_dir)
-    audit_paths = sorted((run_dir / RULE_AUDIT_DIRECTORY).glob("*.json"))
-    owner_scoped_audit = bool(audit_records) and all(
-        "row_owners" in json.loads(path.read_text(encoding="utf-8"))
-        for path in audit_paths
-    )
-    findings: dict[tuple[str, str], dict] = {}
+        return []
+    rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
+        for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
             try:
                 value = json.loads(line)
             except json.JSONDecodeError as error:
                 raise ValueError(
-                    f"invalid analysis finding JSON at {path}:{line_number}: {error}"
+                    f"invalid JSONL artifact: {path}:{line_number}: {error}"
                 ) from error
-            if value.get("concern") != "rules":
-                continue
-            status = str(value.get("status") or "")
-            if status not in {"excluded", "rejected", "unverified", "unavailable"}:
+            value = value.get("properties", value)
+            if not isinstance(value, dict):
                 raise ValueError(
-                    f"invalid Rule finding status at {path}:{line_number}: {status!r}"
+                    f"JSONL record must be an object: {path}:{line_number}"
                 )
-            target_id = str(value.get("target_id") or "")
-            head, separator, suffix = target_id.rpartition("::R-")
-            coordinates = value.get("coordinates") or []
-            try:
-                anchor = int(suffix) if separator and head else None
-                coordinate_rows = [int(row) for row in coordinates]
-            except (TypeError, ValueError):
-                anchor = None
-                coordinate_rows = []
-            if anchor is None or coordinate_rows != [anchor]:
-                if owner_scoped_audit:
-                    raise ValueError(
-                        f"unscoped Rule finding at {path}:{line_number}: {target_id!r}"
-                    )
-                # Historical provider runs did not persist graph-owner-scoped finding IDs.
-                continue
-            key = (head, f"R{anchor}")
-            if key in findings:
-                raise ValueError(f"duplicate Rule finding coordinate: {key}")
-            findings[key] = value
+            rows.append(value)
+    return rows
+
+
+def _node_ids(closure: dict[str, Any], product_type: str) -> set[str]:
+    prefix = f"node\x1f{product_type}\x1f"
+    return {
+        str(item.get("identity"))[len(prefix):]
+        for item in (closure.get("product_records") or {}).get("identities") or ()
+        if str(item.get("identity") or "").startswith(prefix)
+    }
+
+
+def _rule_obligations(run_dir: Path) -> dict[str, dict[str, Any]]:
+    obligations: dict[str, dict[str, Any]] = {}
+    for target_id, record in load_rule_audit_records(run_dir).items():
+        owners = record.get("row_owners") or {}
+        rules = {
+            f"R{int(rule['anchor_line'])}": dict(rule)
+            for rule in record["rules"]
+        }
+        for row_key in (record["evidence"].get("rows") or {}):
+            owner_id = str(owners.get(row_key) or target_id)
+            stable_id = f"{owner_id}::R-{str(row_key).removeprefix('R')}"
+            if stable_id in obligations:
+                raise ValueError(f"duplicate Rule obligation: {stable_id}")
+            obligations[stable_id] = rules[str(row_key)]
+    return obligations
+
+
+def _rule_findings(run_dir: Path) -> dict[str, dict[str, Any]]:
+    findings: dict[str, dict[str, Any]] = {}
+    for row in _records(run_dir / "analysis-findings.jsonl"):
+        if row.get("concern") != "rules":
+            continue
+        status = str(row.get("status") or "")
+        target_id = str(row.get("target_id") or "")
+        if status not in _RULE_FINDING_STATUSES or "::R-" not in target_id:
+            raise ValueError(f"invalid Rule finding: {target_id!r} status={status!r}")
+        if target_id in findings:
+            raise ValueError(f"duplicate Rule finding: {target_id}")
+        findings[target_id] = row
     return findings
 
 
-def trusted_rule_rows(
-    rows: dict[tuple[str, str], dict],
-    findings: dict[tuple[str, str], dict],
-) -> dict[tuple[str, str], dict]:
-    """Subtract quarantined coordinates from the immutable obligation ledger."""
-    unknown = findings.keys() - rows.keys()
-    if unknown:
-        raise ValueError(f"Rule findings outside audit obligations: {sorted(unknown)[:8]}")
-    return {key: value for key, value in rows.items() if key not in findings}
-
-
-def _ast_facts(corpus_root: Path) -> dict[str, dict]:
-    """AST JSON 에서 루틴별 구조 사실을 독립 수집 — analyzer 소비 경로를 거치지 않는다.
-
-    반환: {routine_name: {"returns": [line...], "calls": {name...}, "file": str}}
-    """
-    facts: dict[str, dict] = {}
-    routine_types = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
-
-    def walk(node: dict, current: dict | None, file_name: str) -> None:
-        ntype = str(node.get("type") or "")
-        if ntype in routine_types and node.get("name"):
-            current = facts.setdefault(str(node["name"]), {
-                "returns": [], "calls": set(), "file": file_name,
-            })
-        if current is not None:
-            if ntype in {"RETURN", "THROW", "RAISE"}:
-                line = node.get("startLine") or node.get("start_line")
-                if isinstance(line, int):
-                    current["returns"].append(line)
-            elif ntype in {"FUNCTION_CALL", "CALL"} and node.get("name"):
-                # 대소문자는 호출 동일성의 근거가 아니다 — 운영 채점기(rule_grading)도
-                # casefold 로 비교한다. 여기서 구별하면 매크로 표기 차이가 전부 오탐이 된다.
-                current["calls"].add(str(node["name"]).casefold())
-        for child in node.get("children") or ():
-            if isinstance(child, dict):
-                walk(child, current, file_name)
-
-    for path in ast_json_paths(corpus_root):
-        try:
-            tree = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        roots = tree if isinstance(tree, list) else [tree]
-        for root in roots:
-            if isinstance(root, dict):
-                walk(root, None, path.name)
-    return facts
-
-
-def _source_return_lines(source_root: Path) -> dict[str, int]:
-    """원문에서 return/throw/raise occurrence 를 파일 단위로 독립 계수한다.
-
-    04 §3.3 이 요구하는 '독립 정답지'다. 주석·문자열은 제외한다 — analyzer 를 거치지
-    않아야 AST 누락을 잡을 수 있으므로 여기서만 텍스트를 본다.
-    """
-    keyword = re.compile(
-        r"(?<![A-Za-z0-9_])(return|throw|raise)(?![A-Za-z0-9_])",
-        re.IGNORECASE,
+def _closure_count_is_exact(closure: dict[str, Any], key: str) -> bool:
+    section = closure.get(key)
+    return (
+        isinstance(section, dict)
+        and isinstance(section.get("identities"), list)
+        and section.get("count") == len(section["identities"])
     )
-    line_comment = re.compile(r"//.*$|--.*$|#.*$")
-    counts: dict[str, int] = {}
-    for path in sorted(source_root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in {
-            ".c", ".h", ".java", ".py", ".sql", ".pls", ".pkb", ".pks",
-        }:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-        total = 0
-        for line in text.splitlines():
-            active = STRING_LITERAL.sub("", line_comment.sub("", line))
-            hits = keyword.findall(active)
-            if path.suffix.lower() in {".sql", ".pls", ".pkb", ".pks"}:
-                # PL/SQL 함수 선언의 `RETURN TYPE`은 실행문이 아니다. SQL 계열에서
-                # statement는 세미콜론으로 닫혀야 하므로 헤더 토큰을 독립 정답지에서 제외한다.
-                hits = hits if ";" in active else []
-            total += len(hits)
-        counts[path.name] = total
-    return counts
-
-
-def _evidence_effects(run_dir: Path) -> tuple[Counter, dict[str, set[str]]]:
-    """행 증거의 효과를 집계한다 — op 별 개수와 target별 호출 대상 집합."""
-    ops: Counter = Counter()
-    calls_by_target: dict[str, set[str]] = defaultdict(set)
-    audit_records = load_rule_audit_records(run_dir)
-    if audit_records:
-        for target_id, record in audit_records.items():
-            evidence = record["evidence"]
-            effects = evidence.get("effects") or {}
-            routine = _routine_from_target_id(target_id)
-            for row in (evidence.get("rows") or {}).values():
-                for reference in row.get("direct") or ():
-                    effect = effects.get(str(reference)) or {}
-                    op = str(effect.get("op") or "")
-                    ops[op] += 1
-                    if op == "call" and effect.get("target"):
-                        calls_by_target[routine].add(
-                            str(effect["target"]).casefold()
-                        )
-        return ops, calls_by_target
-    for record_path in sorted((run_dir / "llm-prompts").glob("*rules*.jsonl")):
-        with record_path.open(encoding="utf-8") as fh:
-            for line in fh:
-                record = json.loads(line)
-                content = record.get("user_content") or ""
-                matches = list(_RULE_TARGET_HEAD.finditer(content))
-                segments: list[tuple[str, str]] = []
-                if matches:
-                    for index, match in enumerate(matches):
-                        stop = (
-                            matches[index + 1].start()
-                            if index + 1 < len(matches) else len(content)
-                        )
-                        segments.append((
-                            _routine_from_target_id(match.group(2).strip()),
-                            content[match.start():stop],
-                        ))
-                else:
-                    segments.append((
-                        _routine_from_target_id(
-                            str(record.get("target_id") or "unknown")
-                        ),
-                        content,
-                    ))
-                for routine, segment in segments:
-                    decoder = json.JSONDecoder()
-                    cursor = 0
-                    while True:
-                        head = segment.find('{"conditions"', cursor)
-                        if head < 0:
-                            break
-                        try:
-                            evidence, consumed = decoder.raw_decode(segment[head:])
-                        except json.JSONDecodeError:
-                            cursor = head + 1
-                            continue
-                        cursor = head + consumed
-                        for effect in (evidence.get("effects") or {}).values():
-                            op = str(effect.get("op") or "")
-                            ops[op] += 1
-                            if op == "call" and effect.get("target"):
-                                calls_by_target[routine].add(
-                                    str(effect["target"]).casefold()
-                                )
-    return ops, calls_by_target
-
-
-def _routine_from_target_id(target_id: str) -> str:
-    """CodeNode ID에서 소유 루틴의 AST name을 복원한다."""
-    tail = target_id.split(":", 2)[-1]
-    if "@" in tail:
-        return tail.split("@", 1)[0]
-    return tail.split(":", 1)[0]
-
-
-def _gold_source_file(
-    value: str, source_files: Mapping[str, str] | None = None,
-) -> str:
-    normalized = str(value).replace("\\", "/")
-    normalized = normalized.removeprefix("source/").casefold()
-    if source_files is None or normalized in source_files:
-        return normalized
-    return source_files.get(PureWindowsPath(normalized).name.casefold(), normalized)
-
-
-def _gold_routine_id(
-    value: str, source_files: Mapping[str, str] | None = None,
-) -> tuple[str, str]:
-    raw = str(value)
-    tail = raw.split(":", 1)[1] if ":" in raw else raw
-    file_name, name_line = tail.rsplit(":", 1)
-    name = name_line.rsplit("@", 1)[0].rsplit(".", 1)[-1].strip('"').casefold()
-    return _gold_source_file(file_name, source_files), name
-
-
-DDL_TABLE = re.compile(
-    r'\bCREATE\s+TABLE\s+(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*)\s*\.\s*)?'
-    r'(?P<name>"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*)',
-    re.IGNORECASE,
-)
-
-
-def _ddl_table_names(ddl_dir: Path) -> set[str]:
-    """Read only CREATE TABLE identities to scope a broader independent gold set."""
-    names: set[str] = set()
-    if not ddl_dir.is_dir():
-        return names
-    for path in sorted(ddl_dir.rglob("*.sql")):
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-        names.update(
-            match.group("name").strip('"').casefold()
-            for match in DDL_TABLE.finditer(text)
-        )
-    return names
-
-
-DDL_BLOCK = re.compile(
-    r'\bCREATE\s+TABLE\s+(?:(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*)\s*\.\s*)?'
-    r'(?P<name>"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*)\s*\('
-    r'(?P<body>.*?)\)\s*;',
-    re.IGNORECASE | re.DOTALL,
-)
-DDL_COLUMN_LINE = re.compile(r'^\s*(?P<name>"(?:""|[^"])+"|[A-Za-z_][A-Za-z0-9_$#]*)\s+', re.MULTILINE)
-
-
-def _ddl_axes(ddl_dir: Path) -> tuple[set[str], set[tuple[str, str]]]:
-    """Independent axes for the exact DDL supplied to this run."""
-    tables: set[str] = set()
-    columns: set[tuple[str, str]] = set()
-    if not ddl_dir.is_dir():
-        return tables, columns
-    for path in sorted(ddl_dir.rglob("*.sql")):
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-        for match in DDL_BLOCK.finditer(text):
-            table = match.group("name").strip('"').casefold()
-            tables.add(table)
-            for column_match in DDL_COLUMN_LINE.finditer(match.group("body")):
-                column = column_match.group("name").strip('"').replace('""', '"').casefold()
-                if column.upper() not in {"CONSTRAINT", "PRIMARY", "FOREIGN", "UNIQUE", "CHECK"}:
-                    columns.add((table, column))
-    return tables, columns
-
-
-def _optional_json(path: Path, default: object) -> object:
-    return json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else default
-
-
-def load_gold_axes(
-    gold_dir: Path, *, table_scope: set[str] | None = None,
-    source_root: Path | None = None,
-) -> dict[str, set]:
-    """Load strict source-derived axes, honoring manifest precedence for R/W."""
-    routines_raw = json.loads((gold_dir / "routines.json").read_text(encoding="utf-8-sig"))
-    tables_raw = json.loads((gold_dir / "tables.json").read_text(encoding="utf-8-sig"))
-    relations = json.loads((gold_dir / "relationships.json").read_text(encoding="utf-8-sig"))
-    functions_raw = _optional_json(gold_dir / "functions.json", {})
-    functions = functions_raw if isinstance(functions_raw, dict) else {}
-    references = _optional_json(gold_dir / "references.json", {})
-    init_by = _optional_json(gold_dir / "init_by.json", [])
-
-    source_files: dict[str, str] | None = None
-    if source_root is not None and source_root.is_dir():
-        relative = [
-            path.relative_to(source_root).as_posix().casefold()
-            for path in source_root.rglob("*") if path.is_file()
-        ]
-        by_basename = Counter(PureWindowsPath(path).name.casefold() for path in relative)
-        source_files = {path: path for path in relative}
-        source_files.update({
-            PureWindowsPath(path).name.casefold(): path
-            for path in relative
-            if by_basename[PureWindowsPath(path).name.casefold()] == 1
-        })
-    routines = {
-        (_gold_source_file(row["file"], source_files), str(row["name"]).strip('"').casefold())
-        for row in routines_raw
-    }
-    routine_by_name = {name: (file_name, name) for file_name, name in routines}
-    tables = {
-        str(row["name"]).casefold() for row in tables_raw
-        if table_scope is None or str(row["name"]).casefold() in table_scope
-    }
-    columns = {
-        (str(row["name"]).casefold(), str(column["name"]).casefold())
-        for row in tables_raw
-        if table_scope is None or str(row["name"]).casefold() in table_scope
-        for column in row.get("columns") or ()
-    }
-    calls = {
-        (_gold_routine_id(row["from"], source_files), _gold_routine_id(row["to"], source_files))
-        for row in relations.get("CALLS") or ()
-    }
-
-    reads: set = set()
-    writes: set = set()
-    for name, facts in functions.items():
-        caller = routine_by_name.get(str(name).casefold())
-        if caller is None:
-            continue
-        reads.update((caller, str(table).casefold()) for table in facts.get("reads") or ())
-        writes.update((caller, str(table).casefold()) for table in facts.get("writes") or ())
-
-    # The historical RWIS gold has two independently read layers. functions.json owns
-    # strict business-table occurrences, while routines.json preserves DUAL/system-view
-    # reads.  Their union is the complete source axis for normal routines.  For a trigger,
-    # routines.json intentionally distinguishes the ON target from a READ; prefer that
-    # adjudication instead of misclassifying the trigger subject as queried data.
-    for row in routines_raw:
-        caller = routine_by_name.get(str(row.get("name") or "").casefold())
-        if caller is None:
-            continue
-        facts = row.get("quality_facts") or {}
-        if str(row.get("kind") or "").upper() == "TRIGGER":
-            reads = {pair for pair in reads if pair[0] != caller}
-            writes = {pair for pair in writes if pair[0] != caller}
-        reads.update((caller, str(table).casefold()) for table in facts.get("reads") or ())
-        writes.update((caller, str(table).casefold()) for table in facts.get("writes") or ())
-
-    strict_references = {
-        (
-            routine_by_name[str(name).casefold()],
-            PureWindowsPath(str(target["file"])).name.casefold(),
-            str(target["name"]).casefold(),
-            str(target["kind"]).upper(),
-        )
-        for name, targets in references.items()
-        if str(name).casefold() in routine_by_name
-        for target in targets
-    }
-    strict_init_by = {
-        (
-            PureWindowsPath(str(row["from"]["file"])).name.casefold(),
-            str(row["from"]["name"]).casefold(),
-            str(row["from"]["kind"]).upper(),
-            PureWindowsPath(str(row["to"]["file"])).name.casefold(),
-            str(row["to"]["name"]).casefold(),
-            str(row["to"]["kind"]).upper(),
-        )
-        for row in init_by
-    }
-    return {
-        "ROUTINE": routines,
-        "TABLE": tables,
-        "COLUMN": columns,
-        "CALLS": calls,
-        "READS": reads,
-        "WRITES": writes,
-        "REFERENCES": strict_references,
-        "INIT_BY": strict_init_by,
-    }
-
-
-def _actual_source_file(value: str, source_root: Path) -> str:
-    path = Path(value).resolve()
-    try:
-        return path.relative_to(source_root.resolve()).as_posix().casefold()
-    except ValueError:
-        return PureWindowsPath(str(value)).name.casefold()
-
-
-async def _graph_gold_axes(source_root: Path) -> dict[str, set]:
-    """Read the graph axes comparable to the strict independent shop gold."""
-    from graph.neo4j_client import Neo4jClient
-    from graph.generation import bind_active_completed_generation
-    from graph.ownership import ANALYZER_GRAPH_OWNER
-
-    client = Neo4jClient()
-    try:
-        await bind_active_completed_generation(client)
-        async def rows(query: str) -> list[dict]:
-            return await client.run_read_query(query, {})
-
-        routine_rows = await rows(
-            f"MATCH (n:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WHERE n.file_path IS NOT NULL AND "
-            "any(label IN labels(n) WHERE label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
-            "RETURN n.file_path AS file, n.name AS name"
-        )
-        table_rows = await rows(
-            f"MATCH (n:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN n.name AS name"
-        )
-        column_rows = await rows(
-            f"MATCH (t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            f"-[:HAS_COLUMN]->(c:COLUMN {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN t.name AS table_name, c.name AS column_name"
-        )
-        call_rows = await rows(
-            f"MATCH (routine:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            "-[:PARENT_OF*0..]->(a)-[:CALLS]->"
-            f"(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WHERE routine.file_path IS NOT NULL AND b.file_path IS NOT NULL AND "
-            "any(label IN labels(routine) WHERE "
-            "label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
-            "RETURN routine.file_path AS afile, routine.name AS aname, "
-            "b.file_path AS bfile, b.name AS bname"
-        )
-        rw_rows = {
-            relation: await rows(
-                f"MATCH (routine:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-                f"-[:PARENT_OF*0..]->(a)-[:{relation}]->"
-                f"(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-                "WHERE any(label IN labels(routine) WHERE "
-                "label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
-                "AND b:TABLE "
-                "RETURN routine.file_path AS file, routine.name AS name, "
-                "b.name AS table_name"
-            )
-            for relation in ("READS", "WRITES")
-        }
-        reference_rows = await rows(
-            f"MATCH (a:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            f"-[:REFERENCES]->(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL AND "
-            "any(label IN labels(a) WHERE label IN ['FUNCTION','PROCEDURE','METHOD','TRIGGER']) "
-            "RETURN a.file_path AS afile, a.name AS aname, b.file_path AS bfile, "
-            "b.name AS bname, labels(b) AS labels"
-        )
-        init_rows = await rows(
-            f"MATCH (a:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            f"-[:INIT_BY]->(b:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WHERE a.file_path IS NOT NULL AND b.file_path IS NOT NULL "
-            "RETURN a.file_path AS afile, a.name AS aname, labels(a) AS alabels, "
-            "b.file_path AS bfile, b.name AS bname, labels(b) AS blabels"
-        )
-    finally:
-        await client.close()
-
-    routine_key = lambda file_name, name: (
-        _actual_source_file(file_name, source_root), str(name).strip('"').casefold(),
-    )
-    symbol_kinds = ("DEFINE", "MEMBER", "GLOBAL_VARIABLE", "CONSTANT_FIELD")
-    kind = lambda labels: next((label for label in symbol_kinds if label in labels), "")
-    return {
-        "ROUTINE": {routine_key(row["file"], row["name"]) for row in routine_rows},
-        "TABLE": {str(row["name"]).casefold() for row in table_rows},
-        "COLUMN": {
-            (str(row["table_name"]).casefold(), str(row["column_name"]).casefold())
-            for row in column_rows
-        },
-        "CALLS": {
-            (routine_key(row["afile"], row["aname"]), routine_key(row["bfile"], row["bname"]))
-            for row in call_rows
-        },
-        **{
-            relation: {
-                (routine_key(row["file"], row["name"]), str(row["table_name"]).casefold())
-                for row in values
-            }
-            for relation, values in rw_rows.items()
-        },
-        "REFERENCES": {
-            (
-                routine_key(row["afile"], row["aname"]),
-                PureWindowsPath(str(row["bfile"])).name.casefold(),
-                str(row["bname"]).casefold(),
-                kind(row["labels"]),
-            )
-            for row in reference_rows if kind(row["labels"])
-        },
-        "INIT_BY": {
-            (
-                PureWindowsPath(str(row["afile"])).name.casefold(),
-                str(row["aname"]).casefold(), kind(row["alabels"]),
-                PureWindowsPath(str(row["bfile"])).name.casefold(),
-                str(row["bname"]).casefold(), kind(row["blabels"]),
-            )
-            for row in init_rows if kind(row["alabels"]) and kind(row["blabels"])
-        },
-    }
-
-
-def _print_gold_comparison(gold: dict[str, set], actual: dict[str, set]) -> None:
-    print("\n[I] 독립 gold 집합 대조")
-    for axis in ("ROUTINE", "TABLE", "COLUMN", "CALLS", "READS", "WRITES", "REFERENCES", "INIT_BY"):
-        missing = gold[axis] - actual[axis]
-        extra = actual[axis] - gold[axis]
-        print(
-            f"    {axis:<10} gold {len(gold[axis]):>4} · graph {len(actual[axis]):>4} · "
-            f"누락 {len(missing):>3} · 추가 {len(extra):>3}"
-        )
-        if missing:
-            print(f"      missing sample: {sorted(missing, key=repr)[:3]}")
-        if extra:
-            print(f"      extra sample: {sorted(extra, key=repr)[:3]}")
-
-
-async def _graph_axes(database: str | None) -> dict[str, object]:
-    """그래프에서 CALL/RW/EXAMPLE 축의 실측값을 읽는다 (읽기 전용)."""
-    from graph.neo4j_client import Neo4jClient
-    from graph.generation import bind_active_completed_generation
-    from graph.ownership import ANALYZER_GRAPH_OWNER
-
-    client = Neo4jClient()
-    try:
-        await bind_active_completed_generation(client)
-        async def one(query: str) -> list[dict]:
-            return await client.run_read_query(query, {})
-
-        counts = await one(
-            f"MATCH (n:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN labels(n)[0] AS label, count(*) AS n "
-            "ORDER BY n DESC LIMIT 12"
-        )
-        rels = await one(
-            f"MATCH (:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            "-[r]->"
-            f"(:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN type(r) AS rel, count(*) AS n "
-            "ORDER BY n DESC LIMIT 12"
-        )
-        # Example은 정확한 구조 조건과 충분한 업무 효과가 모두 있는 Rule에서만 생성된다.
-        rule_example = await one(
-            f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            f"OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WITH r, count(e) AS examples, "
-            "     (r.structural_condition IS NOT NULL "
-            "      AND r.structural_condition <> '' "
-            "      AND r.business_effects IS NOT NULL "
-            "      AND size(r.business_effects) > 0) AS expects_example "
-            "RETURN count(r) AS rules, "
-            "       sum(CASE WHEN expects_example THEN 1 ELSE 0 END) AS eligible_rules, "
-            "       sum(CASE WHEN NOT expects_example THEN 1 ELSE 0 END) AS ineligible_rules, "
-            "       sum(CASE WHEN expects_example AND examples = 0 THEN 1 ELSE 0 END) "
-            "         AS eligible_without_example, "
-            "       sum(examples) AS example_links"
-        )
-        rule_business_projection = await one(
-            f"MATCH (r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN count(*) AS n, "
-            "       sum(CASE WHEN r.structural_effects IS NOT NULL "
-            "                 AND size(r.structural_effects) > 0 "
-            "                 AND (r.business_effects IS NULL OR size(r.business_effects) = 0) "
-            "                THEN 1 ELSE 0 END) AS missing_business_effects"
-        )
-        orphan_example = await one(
-            f"MATCH (e:EXAMPLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "WHERE NOT ()-[:HAS_EXAMPLE]->(e) "
-            "RETURN count(e) AS orphans"
-        )
-        rule_rows = await one(
-            f"MATCH (c:ANALYZER_OWNED {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}})"
-            f"-[:HAS_RULE]->(r:RULE {{graph_owner: '{ANALYZER_GRAPH_OWNER}', generation_id: $generation_id}}) "
-            "RETURN c.id AS target_id, r.anchor_line AS anchor_line, "
-            "r.structural_condition AS structural_condition, "
-            "r.structural_effects AS structural_effects"
-        )
-        return {
-            "database": getattr(client, "_database", None),
-            "labels": counts,
-            "relations": rels,
-            "rule_example": rule_example[0] if rule_example else {},
-            "rule_business_projection": rule_business_projection,
-            "orphan_example": orphan_example[0] if orphan_example else {},
-            "rule_rows": rule_rows,
-        }
-    finally:
-        await client.close()
 
 
 def judge(
     run_dir: Path,
-    baseline_dir: Path | None,
-    with_graph: bool = False,
-    gold_dir: Path | None = None,
-) -> None:
-    print("=" * 72)
-    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    print(f"run: {manifest['run_id']}  corpus: {Path(manifest['corpus_root']).name}")
+    *,
+    database: str,
+    graph: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return deterministic closure and acceptance accounting for one run."""
+    run_dir = run_dir.resolve()
+    manifest = _json_object(run_dir / "manifest.json")
+    analysis_scope_id, generation_id = _run_identity(run_dir, database)
+    sealed_path = run_dir / "sealed-analysis-inputs.json"
+    source_closure_path = run_dir / "source-ast-closure.json"
+    product_closure_path = run_dir / "product-generation-closure.json"
+    sealed = _json_object(sealed_path)
+    source_closure = _json_object(source_closure_path)
+    product_closure = _json_object(product_closure_path)
+    prompt_inventory, _, _ = _prompt_inventory(run_dir)
 
-    # [A] 회계
-    obligations = load_rule_obligations(run_dir)
-    all_rows = load_rule_rows(run_dir)
-    rule_findings = load_rule_findings(run_dir)
-    rows = trusted_rule_rows(all_rows, rule_findings)
-    residual = obligations - rows.keys() - rule_findings.keys()
-    unknown = (rows.keys() | rule_findings.keys()) - obligations
-    rule_statuses = Counter(
-        str(finding.get("status") or "unknown")
-        for finding in rule_findings.values()
-    )
-    print(
-        f"\n[A] Rule 회계: obligation {len(obligations)} = trusted {len(rows)} + "
-        f"excluded {rule_statuses['excluded']} + "
-        f"rejected/unverified {rule_statuses['rejected'] + rule_statuses['unverified']} + "
-        f"unavailable {rule_statuses['unavailable']} · residual {len(residual)} · "
-        f"unknown {len(unknown)}"
-    )
-
-    # [B] findings
-    findings = Counter()
-    findings_path = run_dir / "analysis-findings.jsonl"
-    if findings_path.exists():
-        with findings_path.open(encoding="utf-8") as fh:
-            for line in fh:
-                findings[json.loads(line).get("status")] += 1
-    print(f"[B] findings: {dict(findings)} · 합계 {sum(findings.values())}")
-
-    # [C] sealed evidence → structural Rule exactness
-    condition_mismatches = sum(
-        row.get("structural_condition")
-        != row.get("expected_structural_condition")
-        for row in all_rows.values()
-        if "expected_structural_condition" in row
-    )
-    direct_effects_missing = sum(
-        bool(row.get("direct")) and not row.get("structural_effects")
-        for row in all_rows.values()
-    )
-    print(
-        f"[C] Rule 구조 {len(all_rows)}행 — 조건 불일치 {condition_mismatches} · "
-        f"직접 효과 누락 {direct_effects_missing}"
+    obligations = _rule_obligations(run_dir)
+    rule_findings = _rule_findings(run_dir)
+    published_rules = _node_ids(product_closure, "Rule")
+    published_examples = _node_ids(product_closure, "Example")
+    unknown_findings = set(rule_findings) - set(obligations)
+    expected_published = set(obligations) - set(rule_findings)
+    finding_statuses = Counter(
+        str(row["status"]) for row in rule_findings.values()
     )
 
-    # [D] baseline 비교 — cond==when 채점을 행 단위로 대조
-    if baseline_dir is not None:
-        base_rows = load_rule_rows(baseline_dir)
-        shared = all_rows.keys() & base_rows.keys()
-        def expected_path(row: dict) -> object:
-            return row.get("expected_structural_condition", row["when"])
-
-        same_path = [
-            k for k in shared
-            if expected_path(base_rows[k]) == expected_path(all_rows[k])
-        ]
-        changed_path = sorted(shared - set(same_path))
-
-        def failure_rate(keys: list, table: dict) -> tuple[int, int]:
-            def mismatched(row: dict) -> bool:
-                if "expected_structural_condition" in row:
-                    return (
-                        row["structural_condition"]
-                        != row["expected_structural_condition"]
-                    )
-                return set(row["structural_condition"]) != set(row["when"])
-
-            failed = sum(1 for k in keys if mismatched(table[k]))
-            return failed, len(keys)
-
-        for label, keys in (("경로 동일", same_path), ("경로 변경", changed_path)):
-            base_failed, total = failure_rate(keys, base_rows)
-            new_failed, _ = failure_rate(keys, all_rows)
-            if total:
-                print(f"[D] {label} {total}행 — 구조 조건 불일치"
-                      f" base {base_failed} ({base_failed / total * 100:.2f}%)"
-                      f" → now {new_failed} ({new_failed / total * 100:.2f}%)")
-        only_new = len(all_rows.keys() - base_rows.keys())
-        only_base = len(base_rows.keys() - all_rows.keys())
-        if only_new or only_base:
-            print(f"[D] 이번에만 있는 행 {only_new} · baseline 에만 있는 행 {only_base}")
-
-    # [E][F] 원문·AST 독립 정답지 대조
-    corpus_root = Path(manifest.get("corpus_root") or "")
-    analysis_root = corpus_root / "analysis"
-    source_root = Path(manifest.get("source_root") or (corpus_root / "source"))
-    ops, calls_by_routine = _evidence_effects(run_dir)
-
-    if analysis_root.is_dir():
-        ast = _ast_facts(analysis_root)
-        ast_returns = sum(len(f["returns"]) for f in ast.values())
-        ast_calls = sum(len(f["calls"]) for f in ast.values())
-        print(f"\n[E] RETURN — AST occurrence {ast_returns} · 행 증거 ret 효과 {ops['ret']}")
-        if source_root.is_dir():
-            source_total = sum(_source_return_lines(source_root).values())
-            print(f"    원문 독립 계수 {source_total} (주석·블록주석·문자열 제외)")
-            if ast_returns > source_total:
-                print("    ⚠ AST 가 원문보다 많다 — 추가·중복 의심")
-            elif ast_returns < source_total:
-                print("    ⚠ AST 가 원문보다 적다 — 누락 또는 입력 statement 경계 결함 후보")
-        print(f"[F] CALL — AST callsite 고유 {ast_calls} · "
-              f"행 증거 call 대상 고유 {sum(len(v) for v in calls_by_routine.values())}")
-        missing_routines = [
-            name for name, targets in calls_by_routine.items()
-            if name in ast and not targets <= ast[name]["calls"]
-        ]
-        if missing_routines:
-            print(f"    ⚠ 증거 call 이 AST 에 없는 루틴 {len(missing_routines)}개: "
-                  f"{missing_routines[:3]}")
-        else:
-            print("    증거 call ⊆ AST call: 위반 0")
-    else:
-        print(f"\n[E][F] 건너뜀 — AST 코퍼스를 찾지 못함: {analysis_root}")
-
-    if not with_graph:
-        print("\n[G][H] 건너뜀 — 그래프 축은 --graph 로 실행한다")
-        return
-
-    graph = asyncio.run(_graph_axes(None))
-    expected_db = manifest.get("neo4j_database")
-    actual_db = graph.get("database")
-    if expected_db and actual_db and expected_db != actual_db:
-        print(f"\n⚠ run 은 DB '{expected_db}' 에 썼는데 지금 '{actual_db}' 를 읽고 있다 — "
-              "ROBO_NEO4J_DATABASE 를 맞춰라 (04 §4.6)")
-    structure_delta = _graph_rule_structure_delta(graph["rule_rows"], rows)
-    print(
-        "[G] RULE 구조 — expected "
-        f"{structure_delta['expected']} · graph {structure_delta['actual']} · "
-        f"누락 {len(structure_delta['missing'])} · "
-        f"추가 {len(structure_delta['extra'])} · "
-        f"값 불일치 {len(structure_delta['mismatches'])}"
+    sealed_ref = manifest.get("sealed_analysis_inputs") or {}
+    source_ref = sealed.get("source_ast_closure") or {}
+    manifest_product = manifest.get("product_closure") or {}
+    sealed_payload = dict(sealed)
+    sealed_payload_hash = str(
+        sealed_payload.pop("sealed_analysis_inputs_sha256", "") or ""
     )
-    for label, values in (
-        ("missing", structure_delta["missing"]),
-        ("extra", structure_delta["extra"]),
-        ("mismatch", structure_delta["mismatches"]),
-    ):
-        if values:
-            print(f"    ⚠ {label} sample: {values[:3]}")
-    print("[C-delivery] 공개 Rule 업무 의미 투영")
-    for projection_row in graph["rule_business_projection"]:
-        print(
-            f"    Rule {projection_row['n']} · "
-            f"효과 투영 누락 {projection_row['missing_business_effects']}"
-        )
-    print(f"\n[G] 그래프 관계 (DB={actual_db})")
-    for row in graph["relations"]:
-        print(f"    {row['rel']:<16} {row['n']}")
-    counts = graph["rule_example"]
-    orphans = (graph["orphan_example"] or {}).get("orphans")
-    print(f"[H] EXAMPLE — RULE {counts.get('rules')} · "
-          f"생성 대상 {counts.get('eligible_rules')} · "
-          f"생성 비대상 {counts.get('ineligible_rules')} · "
-          f"HAS_EXAMPLE {counts.get('example_links')} · 고아 EXAMPLE {orphans}")
-    unmatched = counts.get("eligible_without_example") or 0
-    if unmatched:
-        print(f"    ⚠ 충분한 조건·효과가 있는데 EXAMPLE 없음 {unmatched}건 — 위반 후보")
-    else:
-        print("    생성 대상 RULE의 예시 누락 0")
-    if orphans:
-        print("    ⚠ 소유 RULE 없는 EXAMPLE — 04 §3.5 위반 후보")
-    if gold_dir is not None:
-        ddl_scope = _ddl_table_names(corpus_root / "ddl")
-        gold = load_gold_axes(
-            gold_dir, table_scope=ddl_scope or None, source_root=source_root,
-        )
-        ddl_tables, ddl_columns = _ddl_axes(corpus_root / "ddl")
-        if ddl_tables:
-            gold["TABLE"] = ddl_tables
-            gold["COLUMN"] = ddl_columns
-        actual = asyncio.run(_graph_gold_axes(source_root))
-        _print_gold_comparison(gold, actual)
+    checks = {
+        "manifest_identity_matches": (
+            manifest.get("analysis_scope_id") == analysis_scope_id
+            and manifest.get("generation_id") == generation_id
+            and product_closure.get("analysis_scope_id") == analysis_scope_id
+            and product_closure.get("generation_id") == generation_id
+        ),
+        "sealed_inputs_hash_matches": (
+            bool(sealed_payload_hash)
+            and sealed_ref.get("sha256") == sealed_payload_hash
+            and _canonical_sha256(sealed_payload) == sealed_payload_hash
+        ),
+        "source_ast_hash_matches": source_ref.get("sha256") == _sha256(source_closure_path),
+        "source_ast_closed": source_closure.get("status") == "exact",
+        "product_stage_count_exact": _closure_count_is_exact(
+            product_closure, "product_stages"
+        ),
+        "product_operation_count_exact": _closure_count_is_exact(
+            product_closure, "product_operations"
+        ),
+        "product_record_count_exact": _closure_count_is_exact(
+            product_closure, "product_records"
+        ),
+        "call_occurrence_count_exact": _closure_count_is_exact(
+            product_closure, "call_occurrences"
+        ),
+        "import_occurrence_count_exact": _closure_count_is_exact(
+            product_closure, "import_occurrences"
+        ),
+        "manifest_product_counts_match": all(
+            (manifest_product.get(key) or {}).get("count")
+            == (product_closure.get(key) or {}).get("count")
+            for key in ("product_stages", "product_operations", "product_records")
+        ),
+        "rule_findings_belong_to_obligations": not unknown_findings,
+        "rule_product_exact_once": published_rules == expected_published,
+        "rule_response_rows_complete": (
+            prompt_inventory["rule"]["missing_response_rows"] == 0
+            and prompt_inventory["rule"]["extra_response_rows"] == 0
+            and prompt_inventory["rule"]["unexpected_target_calls"] == 0
+            and prompt_inventory["rule"]["duplicate_target_calls"] == 0
+        ),
+        "rule_disposition_accounting": (
+            prompt_inventory["rule"]["implementation_detail_rows"]
+            == finding_statuses.get("excluded", 0)
+            and prompt_inventory["rule"]["business_rule_rows"]
+            == len(published_rules)
+            + sum(
+                count for status, count in finding_statuses.items()
+                if status != "excluded"
+            )
+        ),
+        "rule_effect_meanings_nonblank": (
+            prompt_inventory["rule"]["empty_effect_meanings"] == 0
+        ),
+    }
+    if graph is not None:
+        checks.update({
+            "active_graph_rule_count_matches": (
+                graph["rule"]["total"] == len(published_rules)
+            ),
+            "active_graph_example_count_matches": (
+                graph["example"]["total"] == len(published_examples)
+            ),
+            "active_graph_summary_count_matches": (
+                graph["summary"]["total"]
+                == prompt_inventory["summary"]["outputs"]
+            ),
+            "active_graph_has_no_duplicate_summary_coordinates": (
+                graph["duplicate_summary_coordinates"]["groups"] == 0
+            ),
+        })
+
+    findings_summary = prompt_inventory["finding"]["summary"] or {}
+    deterministic_closed = all(checks.values())
+    acceptance_ready = (
+        deterministic_closed
+        and int(findings_summary.get("total") or 0) == 0
+        and manifest.get("status") == "completed"
+        and product_closure.get("quality_status") == "completed"
+    )
+    return {
+        "run_dir": str(run_dir),
+        "database": database,
+        "analysis_scope_id": analysis_scope_id,
+        "generation_id": generation_id,
+        "deterministic_closed": deterministic_closed,
+        "acceptance_ready": acceptance_ready,
+        "checks": checks,
+        "counts": {
+            "rule_obligations": len(obligations),
+            "published_rules": len(published_rules),
+            "rule_findings": len(rule_findings),
+            "rule_findings_by_status": dict(sorted(finding_statuses.items())),
+            "published_examples": len(published_examples),
+            "analysis_findings": int(findings_summary.get("total") or 0),
+            "call_occurrences": (product_closure.get("call_occurrences") or {}).get("count"),
+            "import_occurrences": (product_closure.get("import_occurrences") or {}).get("count"),
+            "product_records": (product_closure.get("product_records") or {}).get("count"),
+        },
+    }
 
 
-def main() -> None:
-    args = [a for a in sys.argv[1:]]
-    with_graph = "--graph" in args
-    if with_graph:
-        args.remove("--graph")
-    baseline: Path | None = None
-    if "--baseline" in args:
-        index = args.index("--baseline")
-        baseline = Path(args[index + 1])
-        del args[index:index + 2]
-    gold_dir: Path | None = None
-    if "--gold" in args:
-        index = args.index("--gold")
-        gold_dir = Path(args[index + 1])
-        del args[index:index + 2]
-    run_dir = Path(args[0]) if args else latest_run_dir(Path("logs"))
-    judge(run_dir, baseline, with_graph, gold_dir)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("--database")
+    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    args = parser.parse_args()
+    run_dir = args.run_dir.resolve()
+    manifest = _json_object(run_dir / "manifest.json")
+    database = str(args.database or manifest.get("neo4j_database") or "").strip()
+    if not database:
+        raise ValueError("run manifest has no Neo4j database")
+    _, table_ids, column_ids = _prompt_inventory(run_dir)
+    analysis_scope_id, generation_id = _run_identity(run_dir, database)
+    graph = _graph_inventory(
+        database,
+        args.env_file,
+        analysis_scope_id,
+        generation_id,
+        table_ids,
+        column_ids,
+        _rule_evidence(run_dir),
+    )
+    result = judge(run_dir, database=database, graph=graph)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["deterministic_closed"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
