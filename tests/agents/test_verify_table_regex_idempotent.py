@@ -9,8 +9,13 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from agents.tools.validation import make_verify_table_regex_tool
+from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
+    LinkOutcome,
+    MatchSample,
+)
 
 
 class VerifyTableRegexIdempotentTest(unittest.TestCase):
@@ -48,6 +53,34 @@ class VerifyTableRegexIdempotentTest(unittest.TestCase):
         self.assertIn("MISSING_GROUP", bad)
         again = asyncio.run(tool.ainvoke({"call_regex": "no_group("}))
         self.assertIn("MISSING_GROUP", again, "실격 입력은 매번 같은 실격 사유")
+
+    def test_all_samples_are_reachable_without_rescanning(self):
+        tool = self._tool()
+        regex = r'foo\("(?P<entity>\w+)"'
+        outcome = LinkOutcome(
+            matched_sites=21,
+            samples=[
+                MatchSample(
+                    entity=f"table_{index}",
+                    op_token="",
+                    entity_complete=True,
+                    token_recognized=False,
+                    resolved_table=f"table_{index}",
+                )
+                for index in range(21)
+            ],
+        )
+        with patch(
+            "agents.tools.validation.RegexTableLinker.link",
+            new=AsyncMock(return_value=outcome),
+        ) as link:
+            first = asyncio.run(tool.ainvoke({"call_regex": regex}))
+            second = asyncio.run(tool.ainvoke({"call_regex": regex, "offset": 20}))
+
+        self.assertIn("offset=20", first)
+        self.assertIn("table_20", second)
+        self.assertEqual(link.await_count, 1)
+        self.assertTrue(link.await_args.kwargs["collect_samples"])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from llm.usage.cost_budget import CostBudget
 from agents.residual import (
     ResidualPatternVerificationError,
-    _cases_with_numbered_source,
+    _cases_with_enclosing_source,
     _find_pattern,
     _residual_prompt_values,
     _remaining_original_cases,
@@ -22,6 +22,7 @@ from agents.contracts import (
     WrapperKeyExclusionRule,
 )
 from graph.schema.graph_edges import ReadsWrites
+from graph.schema.graph_nodes import CodeNode
 from pipeline.steps.step5_linking.link_tables.link_residual_patterns_step import (
     link_residual_patterns_step,
 )
@@ -125,7 +126,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         with (
             patch("agents.residual.run_yaml_rule", new=invoke),
             patch(
-                "agents.residual._cases_with_numbered_source",
+                "agents.residual._cases_with_enclosing_source",
                 return_value=[_case()],
             ),
         ):
@@ -135,6 +136,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
                 active_patterns=[],
                 project_root=Path("."),
+                code_nodes=[],
                 tables=[],
                 cost_budget=CostBudget(limit_usd=1.0),
                 round_no=1,
@@ -452,7 +454,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             verify.await_args.kwargs["ddl_transform"].ddl_naming_rule,
         )
 
-    def test_residual_source_is_line_numbered_without_coordinate_metadata(self) -> None:
+    def test_residual_source_uses_the_smallest_complete_parser_range(self) -> None:
         from tempfile import TemporaryDirectory
 
         with TemporaryDirectory() as tmp:
@@ -463,7 +465,19 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             case = {**_case(), "line": 6}
-            got = _cases_with_numbered_source([case], root, radius=2)[0]
+            nodes = [
+                CodeNode(
+                    id=case["source_id"], signature="void fn(void)",
+                    file_path=str(source), start_line=2, end_line=10,
+                    label="FUNCTION", name="fn",
+                ),
+                CodeNode(
+                    id="call:6", signature="SQL_CALL", owner_id=case["source_id"],
+                    file_path=str(source), start_line=5, end_line=7,
+                    label="FUNCTION_CALL", name="SQL_CALL",
+                ),
+            ]
+            got = _cases_with_enclosing_source([case], root, nodes)[0]
 
         self.assertEqual(
             {
@@ -472,18 +486,21 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             },
             set(got),
         )
-        self.assertIn("4 | line 4", got["numbered_source"])
+        self.assertNotIn("4 | line 4", got["numbered_source"])
+        self.assertIn("5 | line 5", got["numbered_source"])
         self.assertIn("6 | line 6", got["numbered_source"])
-        self.assertIn("8 | line 8", got["numbered_source"])
+        self.assertIn("7 | line 7", got["numbered_source"])
+        self.assertNotIn("8 | line 8", got["numbered_source"])
 
     def test_residual_source_failure_is_not_sent_to_the_model(self) -> None:
         with self.assertRaisesRegex(
             ResidualPatternVerificationError,
             "outside the analysis root",
         ):
-            _cases_with_numbered_source(
+            _cases_with_enclosing_source(
                 [{**_case(), "file": "../outside.c"}],
                 Path("."),
+                [],
             )
 
     def test_reapplied_patterns_cannot_inflate_original_residual_population(self) -> None:

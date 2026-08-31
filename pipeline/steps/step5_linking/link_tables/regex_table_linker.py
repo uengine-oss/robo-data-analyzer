@@ -35,8 +35,6 @@ from pipeline.languages import ROUTINE_LABELS, lang_of, source_lexicon
 from pipeline.quality_gates.lexing import split_source_for_linking
 from shared.files.run_cache_context import read_run_text
 
-# samples 누적 상한 — 검증 피드백·로그용. LLM 컨텍스트 폭증 방지.
-_SAMPLE_CAP = 25
 # DML 키워드·판정 정규식은 전부 의미표 파생 (spec 106 — 단일 진실, 하드코딩 재도입 금지).
 
 
@@ -63,7 +61,7 @@ class LinkOutcome:
     token_recognized: int = 0           # 그중 op_token 이 op_mappings 에 인식된 수
     unresolved_table_names: int = 0     # 완전한 entity지만 현재 업로드 DDL에는 없음
     ambiguous_sites: int = 0            # ambiguity: entity 가 단어장에서 복수 해석됨
-    samples: list[MatchSample] = field(default_factory=list)   # 앞 N건 (피드백용)
+    samples: list[MatchSample] = field(default_factory=list)   # 요청 시 수집하는 전체 검증 자료
     rule_stats: dict[str, "RuleStats"] = field(default_factory=dict)
     exclusion_stats: dict[str, "RuleStats"] = field(default_factory=dict)
     exclusion_conflicts: list["TableAccessExclusionConflict"] = field(default_factory=list)
@@ -449,6 +447,7 @@ class RegexTableLinker:
         exclusion_patterns: tuple[TableAccessExclusionPattern, ...]
         | list[TableAccessExclusionPattern] = (),
         collect_exclusion_conflicts: bool = False,
+        collect_samples: bool = False,
         prepared_sources: PreparedLinkSources | None = None,
     ) -> LinkOutcome:
         """프로젝트 소스 → ``LinkOutcome`` (엣지 · 미해결 · 매치 통계).
@@ -577,7 +576,7 @@ class RegexTableLinker:
                         if len(set(hits)) > 1:
                             outcome.ambiguous_sites += 1
                             stats.ambiguous_sites += 1
-                        if len(outcome.samples) < _SAMPLE_CAP:
+                        if collect_samples:
                             outcome.samples.append(MatchSample(
                                 entity=entity, op_token=op_token,
                                 entity_complete=entity_complete,

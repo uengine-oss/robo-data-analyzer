@@ -15,10 +15,13 @@ from pathlib import Path
 from langchain.tools import tool
 
 from agents.contracts import DdlTransform, TableAccessPattern
-from pipeline.steps.step5_linking.link_tables.regex_table_linker import RegexTableLinker
+from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
+    LinkOutcome,
+    RegexTableLinker,
+)
 from graph.schema.graph_nodes import CodeNode, Table
 
-_SAMPLE_SHOWN = 20
+_SAMPLE_PAGE_SIZE = 20
 
 
 def make_verify_table_regex_tool(
@@ -30,11 +33,12 @@ def make_verify_table_regex_tool(
 
     # 멱등 가드 — 같은 입력은 결정론이므로 캐시 반환 + "다음 단계로" 명시로
     # 약한 모델의 재검증 루프 연료를 끊는다.
-    validated: dict[str, str] = {}
-    repeat_count: dict[str, int] = {}
+    validated: dict[str, LinkOutcome] = {}
+    rendered_pages: dict[tuple[str, int], str] = {}
+    repeat_count: dict[tuple[str, int], int] = {}
 
     @tool
-    async def verify_table_regex(call_regex: str) -> str:
+    async def verify_table_regex(call_regex: str, offset: int = 0) -> str:
         """table-access 정규식을 실제 소스에 적용 → 매치·해소 결과 리포트.
 
         **언제 사용**:
@@ -46,6 +50,8 @@ def make_verify_table_regex_tool(
         - `call_regex`: 검증할 정규식. 명명 그룹 `(?P<entity>...)` 필수,
           `(?P<op_token>...)` 권장. `entity` = 테이블 이름,
           `op_token` = 프레임워크 raw 매치 (예: 's', 'findOne', 'SELECT').
+        - `offset`: 전체 검증 자료 중 읽기 시작할 위치. 응답에 다음 offset이 있으면
+          같은 정규식을 다시 스캔하지 않고 이어서 읽는다.
 
         **결과**: 매치 건수 / R/W 엣지 건수 / 미해결·부분추출 건수 + 추출 샘플
         (entity·op_token·DDL 해소 여부). 샘플을 보고 정규식이 맞는지 판단한다.
@@ -54,15 +60,18 @@ def make_verify_table_regex_tool(
         - `INVALID_REGEX: ...` — 정규식 문법 오류.
         - `MISSING_GROUP: ...` — `(?P<entity>...)` 명명 그룹 없음.
         """
-        if call_regex in validated:
-            n = repeat_count[call_regex] = repeat_count.get(call_regex, 1) + 1
+        page_key = (call_regex, offset)
+        if page_key in rendered_pages:
+            n = repeat_count[page_key] = repeat_count.get(page_key, 1) + 1
             return (
-                f"이미 검증 완료된 정규식이다 (동일 입력 {n}회째 호출). 같은 입력은 "
+                f"이미 검증 완료된 페이지다 (동일 입력 {n}회째 호출). 같은 입력은 "
                 "결과가 결정론으로 동일하다 — 재검증 불필요. 아래는 이전 결과 그대로.\n"
-                "이 결과로 판단이 끝났으면 verify_table_regex 를 다시 호출하지 말고 "
-                "다음 단계(최종 ScanResult 출력)로 진행하라.\n"
-                + validated[call_regex]
+                "남은 자료가 표시되면 다음 offset으로 이동하고, 없으면 다음 단계로 진행하라.\n"
+                + rendered_pages[page_key]
             )
+
+        if offset < 0:
+            return "INVALID_OFFSET: offset은 0 이상이어야 함"
 
         if "(?P<entity>" not in call_regex:
             return ("MISSING_GROUP: 정규식에 (?P<entity>...) 명명 그룹이 없음 — "
@@ -72,30 +81,41 @@ def make_verify_table_regex_tool(
         except re.error as e:
             return f"INVALID_REGEX: {e}"
 
-        candidate = TableAccessPattern(
-            id="candidate",
-            call_regex=call_regex,
-            op_mappings=[],
-        )
-        outcome = await RegexTableLinker().link(
-            project_root=project_root,
-            code_nodes=code_nodes,
-            tables=tables,
-            patterns=[candidate],
-            ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
-        )
+        outcome = validated.get(call_regex)
+        if outcome is None:
+            candidate = TableAccessPattern(
+                id="candidate",
+                call_regex=call_regex,
+                op_mappings=[],
+            )
+            outcome = await RegexTableLinker().link(
+                project_root=project_root,
+                code_nodes=code_nodes,
+                tables=tables,
+                patterns=[candidate],
+                ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
+                collect_samples=True,
+            )
+            validated[call_regex] = outcome
 
         if outcome.matched_sites == 0:
             report = ("매치 0건 — 이 정규식은 소스의 어떤 호출과도 안 맞음. "
                       "wrapper 이름 · 따옴표 · 공백(\\s*) · 인자 구분자를 다시 확인하라.")
-            validated[call_regex] = report
+            rendered_pages[page_key] = report
             return report
 
-        shown = outcome.samples[:_SAMPLE_SHOWN]
+        if offset >= len(outcome.samples):
+            return (
+                f"INVALID_OFFSET: 검증 자료는 {len(outcome.samples)}건이며 "
+                f"offset={offset}부터 읽을 자료가 없음"
+            )
+
+        page_end = min(offset + _SAMPLE_PAGE_SIZE, len(outcome.samples))
+        shown = outcome.samples[offset:page_end]
         lines = [
             f"매치 {outcome.matched_sites}건 · R/W엣지 {len(outcome.edges)}건 · "
             f"미해결 {len(outcome.unresolved)}건",
-            f"추출 샘플 (앞 {len(shown)}건):",
+            f"전체 검증 자료 {len(outcome.samples)}건 중 {offset + 1}~{page_end}:",
         ]
         for s in shown:
             mark = "O" if s.resolved_table and s.entity_complete else "X"
@@ -111,8 +131,12 @@ def make_verify_table_regex_tool(
             "붙으면 반대로 그룹이 너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 교정하라. "
             "[X] 가 일부뿐이면 그 테이블은 분석 범위 밖(external)일 수 있다."
         )
+        if page_end < len(outcome.samples):
+            lines.append(
+                f"남은 자료가 있다. 같은 call_regex와 offset={page_end}로 이어서 읽어라."
+            )
         report = "\n".join(lines)
-        validated[call_regex] = report
+        rendered_pages[page_key] = report
         return report
 
     return verify_table_regex

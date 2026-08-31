@@ -119,7 +119,7 @@ async def run_residual_loop(
         found = await _find_pattern(
             sample=sample, scan=scan, ddl_transform=ddl_transform,
             active_patterns=[*scan.table_access_patterns, *extra_patterns],
-            project_root=project_root, tables=tables,
+            project_root=project_root, code_nodes=code_nodes, tables=tables,
             cost_budget=cost_budget, round_no=round_no,
         )
         if not found.table_access_patterns and found.ddl_transform_override is None:
@@ -238,13 +238,15 @@ async def _find_pattern(
     ddl_transform: DdlTransform,
     active_patterns: list[TableAccessPattern],
     project_root: Path,
+    code_nodes: list[CodeNode],
     tables: list[Table],
     cost_budget: CostBudget,
     round_no: int,
 ) -> ResidualPatternResult:
     """잔여 샘플 1배치 → strict schema로 패턴/변환을 한 번 제안한다."""
     values = _residual_prompt_values(
-        _cases_with_numbered_source(sample, project_root), scan, ddl_transform, tables,
+        _cases_with_enclosing_source(sample, project_root, code_nodes),
+        scan, ddl_transform, tables,
         active_patterns=active_patterns,
         round_no=round_no,
     )
@@ -330,20 +332,31 @@ def _prompt_case(case: dict) -> dict:
     }
 
 
-def _cases_with_numbered_source(
+def _cases_with_enclosing_source(
     sample: list[dict],
     project_root: Path,
-    *,
-    radius: int = 5,
+    code_nodes: list[CodeNode],
 ) -> list[dict]:
-    """Attach exact numbered source or fail before asking the model.
+    """Attach the exact smallest parser-owned enclosing source unit.
 
-    An empty/unreadable/out-of-scope source window cannot justify a new production
-    regex.  Passing a status flag to the model would only expose Analyzer metadata
-    while still inviting an ungrounded proposal, so the boundary is fail-closed.
+    A fixed line radius can cut a multiline call or its owning statement, while a
+    whole file adds unrelated syntax. ``source_id`` already names the owning routine;
+    within it the narrowest parser CodeNode range containing the unresolved line is
+    complete. Equally narrow overlapping nodes are covered by their union instead of
+    choosing one arbitrarily.
     """
     root = project_root.resolve()
     cache = SourceFileCache()
+    nodes_by_id = {
+        str(node.id): node
+        for node in code_nodes
+        if str(getattr(node, "id", "") or "")
+    }
+
+    def _resolved_node_path(node: CodeNode) -> Path:
+        raw = Path(str(node.file_path or ""))
+        return (raw if raw.is_absolute() else root / raw).resolve()
+
     enriched: list[dict] = []
     for case in sample:
         item = dict(case)
@@ -356,7 +369,44 @@ def _cases_with_numbered_source(
                 "residual source is outside the analysis root"
             ) from error
         line = max(int(case.get("line") or 1), 1)
-        excerpt = cache.excerpt(str(path), max(1, line - radius), line + radius)
+        source_id = str(case.get("source_id") or "")
+        owner = nodes_by_id.get(source_id)
+        if owner is None:
+            raise ResidualPatternVerificationError(
+                f"residual source owner is unavailable: {source_id or '<empty>'}"
+            )
+        if _resolved_node_path(owner) != path:
+            raise ResidualPatternVerificationError(
+                "residual source owner file differs from the physical evidence file"
+            )
+        if not (owner.start_line <= line <= owner.end_line):
+            raise ResidualPatternVerificationError(
+                "residual source line is outside its owning routine"
+            )
+        candidates = [
+            node
+            for node in code_nodes
+            if (
+                node.start_line > 0
+                and node.start_line <= line <= node.end_line
+                and owner.start_line <= node.start_line <= node.end_line <= owner.end_line
+                and _resolved_node_path(node) == path
+            )
+        ]
+        if not candidates:
+            raise ResidualPatternVerificationError(
+                "residual source has no parser-owned enclosing range"
+            )
+        narrowest_span = min(node.end_line - node.start_line for node in candidates)
+        narrowest = [
+            node for node in candidates
+            if node.end_line - node.start_line == narrowest_span
+        ]
+        excerpt = cache.excerpt(
+            str(path),
+            min(node.start_line for node in narrowest),
+            max(node.end_line for node in narrowest),
+        )
         if excerpt.status != "available" or not excerpt.numbered_text:
             raise ResidualPatternVerificationError(
                 f"residual source context is unavailable: {excerpt.status}"
