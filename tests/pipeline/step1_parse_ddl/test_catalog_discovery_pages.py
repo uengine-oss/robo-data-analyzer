@@ -140,6 +140,7 @@ class CatalogDiscoveryPagesTest(unittest.IsolatedAsyncioTestCase):
         payloads = [
             {"datasource": "prod", "tables": [], "truncated": 0},
             {**_page(0, 0, [], None), "truncated": 0},
+            _page(0, 1, [{"name": "T1", "catalog_name": "legacy"}], None),
             _page(0, 1, [{"name": ""}], None),
             _page(0, 1, ["T1"], None),
             _page(0, 1, [{"name": "T1", "columns": [{"name": ""}]}], None),

@@ -35,6 +35,8 @@ def _identifier_key(value: str, quoted: object, field: str) -> str:
 def _table_identity(item: object) -> tuple[str, str, str]:
     if not isinstance(item, dict):
         raise ValueError("catalog discovery page table must be an object")
+    if "catalog_name" in item:
+        raise ValueError("catalog discovery page must use catalog, not catalog_name")
     name = item.get("name")
     schema = item.get("schema", "")
     catalog = item.get("catalog", "")

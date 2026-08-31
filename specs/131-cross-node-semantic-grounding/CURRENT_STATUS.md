@@ -16,7 +16,7 @@
 - 양끝 계약은 `contracts/catalog-table-discovery-pagination-v1.md`에 고정했다. Analyzer 집중 회귀는
   정상 2-page·zero-table과 snapshot/page/total drift, duplicate, early/extra closure, empty page,
   cursor cycle, malformed/legacy payload를 포함한다. 전체 회귀는 pytest `1493 passed, 5 skipped,
-  358 subtests passed`; authoritative unittest `1260 tests, skipped 2`다. provider 호출, embedding,
+  359 subtests passed`; authoritative unittest `1260 tests, skipped 2`다. provider 호출, embedding,
   Neo4j 접근·write, SKT 재분석은 0회다.
 - C05 전체는 아직 완료가 아니다. 보호된 `robo-data-catalog` WIP에 immutable snapshot/cursor 생산자를
   구현하고 실제 양끝 호출을 검증하려면 그 기존 WIP의 수정·stage에 대한 사용자 명시 권한이 필요하다.
