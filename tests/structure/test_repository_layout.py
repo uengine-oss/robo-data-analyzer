@@ -26,6 +26,7 @@ CURRENT_SPEC_FILES = {
     "spec.md",
     "tasks.md",
     "contracts/analyzer-meaning-and-publication-v2.md",
+    "contracts/catalog-table-discovery-pagination-v1.md",
     "contracts/import-binding-environment-v1.md",
     "contracts/parser-structural-facts-v2.md",
 }

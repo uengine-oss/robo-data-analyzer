@@ -333,8 +333,9 @@
 
 - [x] **B27 임의 상한·절단·skip 생산 경로 감사**
   - pagination·exact-once batch·오류/로그 표본·cache 용량과 실제 population 절단을 구분했다.
-  - Analyzer 자체의 의미 population을 조용히 자르는 경로는 0건이다. Catalog discovery의 eager
-    `max_tables`만 외부 완전성 한계이며 현재는 partial 공개 전 fail-closed한다.
+  - Analyzer 자체의 의미 population을 조용히 자르는 경로는 0건이다. Catalog discovery 소비자도
+    `page_size`를 모집단 상한으로 쓰지 않고 terminal closure까지 읽는다. 현재 Catalog 생산자의 eager
+    `max_tables`는 외부 완전성 한계이며 versioned page 계약이 없으므로 Analyzer가 fail-closed한다.
 
 - [x] **B28 여러 파일 정답지·baseline 전체 tree 봉인**
   - 실행 profile의 validation ref가 단일 파일뿐 아니라 전체 디렉터리를 받을 수 있게 했다.
@@ -569,10 +570,13 @@
   - 선택 1,503줄 결과를 전체 SKT 처리 시간이나 처리량으로 일반화하지 않는다.
 
 - [ ] **C05 Catalog 전체 테이블 pagination 계약 연결**
-  - Catalog가 snapshot/cursor/deterministic page/exact-once closure를 제공하기 전에는
-    `truncated>0` datasource를 제품 합격으로 승격하지 않는다.
-  - 계약 제공 뒤 Analyzer는 모든 page를 누락·중복 0으로 병합하고 기존 DDL 합집합·sample 의미를
-    유지한다. 기존 Catalog WIP는 이 작업에서 수정하거나 stage하지 않는다.
+  - [x] Analyzer는 고정 snapshot의 모든 page를 무제한 순회하고 version·datasource·snapshot·page·
+    total·cursor·quote-aware identity를 검증한다. terminal closure 전에는 `_merge`를 호출하지 않으며
+    legacy/truncated fallback 없이 누락·중복·cycle·drift를 fail-closed한다.
+  - [x] 양끝 계약을 `contracts/catalog-table-discovery-pagination-v1.md`로 고정했다.
+  - [ ] Catalog가 보호된 기존 WIP 위에서 immutable snapshot, deterministic page, opaque cursor,
+    exact-once terminal closure를 생산하고 실제 양끝 통합 검증을 통과해야 한다. 명시 권한 전에는
+    해당 WIP를 수정하거나 stage하지 않는다.
 
 - [x] **C06 약 5만 LOC GPU 성능 gate의 현재 목표 제외**
   - 2026-09-01 사용자가 GPU 여부와 약 5만 LOC 성능 gate를 이번 완료 조건에서 명시적으로 제외했다.

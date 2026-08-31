@@ -1,7 +1,7 @@
 """데이터소스 테이블 발견 — 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합 (spec 107).
 
 데이터소스 HTTP 접점은 **이 step 한 곳**이다 (구 step6 ``fetch_table_samples_step`` 흡수):
-catalog ``GET /tables/discovery`` 1회로 실DB 테이블·컬럼·샘플을 받아
+catalog ``GET /tables/discovery`` 의 단일 snapshot 전체 page를 닫은 뒤 테이블·컬럼·샘플을 받아
 - DDL 단어장에 **합집합** 병합(대소문자 무시 정확 일치, DDL 정의 우선 — DDL = 진실 기준),
 - 신규 테이블의 Table/Column/HAS_COLUMN 전체 state를 생산하고,
 - step7 이 소비하는 ``table_sample_data``(``{Table.id: {columns, sample_rows}}``) 를 생산한다.
@@ -21,7 +21,8 @@ from langchain_core.runnables import RunnableConfig
 from graph.schema.graph_edges import HasColumn
 from graph.schema.graph_nodes import Column, Table
 from graph.schema.node_ids import sql_column_id
-from integrations.catalog import catalog_base_url_or_skip, get_table_discovery
+from integrations.catalog import catalog_base_url_or_skip
+from integrations.catalog_discovery import get_complete_table_discovery
 from pipeline.execution.step_config import step_config
 from pipeline.execution.graph_delta_stream import emit_message
 from pipeline.models.sql_identifier import sql_identifier_key
@@ -31,11 +32,11 @@ from shared.events.runtime_logger import log_info, log_warning
 
 _STEP = "step1.discover_datasource"
 _SAMPLE_LIMIT = 5      # 테이블당 샘플 행 수 (구 fetch_table_samples 와 동일 — 토큰 통제)
-_MAX_TABLES = 1000     # 대형 datasource 절단 상한 (초과분은 catalog 가 truncated 로 보고)
+_PAGE_SIZE = 1000      # 전송 단위일 뿐 전체 모집단 상한이 아니다.
 
 
 async def discover_datasource_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """discovery 1회 → 단어장 병합 + ``table_sample_data`` 생산."""
+    """한 snapshot의 전 page 폐쇄 → 단어장 병합 + ``table_sample_data`` 생산."""
     cfg = step_config(config)
     stream = cfg.get("stream")
     codebase = cfg.get("codebase")
@@ -58,9 +59,9 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
 
     async with httpx.AsyncClient(timeout=SETTINGS.catalog_api.timeout_seconds) as http:
         with step_processing_scope(_STEP, stream):
-            payload = await get_table_discovery(
+            payload = await get_complete_table_discovery(
                 http, base_url, datasource,
-                sample_limit=_SAMPLE_LIMIT, max_tables=_MAX_TABLES,
+                sample_limit=_SAMPLE_LIMIT, page_size=_PAGE_SIZE,
             )
 
     if payload is None:
@@ -70,21 +71,6 @@ async def discover_datasource_step(state: dict, config: Optional[RunnableConfig]
                     datasource=datasource)
         emit_message(stream, f"⚠️ 데이터소스 '{datasource}' 미등록 — DDL 단어장만 사용")
         return {}
-
-    truncated = payload.get("truncated", 0)
-    if isinstance(truncated, bool) or not isinstance(truncated, int) or truncated < 0:
-        raise RuntimeError(
-            f"catalog discovery returned invalid truncated count: {truncated!r}"
-        )
-    if truncated:
-        # A prefix of the datasource is not a valid physical dictionary.  In
-        # particular it cannot be merged and published as if the omitted table
-        # identities did not exist.  The provider contract currently has no
-        # cursor, so stop the generation instead of raising the numeric cap.
-        raise RuntimeError(
-            f"catalog discovery truncated {truncated} table(s); "
-            "lossless discovery requires a complete pageable provider response"
-        )
 
     merged, new_tables, new_columns, new_edges, sample_data = _merge(
         ddl_tables, payload, datasource,
@@ -140,11 +126,14 @@ def _merge(
         if not name:
             continue
         schema = (item.get("schema") or "").strip()
-        catalog = (item.get("catalog") or item.get("catalog_name") or "").strip()
+        catalog = (item.get("catalog") or "").strip()
+        catalog_quoted = bool(item.get("catalog_quoted", False))
+        schema_quoted = bool(item.get("schema_quoted", False))
+        name_quoted = bool(item.get("name_quoted", False))
         identity = (
-            sql_identifier_key(catalog, False),
-            sql_identifier_key(schema, False),
-            sql_identifier_key(name, False),
+            sql_identifier_key(catalog, catalog_quoted),
+            sql_identifier_key(schema, schema_quoted),
+            sql_identifier_key(name, name_quoted),
         )
         existing = by_identity.get(identity)
         if existing is not None:
@@ -155,6 +144,9 @@ def _merge(
                 catalog=catalog,
                 schema=schema,
                 name=name,
+                catalog_quoted=catalog_quoted,
+                schema_quoted=schema_quoted,
+                name_quoted=name_quoted,
                 description_source="catalog",    # 출처 추적 — DDL 유래와 구분 (FR-005)
             )
             by_identity[identity] = table
@@ -165,8 +157,11 @@ def _merge(
                 if not col_name:
                     continue
                 column = Column(
-                    id=sql_column_id(table.id, col_name),
+                    id=sql_column_id(
+                        table.id, col_name, bool(col.get("name_quoted", False)),
+                    ),
                     name=col_name,
+                    name_quoted=bool(col.get("name_quoted", False)),
                     dtype=str(col.get("dtype") or col.get("type") or ""),
                     nullable=bool(col.get("nullable", True)),
                     description_source="catalog",

@@ -14,7 +14,13 @@ from pipeline.steps.step1_parse_ddl.discover_datasource_step import (
 
 
 def _payload(tables):
-    return {"datasource": "prod_main", "tables": tables, "truncated": 0}
+    return {
+        "schema_version": "catalog-table-discovery-page/v1",
+        "datasource": "prod_main",
+        "snapshot": "sealed",
+        "total_tables": len(tables),
+        "tables": tables,
+    }
 
 
 def _cfg(datasource="prod_main"):
@@ -82,6 +88,22 @@ class DatasourceMergeTest(unittest.TestCase):
         self.assertEqual({tenant.id}, set(samples))
         self.assertEqual([{"ID": 7}], samples[tenant.id]["sample_rows"])
 
+    def test_catalog_quoted_identity_and_column_are_preserved(self):
+        merged, new_tables, new_columns, _, _ = _merge(
+            [], _payload([{
+                "name": "Orders", "name_quoted": True,
+                "schema": "App", "schema_quoted": True,
+                "catalog": "Main", "catalog_quoted": True,
+                "columns": [{"name": "OrderId", "name_quoted": True}],
+                "sample_rows": [], "degraded": False,
+            }]), "prod_main",
+        )
+        self.assertEqual(merged, new_tables)
+        self.assertTrue(new_tables[0].catalog_quoted)
+        self.assertTrue(new_tables[0].schema_quoted)
+        self.assertTrue(new_tables[0].name_quoted)
+        self.assertTrue(new_columns[0].name_quoted)
+
 
 class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
     async def test_skips_without_datasource(self):
@@ -101,7 +123,9 @@ class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
         warned = []
         with (
             patch.object(step_module, "catalog_base_url_or_skip", return_value="http://cat"),
-            patch.object(step_module, "get_table_discovery", side_effect=fake_discovery),
+            patch.object(
+                step_module, "get_complete_table_discovery", side_effect=fake_discovery,
+            ),
             patch.object(step_module, "log_warning", side_effect=lambda *args, **_kwargs: warned.append(args)),
         ):
             result = await discover_datasource_step({"tables": []}, _cfg())
@@ -118,7 +142,9 @@ class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(step_module, "catalog_base_url_or_skip", return_value="http://cat"),
-            patch.object(step_module, "get_table_discovery", side_effect=fake_discovery),
+            patch.object(
+                step_module, "get_complete_table_discovery", side_effect=fake_discovery,
+            ),
         ):
             result = await discover_datasource_step({"tables": []}, _cfg())
         self.assertEqual(["ORDERS"], [table.name for table in result["tables"]])
@@ -128,20 +154,18 @@ class DatasourceStepTest(unittest.IsolatedAsyncioTestCase):
             {"columns", "sample_rows"}, set(result["table_sample_data"][table_id]),
         )
 
-    async def test_truncated_catalog_inventory_fails_before_partial_merge(self):
+    async def test_page_contract_failure_prevents_partial_merge(self):
         async def fake_discovery(_http, _base, _datasource, **_kwargs):
-            return {
-                "datasource": "prod_main",
-                "tables": [{"name": "ONLY_PREFIX", "columns": [], "sample_rows": []}],
-                "truncated": 37,
-            }
+            raise RuntimeError("catalog discovery snapshot changed between pages")
 
         with (
             patch.object(step_module, "catalog_base_url_or_skip", return_value="http://cat"),
-            patch.object(step_module, "get_table_discovery", side_effect=fake_discovery),
+            patch.object(
+                step_module, "get_complete_table_discovery", side_effect=fake_discovery,
+            ),
             patch.object(step_module, "_merge", wraps=step_module._merge) as merge,
         ):
-            with self.assertRaisesRegex(RuntimeError, "truncated.*37"):
+            with self.assertRaisesRegex(RuntimeError, "snapshot changed"):
                 await discover_datasource_step({"tables": []}, _cfg())
 
         merge.assert_not_called()

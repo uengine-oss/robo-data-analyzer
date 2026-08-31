@@ -2,6 +2,26 @@
 
 **Updated**: 2026-09-01
 
+## 131. Analyzer-side C05 lossless pagination closure (2026-09-01)
+
+- Analyzer의 Catalog discovery 소비자를 독립 모듈 `integrations/catalog_discovery.py`로 분리했다.
+  최초 요청은 datasource·sample_limit·page_size만 보내고, 이후 요청은 같은 snapshot과 opaque cursor를
+  함께 보낸다. page 수나 전체 table 수에는 상한이 없다.
+- 소비자는 schema version, datasource, immutable snapshot, contiguous page index, 고정 total,
+  non-empty continuation, terminal closure, cursor cycle, table·column quote-aware identity를 검증한다.
+  `truncated` 또는 legacy one-shot 응답은 fallback하지 않는다. 첫 요청의 404만 미등록 datasource로
+  허용하며 나머지 오류는 partial DDL union 전에 fail-closed한다.
+- 모든 page의 table 수가 `total_tables`와 정확히 같아지고 terminal cursor가 닫힌 뒤에만 기존 `_merge`를
+  한 번 호출한다. Catalog 발견 객체의 quoted table·column identity도 graph model과 ID에 보존한다.
+- 양끝 계약은 `contracts/catalog-table-discovery-pagination-v1.md`에 고정했다. Analyzer 집중 회귀는
+  정상 2-page·zero-table과 snapshot/page/total drift, duplicate, early/extra closure, empty page,
+  cursor cycle, malformed/legacy payload를 포함한다. 전체 회귀는 pytest `1493 passed, 5 skipped,
+  358 subtests passed`; authoritative unittest `1260 tests, skipped 2`다. provider 호출, embedding,
+  Neo4j 접근·write, SKT 재분석은 0회다.
+- C05 전체는 아직 완료가 아니다. 보호된 `robo-data-catalog` WIP에 immutable snapshot/cursor 생산자를
+  구현하고 실제 양끝 호출을 검증하려면 그 기존 WIP의 수정·stage에 대한 사용자 명시 권한이 필요하다.
+  이번 변경은 Catalog WIP, 보호된 `integrations/catalog.py`, 출처 미확정 script를 수정·stage하지 않는다.
+
 ## 130. Post-refactor 1,503-line acceptance and lossless recovery (2026-09-01)
 
 - The user authorized at most ten reanalysis attempts. Attempts 1-3 and 5 and 9 stopped
