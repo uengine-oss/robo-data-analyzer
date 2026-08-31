@@ -853,6 +853,32 @@ def _run_strategy(run_dir: Path) -> str:
         return _UNKNOWN_RUN_STRATEGY
 
 
+def _has_unrecovered_provider_evidence(run_dir: Path) -> bool:
+    """Return whether a failed run owns a real, non-cache model response.
+
+    Its prompt records are the lossless recovery source after a paid or local
+    provider call. Preflight failures and cache-only replays use normal
+    retention.
+    """
+    try:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        usage = json.loads(
+            (run_dir / "usage_summary.json").read_text(encoding="utf-8")
+        ).get("total", {})
+        calls = int(usage.get("calls", 0))
+        cache_hits = int(usage.get("response_cache_hits", 0))
+        generated_tokens = int(usage.get("input_tokens", 0)) + int(
+            usage.get("output_tokens", 0)
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        manifest.get("status") == "failed"
+        and calls > cache_hits
+        and generated_tokens > 0
+    )
+
+
 def _reset_run_output_root(
     run_output_root: Path,
     run_dir: Path | None = None,
@@ -923,9 +949,13 @@ def _reset_run_output_root(
         grouped.setdefault(_run_strategy(entry), []).append(entry)
     incoming = getattr(strategy, "name", "") or _UNKNOWN_RUN_STRATEGY
     for name, runs in grouped.items():
+        protected = {
+            run for run in runs if _has_unrecovered_provider_evidence(run)
+        }
+        ordinary = [run for run in runs if run not in protected]
         # 새 run 몫 1개는 자기 전략 그룹에서만 비운다.
         keep = retention - 1 if name == incoming else retention
-        for stale in runs[: max(0, len(runs) - keep)]:
+        for stale in ordinary[: max(0, len(ordinary) - keep)]:
             shutil.rmtree(stale)
 
     if run_dir is not None:

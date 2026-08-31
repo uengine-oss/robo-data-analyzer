@@ -275,6 +275,47 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
             self.assertTrue(kept[1].exists())
             self.assertTrue(kept[2].exists())
 
+    def test_failed_run_with_provider_response_survives_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "runs"
+            corpus = Path(temporary_directory) / "corpus"
+            (corpus / "source").mkdir(parents=True)
+            codebase = Codebase(
+                root=corpus / "source", corpus_root=corpus,
+                strategy="framework", locale="ko",
+            )
+            framework = SimpleNamespace(name="framework")
+
+            paid_failure = AnalysisRun.now(codebase, root)
+            _reset_run_output_root(root, paid_failure.run_dir, framework)
+            (paid_failure.run_dir / "manifest.json").write_text(
+                '{"strategy":"framework","status":"failed"}', encoding="utf-8",
+            )
+            (paid_failure.run_dir / "usage_summary.json").write_text(
+                json.dumps({"total": {
+                    "calls": 1,
+                    "response_cache_hits": 0,
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                }}),
+                encoding="utf-8",
+            )
+
+            ordinary = []
+            for _ in range(3):
+                run = AnalysisRun.now(codebase, root)
+                _reset_run_output_root(root, run.run_dir, framework)
+                (run.run_dir / "manifest.json").write_text(
+                    '{"strategy":"framework","status":"completed"}',
+                    encoding="utf-8",
+                )
+                ordinary.append(run.run_dir)
+
+            self.assertTrue(paid_failure.run_dir.exists())
+            self.assertFalse(ordinary[0].exists())
+            self.assertTrue(ordinary[1].exists())
+            self.assertTrue(ordinary[2].exists())
+
     def test_legacy_flat_artifacts_are_cleared_but_run_dirs_kept(self) -> None:
         """개편 전 평면 산출물은 소유 표식 아래에서만 제거되고 run 폴더는 보존된다."""
         with tempfile.TemporaryDirectory() as temporary_directory:
