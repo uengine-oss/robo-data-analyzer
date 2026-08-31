@@ -45,9 +45,8 @@ def make_structure_candidate_tool(samples: list[str]):
         end = min(offset + _CANDIDATE_PAGE_SIZE, len(cached))
         next_offset = end if end < len(cached) else None
         lines = [
-            f"PAGE offset={offset} returned={end - offset} total={len(cached)} "
-            f"next_offset={next_offset if next_offset is not None else 'null'} "
-            "(전부 samples 실측 검증 통과)"
+            f"PAGE total={len(cached)} "
+            f"next_offset={next_offset if next_offset is not None else 'null'}"
         ]
         for index in range(offset, end):
             candidate = cached[index]

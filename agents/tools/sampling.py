@@ -58,7 +58,7 @@ def make_sample_exploration_tools(samples: list[str]):
         end = min(offset + _OVERVIEW_PAGE_SIZE, len(line_lists))
         next_offset = end if end < len(line_lists) else None
         lines_out: list[str] = [
-            f"PAGE offset={offset} returned={end - offset} total={len(line_lists)} "
+            f"PAGE total={len(line_lists)} "
             f"next_offset={next_offset if next_offset is not None else 'null'}"
         ]
         for index in range(offset, end):
@@ -97,7 +97,7 @@ def make_sample_exploration_tools(samples: list[str]):
         last = start + len(window) - 1
         next_start = last + 1 if last < len(lines) else None
         return (
-            f"sample[{file_index}] {start}~{last}줄 / 총 {len(lines)}줄 "
+            f"sample[{file_index}] total_lines={len(lines)} "
             f"next_start_line={next_start if next_start is not None else 'null'}\n{body}"
         )
 
@@ -130,7 +130,7 @@ def make_sample_exploration_tools(samples: list[str]):
         page = hits[offset:offset + _MAX_GREP_HITS]
         next_offset = offset + len(page) if offset + len(page) < len(hits) else None
         head = (
-            f"PAGE offset={offset} returned={len(page)} total={len(hits)} "
+            f"PAGE total={len(hits)} "
             f"next_offset={next_offset if next_offset is not None else 'null'}"
         )
         return head + "\n" + "\n".join(page)

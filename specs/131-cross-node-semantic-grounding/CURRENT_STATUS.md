@@ -2353,3 +2353,22 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호 Catalog WIP와 금지 script는 읽기·수정·실행·stage하지
   않았다. 다음 좌표는 나머지 filesystem/sample/mining tool page header와 prompt 설명의 반복을 같은
   producer→consumer 기준으로 감사하되, 원문 전수 접근과 pagination closure를 절감 때문에 약화하지 않는다.
+
+## 124. Agent page closure header·tool 설명 단일 소유 (2026-08-31)
+
+- filesystem의 ls/glob/grep/read, external sample overview/range/grep, structure candidate와 code-node listing
+  page에서 tool call에 이미 있는 current offset/start/requested range와 body에서 바로 셀 수 있는 returned
+  count를 제거했다. `total`과 `next_offset|next_start_line`은 전수 population 종료를 증명하므로 유지했다.
+  sample/file selector, source line, candidate index도 page 간 의미 결합에 필요해 유지했다.
+- Scan/External system prompt의 `## 도구` 표는 provider가 같은 요청에 보내는 tool schema의 이름·인자·결과
+  설명 복창이라 제거했다. workflow의 호출 순서, SKILL/후보 우선, pagination, production verify 의무와
+  submit 계약은 system prompt에 그대로 남아 있다. mining page의 매회 고정 “samples 실측 검증 통과”도
+  tool schema가 이미 소유하므로 제거했다.
+- actual chars는 Scan prompt 6,418→5,698(-11.2%), External prompt 3,974→3,372(-15.1%), 대표
+  generic/read/mining header 52→30(-42.3%), 66→40(-39.4%), 69→27(-60.9%)다. 실제 provider 호출이
+  없으므로 token 절감으로 과장하지 않는다.
+- 검증: 집중 `59 passed, 57 subtests`, 확대 `161 passed, 74 subtests`, 전체 pytest
+  `1444 passed, 4 skipped, 340 subtests`, authoritative unittest `1206 tests, skipped 2`다. 실제 LLM/API,
+  Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호 Catalog WIP와 금지 script는 읽기·수정·실행·stage하지
+  않았다. 다음 좌표는 tool schema 자체의 중복 설명과 raw source excerpt 표현을 감사하되, 제거량이 작고
+  판단 손실이 크면 현행을 유지한다.

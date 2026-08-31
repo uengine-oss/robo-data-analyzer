@@ -73,19 +73,6 @@ samples 전체를 분석해 후보 규칙을 합성해 뒀다 — 먼저 후보�
 
 ---
 
-## 도구
-
-| 도구 | 용도 |
-|---|---|
-| `list_structure_candidates(offset)` | 결정론 마이너의 검증된 후보 규칙 페이지 — **가장 먼저 확인** |
-| `sample_overview(offset)` | 모든 학습 파일의 크기·줄 모양 분포 페이지 — 첫 관찰 필수 |
-| `read_sample_range(file_index, start_line)` | 임의 구간 50줄 정독 — 뒤쪽/의심 구간 확인 |
-| `grep_samples(pattern, offset)` | 토큰·패턴이 전체 어디에 나오는지 결과 페이지 |
-| `verify_external_rule(pattern)` | 규칙 후보를 **파일 전문** + decoy 에 적용 — 매치·key·길이·뒤쪽 미매치 경고. **제출 전 규칙마다 필수** |
-| `submit_external(...)` | 최종 ExternalFormatProposal 제출 — 정확히 한 번 |
-
----
-
 ## 출력 — `submit_external` 도구를 정확히 한 번 호출
 
 **★ 절대 규칙**: 자유 텍스트로 결과를 적지 말고 **`submit_external` 도구를 정확히

@@ -91,6 +91,20 @@ class PromptStabilityOrderTest(unittest.TestCase):
                 )
                 self.assertIn("user_message=", source)
 
+    def test_agent_prompts_leave_tool_catalog_to_provider_schema(self) -> None:
+        for name, workflow_marker in (
+            ("scan.md", "`ls` → `list_code_nodes`"),
+            ("external.md", "`list_structure_candidates(offset)`"),
+        ):
+            with self.subTest(prompt=name):
+                prompt = (ROOT / "agents" / "prompts" / name).read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn("## 도구", prompt)
+                self.assertNotIn("| 도구 | 용도 |", prompt)
+                self.assertIn(workflow_marker, prompt)
+                self.assertIn("next_offset", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

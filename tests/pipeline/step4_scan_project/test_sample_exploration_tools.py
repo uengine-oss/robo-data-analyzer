@@ -36,10 +36,12 @@ class SampleExplorationToolsTest(unittest.TestCase):
 
     def test_grep_lists_hits_with_lines(self) -> None:
         report = self.grep.invoke({"pattern": r"^EVT \w+"})
-        self.assertIn("returned=20 total=50 next_offset=20", report)
+        self.assertIn("total=50 next_offset=20", report)
+        self.assertNotIn("returned=", report)
         self.assertIn("300줄", report)
         last = self.grep.invoke({"pattern": r"^EVT \w+", "offset": 40})
-        self.assertIn("returned=10 total=50 next_offset=null", last)
+        self.assertIn("total=50 next_offset=null", last)
+        self.assertNotIn("offset=40", last)
         self.assertIn("INVALID_REGEX", self.grep.invoke({"pattern": "("}))
 
     def test_overview_pages_include_training_files_after_the_old_three_file_cap(self) -> None:
@@ -48,8 +50,9 @@ class SampleExplorationToolsTest(unittest.TestCase):
         ])
         first = tools[0].invoke({"offset": 0})
         second = tools[0].invoke({"offset": 20})
-        self.assertIn("returned=20 total=23 next_offset=20", first)
-        self.assertIn("returned=3 total=23 next_offset=null", second)
+        self.assertIn("total=23 next_offset=20", first)
+        self.assertIn("total=23 next_offset=null", second)
+        self.assertNotIn("returned=", first + second)
         self.assertIn("sample[22]", second)
 
     def test_verify_warns_about_unmatched_tail(self) -> None:
@@ -75,9 +78,10 @@ class SampleExplorationToolsTest(unittest.TestCase):
         second = candidates.invoke({"offset": 8})
         third = candidates.invoke({"offset": 16})
 
-        self.assertIn("returned=8", first)
+        self.assertIn("total=", first)
         self.assertIn("next_offset=8", first)
-        self.assertNotIn("returned=0", second)
+        self.assertNotIn("returned=", first + second + third)
+        self.assertNotIn("실측 검증 통과", first + second + third)
         self.assertIn("next_offset=16", second)
         self.assertIn("next_offset=null", third)
         self.assertIn(r"\~", third)

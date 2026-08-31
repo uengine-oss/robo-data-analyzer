@@ -481,6 +481,10 @@ sample별 chars/lines/shape는 필수 `sample_overview`가 소유한다. `verify
 않는다. `verify_table_regex`의 동일 `(call_regex, offset)` 재호출은 기존 report 전체를 다시 반환하지 않고
 `ALREADY_VERIFIED_PAGE`와 다음 행동만 반환한다. 성공 page에는 실패 교정 힌트가 없으며 partial entity,
 DDL 미해소, 잘못된 op token처럼 실제 문제가 관찰된 page에만 그 문제의 교정을 붙인다.
+모든 Agent page header는 전수 closure에 필요한 `total`과 `next_offset|next_start_line`만 소유한다. 현재
+offset/start/requested range는 tool call에 이미 있고 returned count는 page body에서 결정되므로 결과가
+복창하지 않는다. Scan/External system prompt의 workflow는 tool 순서와 판단 의무를 소유하지만 tool
+이름·인자·한 줄 용도 표는 provider-facing tool schema 설명이 소유한다.
 
 Scanning·external proposal의 현재 root는 다음처럼 닫힌다.
 

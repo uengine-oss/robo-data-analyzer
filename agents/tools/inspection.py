@@ -104,8 +104,6 @@ def make_list_code_nodes(
         ]
         next_offset = offset + len(items) if offset + len(items) < len(ordered) else None
         return json.dumps({
-            "offset": offset,
-            "returned": len(items),
             "total": len(ordered),
             "next_offset": next_offset,
             "items": items,

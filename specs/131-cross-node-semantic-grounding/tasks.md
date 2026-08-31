@@ -449,6 +449,19 @@
     `1442 passed, 4 skipped, 338 subtests`, authoritative unittest `1204 tests, skipped 2`; 실제
     LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B37 Agent page closure header·tool 설명 단일 소유**
+  - [x] filesystem/sample/mining/code-node page에서 입력 current offset/start/requested range와 본문
+    returned count 복창을 제거한다.
+  - [x] `total`과 `next_offset|next_start_line`, sample/file selector와 numbered source는 전수 closure 및
+    의미 결합에 필요하므로 유지한다.
+  - [x] Scan/External prompt의 도구 표를 제거하고 tool schema가 이름·인자·결과 설명을 한 번 소유하게
+    하되 workflow의 호출 순서·검증·pagination 의무는 유지한다.
+  - [x] Scan prompt 6,418→5,698 chars(-11.2%), External 3,974→3,372(-15.1%), 대표 generic/read/mining
+    header는 52→30(-42.3%), 66→40(-39.4%), 69→27(-60.9%)다. 실제 token으로 과장하지 않는다.
+  - [x] 집중 `59 passed, 57 subtests`, 확대 `161 passed, 74 subtests`, 전체 pytest
+    `1444 passed, 4 skipped, 340 subtests`, authoritative unittest `1206 tests, skipped 2`; 실제
+    LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

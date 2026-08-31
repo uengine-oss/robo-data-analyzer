@@ -114,22 +114,6 @@ SKILL 매칭 여부와 미매칭일 때 필요한 custom 접근 규칙을 `ScanP
 - **★ 누락 사고**: SKILL 에 절이 있는데 빈 배열로 두면 → wrapper 호출이 framework 드롭으로
   빠져 호출 그래프에서 사라짐 → 모듈 간 의존관계 손실 (실측 사례: mpfm_dlcall 11 건 누락).
 
-## 도구
-
-| 도구 | 용도 |
-|---|---|
-| `ls(path, offset)` | 폴더/파일 목록 페이지 — 첫 호출 권장 |
-| `glob_search(pattern, base, offset)` | 확장자별 파일군 페이지 |
-| `grep(pattern, path_glob, base, offset)` | 매크로·함수 hit 페이지 |
-| `read_file(path, start_line)` | manifest/header를 줄번호 있는 페이지로 읽기 |
-| `list_code_nodes(file, offset)` | 함수 목록 페이지 — start/end line 제공 |
-| `read_file_range(path, start_line, end_line)` | 함수의 요청 범위를 줄번호와 함께 읽기 |
-| `list_skills()` | SKILL 후보 풀 |
-| `read_skill(name)` | SKILL.md 본문 (매칭 후보 1개만) |
-| `verify_table_regex(call_regex)` | 정규식을 실제 소스에 검증 — 정규식 채택 전 필수 |
-
----
-
 ## 출력 — `submit_scan` 도구를 정확히 한 번 호출
 
 **★ 절대 규칙**: 탐색을 마쳤다고 판단되면 **`submit_scan` 도구를 정확히 한 번 호출**합니다.

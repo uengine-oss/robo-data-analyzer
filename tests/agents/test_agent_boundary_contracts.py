@@ -418,10 +418,13 @@ class LlmBoundaryContractTest(unittest.TestCase):
                 "offset": 160,
             })
 
-        self.assertIn("returned=200 total=205 next_offset=200", first_glob)
-        self.assertIn("returned=5 total=205 next_offset=null", last_glob)
-        self.assertIn("returned=80 total=205 next_offset=80", first_grep)
-        self.assertIn("returned=45 total=205 next_offset=null", last_grep)
+        self.assertIn("total=205 next_offset=200", first_glob)
+        self.assertIn("total=205 next_offset=null", last_glob)
+        self.assertIn("total=205 next_offset=80", first_grep)
+        self.assertIn("total=205 next_offset=null", last_grep)
+        for page in (first_glob, last_glob, first_grep, last_grep):
+            self.assertNotIn("returned=", page)
+            self.assertNotIn("offset=0", page)
         self.assertNotIn(str(source_root), first_glob)
         self.assertNotIn(str(source_root), first_grep)
         self.assertIn("f000.txt", first_glob)
@@ -449,6 +452,28 @@ class LlmBoundaryContractTest(unittest.TestCase):
         self.assertIn("src/sample.c", globbed)
         self.assertNotIn(str(source_root), globbed)
         self.assertEqual("sample", result["items"][0]["name"])
+
+    def test_source_page_headers_keep_closure_not_call_echoes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_root = Path(temporary_directory)
+            source = source_root / "sample.c"
+            source.write_text(
+                "\n".join(f"line {index}" for index in range(1, 121)) + "\n",
+                encoding="utf-8",
+            )
+            tools = make_filesystem_tools(source_root)
+            first = tools["read_file"].invoke({
+                "path": "sample.c", "start_line": 1,
+            })
+            requested = tools["read_file_range"].invoke({
+                "path": "sample.c", "start_line": 1, "end_line": 120,
+            })
+
+        self.assertIn("total_lines=120 next_start_line=101", first)
+        self.assertIn("next_start_line=101", requested)
+        self.assertNotIn("PAGE start_line=", first)
+        self.assertNotIn("returned=", first + requested)
+        self.assertNotIn("requested=", requested)
 
     def test_partial_upload_tools_cannot_see_or_read_unselected_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -493,11 +518,13 @@ class LlmBoundaryContractTest(unittest.TestCase):
         second = json.loads(listing.invoke({"file": "sample.c", "offset": 50}))
 
         self.assertEqual((50, 55, 50), (
-            first["returned"], first["total"], first["next_offset"],
+            len(first["items"]), first["total"], first["next_offset"],
         ))
         self.assertEqual((5, 55, None), (
-            second["returned"], second["total"], second["next_offset"],
+            len(second["items"]), second["total"], second["next_offset"],
         ))
+        self.assertNotIn("offset", first)
+        self.assertNotIn("returned", first)
 
     def test_usage_metadata_is_required_for_cost_accounting(self) -> None:
         response_without_usage = SimpleNamespace(usage_metadata=None)

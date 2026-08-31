@@ -111,6 +111,10 @@ Agent의 최초 user message와 tool 결과도 같은 사실을 반복 소유하
 구조 분포는 필수 `sample_overview`가 한 번 소유하며 최초 message와 verify 결과가 복창하지 않는다. 결정론
 verify의 같은 page 재호출은 앞서 대화에 존재하는 report를 다시 붙이지 않고 stop/next 행동만 반환한다.
 성공 page에는 실패 교정용 장문 힌트를 붙이지 않고 실제 실패 종류가 있을 때만 해당 교정을 반환한다.
+Page tool은 전수 접근 종료를 증명하는 `total`과 `next_offset|next_start_line`을 유지한다. 호출 인자에 이미
+있는 현재 offset/start/requested range와 본문에서 바로 셀 수 있는 returned count는 header에서 복창하지
+않는다. system prompt는 작업 순서와 판단 계약을 소유하고, 각 tool의 이름·인자·결과 설명 표는 provider가
+함께 보내는 tool schema가 한 번 소유한다.
 같은 concern 재질문, 두 의미 동시 질의, hidden judge/repair, content retry, 자동 follow-up/tool loop는
 금지한다. 현재 runner와 provider SDK의 자동 재시도는 0이다. 서버가 request bytes를 받지 않았음이
 증명되는 전송 계약이 생기기 전에는 transport 실패도 다시 보내지 않는다. `deadline`·`length`·

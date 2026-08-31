@@ -34,7 +34,7 @@ _READ_PAGE_SIZE = 100
 def _page_header(*, offset: int, returned: int, total: int) -> str:
     next_offset = offset + returned if offset + returned < total else None
     return (
-        f"PAGE offset={offset} returned={returned} total={total} "
+        f"PAGE total={total} "
         f"next_offset={next_offset if next_offset is not None else 'null'}"
     )
 
@@ -299,7 +299,7 @@ def make_filesystem_tools(
             return f"READ_ERROR: {e}"
         next_start = start_line + len(lines) if start_line + len(lines) <= total_lines else None
         return "\n".join([
-            f"PAGE start_line={start_line} returned={len(lines)} total_lines={total_lines} "
+            f"PAGE total_lines={total_lines} "
             f"next_start_line={next_start if next_start is not None else 'null'}",
             *lines,
         ])
@@ -344,8 +344,7 @@ def make_filesystem_tools(
         last_line = start_line + len(lines) - 1
         next_start = last_line + 1 if lines and last_line < end_line else None
         return "\n".join([
-            f"PAGE requested={start_line}-{end_line} returned={len(lines)} "
-            f"next_start_line={next_start if next_start is not None else 'null'}",
+            f"PAGE next_start_line={next_start if next_start is not None else 'null'}",
             *lines,
         ])
 

@@ -63,6 +63,9 @@
 - dummy, judge/repair, content retry, 같은 concern 재질문, hidden tool loop를 제거한다.
 - Agent 초기 message와 필수 탐색 tool 사이의 sample 통계를 단일 소유로 만들고, verify tool은 현재 판정과
   다음 행동만 보낸다. 동일 page의 cached report와 성공 page의 실패 교정 설명을 반복 전송하지 않는다.
+- filesystem/sample/mining/code-node page header는 closure용 total/next만 남기고 current/returned 복창을
+  제거한다. prompt의 도구 목록 표는 tool schema와 중복되므로 제거하되 작업 순서와 pagination 의무는
+  system prompt에 유지한다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B
