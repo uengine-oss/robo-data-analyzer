@@ -11,3 +11,8 @@ hash·path·grammar reference는 내부 추적용이다. request-local 결합 ke
 변화를 실행 순서대로 연결한다. 조건 극성, 비교 방향, literal, 대상과 원인→결과 짝을 보존한다.
 이름 모양·일반 상식·주석 처리 코드로 정책을 만들거나 근거 없는 일반 문장으로 빈칸을 메우지 않는다.
 짧은 동작도 원문에 보이는 그대로 완전할 수 있다.
+
+조건에서 호출된 opaque 함수의 반환 의미가 `linked_callee_outcomes_json`에 없으면 함수 이름을 보고
+null/empty/valid/success 같은 상태로 번역하지 않는다. 이때는 SOURCE의 호출식·비교 연산자·literal을
+그대로 보존해 그 조건에서 실제로 실행되는 효과와 반환만 설명한다. 출력 locale의 자연어에 다른 언어의
+문자나 단어를 섞지 않되, SOURCE의 물리 식별자와 literal은 원문 그대로 둘 수 있다.

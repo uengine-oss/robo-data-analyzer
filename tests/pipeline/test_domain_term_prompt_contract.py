@@ -58,7 +58,8 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         for marker in (
             "facts", "fact ID", "occurrence ID", "hash", "path",
             "grammar reference", "request-local 결합 key", "조건 극성",
-            "소유 범위",
+            "소유 범위", "opaque 함수", "함수 이름을 보고",
+            "null/empty/valid/success", "다른 언어의", "문자나 단어",
         ):
             self.assertIn(marker, shared)
         for retired in ("applicable_slots_json", "fact_refs", "`slots`", "`status`"):
