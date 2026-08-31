@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-31
-**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계와 runtime wrapper 12건의 Parser→Analyzer binding은 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 다음 첫 좌표는 import 25건이다. 이후 LLM 입출력을 실제 의미 기여도와 오결합 위험 대비 토큰 비용으로 필드별 감사해 불필요한 ID·경로·좌표·해시를 제거하고, 후처리·graph·저장소/SDD를 순서대로 닫는다. 모든 관련 수정 뒤에만 OpenAI 소규모 실제 검증과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계를 수행한다.
+**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 LLM 의미/Agent wire의 ID·중복·tool 설명 감사를 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지한다. 다음 첫 좌표는 production 11종 provider request의 최종 금지값·중복·예상 비용 봉인 감사다. 모든 관련 수정과 비용 확인 뒤에만 OpenAI 소규모 실제 검증을 한 번 수행하고, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2372,3 +2372,26 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호 Catalog WIP와 금지 script는 읽기·수정·실행·stage하지
   않았다. 다음 좌표는 tool schema 자체의 중복 설명과 raw source excerpt 표현을 감사하되, 제거량이 작고
   판단 손실이 크면 현행을 유지한다.
+
+## 125. provider tool description 압축과 raw source 근거 보존 (2026-08-31)
+
+- 실제 `convert_to_openai_tool(..., strict=True)` wire를 직렬화했다. baseline은 Scan 9개 tool 7,870 chars
+  중 description 5,371, External 5개 tool 3,002 chars 중 description 1,754였다. parameter schema의
+  title/description은 provider 변환에서 이미 제거돼 있어 절감 수치에 중복 산입하지 않았다.
+- tool description에서 system workflow가 이미 소유한 단계명·호출 순서·예시·운영 팁과 반환값 자체가
+  드러내는 오류 열거를 제거했다. 남긴 값은 tool 목적, project root/selected-source 경계, page 종료,
+  production verifier 의미와 다른 tool로 복원할 수 없는 인자 제약뿐이다.
+- 실제 provider wire는 Scan 3,873 chars(-50.8%), External 2,026 chars(-32.5%)다. description만은 각각
+  1,493(-72.2%), 804(-54.2%) chars다. 새 token 실측으로 과장하지 않고 동일 serializer의 char diff로만
+  기록한다.
+- filesystem grep의 전체 매칭 줄, read tool의 번호 붙은 source, sample grep의 파일·줄·대표 match,
+  external verifier의 대표 key·match 길이·원문과 unmatched-tail 좌표는 유지했다. 이는 regex가 record를
+  잘라 먹거나 decoy까지 삼키는지 판단하는 유일한 원자료라서 작은 절감보다 손실이 크다. representative
+  excerpt와 page 표시는 명시적이고 production verifier는 positive/negative 전체를 계속 검사한다.
+- provider schema size, verbose heading 부재, closure/security/verify marker와 source excerpt를 새 정적
+  계약 3건으로 고정했다. focused 회귀는 `72 passed, 57 subtests`, Agent/Step4 확대는
+  `167 passed, 74 subtests`, 전체 pytest는 `1447 passed, 4 skipped, 340 subtests`, authoritative
+  unittest는 `1209 tests, skipped 2`다. 실제 LLM/API, Neo4j 접근/write, 새 DB, SKT 재분석은 0회다.
+- 다음 좌표는 production 모델 경계 11종의 최종 provider request를 한 inventory로 직렬화해 금지 ID·hash·
+  path/range/grammar/candidate/resolution 잔존과 prompt/tool/schema 중복을 다시 반증하고, 실제 소규모 호출
+  전에 예상 호출 수·입출력·최대 비용을 봉인하는 것이다. 3분할 책임과 약 5만 LOC GPU 미검증 상태는 유지한다.

@@ -85,25 +85,10 @@ def make_filesystem_tools(
 
     @tool
     def ls(path: str, offset: int = 0) -> str:
-        """디렉토리 안 항목 목록 — 폴더 의미로 가설 형성에 사용.
+        """프로젝트 상대 디렉터리의 visible 항목을 `DIR|FILE` 페이지로 나열한다.
 
-        **언제 사용**:
-        - Scan Agent 첫 호출 권장. `mapper/` `dao/` `repository/` `entity/`
-          `sql/` `include/` 같은 폴더명이 프레임워크 / DB 접근 패턴 가설로 직결.
-        - 가설을 좁히려는 하위 디렉토리 탐색.
-
-        **인자**:
-        - `path`: 프로젝트 상대경로. 루트는 `.`이며 대상 폴더 밖 경로는 거부된다.
-
-        **결과 형식**:
-        - 첫 줄은 page 회계, 이후 한 줄당 `DIR  <name>` 또는 `FILE <name>`.
-          `next_offset`이 있으면 그 값으로 다음 페이지를 읽는다.
-          빌드/캐시 디렉토리 (`node_modules` / `.git` / `target` 등) 자동 skip.
-
-        **실패 응답**:
-        - `OUTSIDE_ROOT: <path>` — 분석 대상 폴더 밖. 프로젝트 상대경로로 다시 요청.
-        - `NOT_FOUND: <path>` — 경로 존재 X.
-        - `NOT_A_DIR: <path>` — 파일 경로를 줬을 때.
+        `path="."`가 root다. root 밖, 선택 source 밖, 빌드·캐시 디렉터리는
+        노출하지 않는다. `next_offset`이 null이 될 때까지 이어 읽는다.
         """
         try:
             p = resolve_within(root_resolved, path)
@@ -131,25 +116,10 @@ def make_filesystem_tools(
 
     @tool
     def glob_search(pattern: str, base: str = ".", offset: int = 0) -> str:
-        """glob 패턴으로 파일 경로만 검색 (본문 X).
+        """프로젝트 상대 `base` 아래 visible 파일 경로를 glob으로 찾는다.
 
-        **언제 사용**:
-        - 확장자별 파일군 파악 (`**/*.java` / `**/*.xml` / `src/**/*.py`).
-        - 특정 파일명 패턴 (`**/*Repository*.java` / `**/mapper/**/*.xml`).
-
-        **인자**:
-        - `pattern`: glob 패턴 (`**/*.ext` 형태). 절대경로 X — 패턴은 상대 형식.
-        - `base`: 프로젝트 상대 검색 디렉토리. default `.`은 프로젝트 루트다.
-
-        **결과 형식**:
-        - 첫 줄은 page 회계, 이후 한 줄당 프로젝트 상대경로 1개. `next_offset`이 있으면
-          그 값으로 다음 페이지를 읽는다. 빌드/캐시 디렉토리 자동 skip.
-
-        **실패 응답**:
-        - `OUTSIDE_ROOT: <base>` — 분석 대상 폴더 밖.
-        - `NOT_FOUND: <base>` — base 경로 존재 X.
-        - `INVALID_GLOB: '<pattern>' (...)` — 패턴 문법 오류.
-        - `NO_MATCHES` — 매칭 파일 0개.
+        본문은 반환하지 않는다. root 밖·선택 source 밖·빌드/캐시는 제외하며,
+        `next_offset`이 null이 될 때까지 이어 읽는다.
         """
         try:
             base_path = resolve_within(root_resolved, base)
@@ -184,26 +154,10 @@ def make_filesystem_tools(
         base: str = ".",
         offset: int = 0,
     ) -> str:
-        """정규식으로 파일 내용 검색 — 매칭 라인 출력.
+        """visible 파일을 Python 정규식으로 검색해 `path:line:content`를 반환한다.
 
-        **언제 사용**:
-        - 의심 매크로 / 이름 hit 수 확인 (≥ 3 hits 면 진짜 / 0 이면 이름 틀림).
-        - DB 접근 wrapper / 어노테이션 단서 (`@Entity`, `findBy`, `mpfm` 등).
-
-        **인자**:
-        - `pattern`: 정규식 (Python `re`). 단독 식별자는 청크 폭발 → 패턴 + 식별자 결합 권장.
-        - `path_glob`: 검색 대상 파일 패턴 (`**/*.java`). default `**/*`.
-        - `base`: 프로젝트 상대 검색 디렉토리. default `.`은 프로젝트 루트다.
-
-        **결과 형식**:
-        - 첫 줄은 page 회계, 이후 한 줄당 `path:line:content`.
-          `next_offset`이 있으면 그 값으로 다음 페이지를 읽는다.
-
-        **실패 응답**:
-        - `OUTSIDE_ROOT: <base>` — 분석 대상 폴더 밖.
-        - `NOT_FOUND: <base>` — base 경로 존재 X.
-        - `INVALID_REGEX: ...` / `INVALID_GLOB: ...` — 문법 오류.
-        - `NO_MATCHES` — 매칭 0건.
+        경로는 프로젝트 상대값이며 매칭 줄 원문을 보존한다. root/선택-source
+        경계를 강제하고 읽기 실패를 숨기지 않는다. `next_offset`이 null까지 이어 읽는다.
         """
         try:
             base_path = resolve_within(root_resolved, base)
@@ -254,25 +208,10 @@ def make_filesystem_tools(
 
     @tool
     def read_file(path: str, start_line: int = 1) -> str:
-        """파일을 ``start_line``부터 최대 100줄 읽는다.
+        """visible 파일을 `start_line`부터 최대 100줄의 번호 붙은 원문으로 읽는다.
 
-        **언제 사용**:
-        - 비함수 파일 (imports / `#include` / 매니페스트 / 설정) 앞부분 훑기.
-        - `pom.xml` / `package.json` / `*.h` / `application.yml` 등.
-
-        **본문은 X** — 큰 코드노드는 잘림. 본문 정독은 `list_code_nodes` 로
-        위치 확인 후 `read_file_range(path, anchor)`.
-
-        **인자**:
-        - `path`: 파일 경로. 분석 대상 폴더 안이어야 한다.
-        - `start_line`: 1-based 시작 줄. 결과의 `next_start_line`으로 다음 페이지를 읽는다.
-
-        **결과 형식**: 줄바꿈으로 구분된 본문 (라인 번호 X).
-
-        **실패 응답**:
-        - `OUTSIDE_ROOT: <path>` — 분석 대상 폴더 밖.
-        - `NOT_A_FILE: <path>` — 파일 아님 (디렉토리 / 존재 X).
-        - `READ_ERROR: ...` — I/O 오류.
+        root와 선택-source 경계를 강제한다. `total_lines`와 `next_start_line`으로
+        전문 접근 종료를 확인한다. 정확한 routine 범위는 `read_file_range`를 사용한다.
         """
         try:
             p = resolve_within(root_resolved, path)
@@ -306,17 +245,10 @@ def make_filesystem_tools(
 
     @tool
     def read_file_range(path: str, start_line: int, end_line: int) -> str:
-        """파일의 요청 범위를 줄번호와 함께 읽는다.
+        """visible 파일의 inclusive 줄 범위를 번호 붙은 원문으로 읽는다.
 
-        Args:
-            path: 파일 경로. 분석 대상 폴더 안이어야 한다.
-            start_line: 시작 줄 (1-indexed).
-            end_line: 끝 줄 (inclusive). 한 페이지는 최대 100줄이며 더 길면
-                `next_start_line`을 반환한다.
-
-        Returns:
-            ``<line_no>: <content>`` 형식. evidence `file:line` 인용 그대로 가능.
-            실패 시 ``OUTSIDE_ROOT`` / ``NOT_A_FILE`` / ``READ_ERROR``.
+        root와 선택-source 경계를 강제한다. 한 페이지는 최대 100줄이며
+        `next_start_line`이 null이 될 때까지 요청 범위를 이어 읽는다.
         """
         try:
             p = resolve_within(root_resolved, path)

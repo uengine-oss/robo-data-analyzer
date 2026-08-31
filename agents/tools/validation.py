@@ -39,26 +39,11 @@ def make_verify_table_regex_tool(
 
     @tool
     async def verify_table_regex(call_regex: str, offset: int = 0) -> str:
-        """table-access 정규식을 실제 소스에 적용 → 매치·해소 결과 리포트.
+        """정규식을 production table linker로 실제 source·DDL에 검증한다.
 
-        **언제 사용**:
-        - SKILL contract 정규식을 복사했거나 직접 작성한 뒤, 출력 전 **반드시** 1회.
-        - 직접 작성한 패턴이 나쁘면 소스를 다시 보고 수정 후 재호출한다.
-        - 매칭된 SKILL contract가 실패하면 정규식을 변형하지 말고 Skill 매칭부터 재판정한다.
-
-        **인자**:
-        - `call_regex`: 검증할 정규식. 명명 그룹 `(?P<entity>...)` 필수,
-          `(?P<op_token>...)` 권장. `entity` = 테이블 이름,
-          `op_token` = 프레임워크 raw 매치 (예: 's', 'findOne', 'SELECT').
-        - `offset`: 전체 검증 자료 중 읽기 시작할 위치. 응답에 다음 offset이 있으면
-          같은 정규식을 다시 스캔하지 않고 이어서 읽는다.
-
-        **결과**: 매치 건수 / R/W 엣지 건수 / 미해결·부분추출 건수 + 추출 샘플
-        (entity·op_token·DDL 해소 여부). 샘플을 보고 정규식이 맞는지 판단한다.
-
-        **실패 응답**:
-        - `INVALID_REGEX: ...` — 정규식 문법 오류.
-        - `MISSING_GROUP: ...` — `(?P<entity>...)` 명명 그룹 없음.
+        `(?P<entity>...)`는 필수이고 `(?P<op_token>...)`은 권장한다. page는 전체
+        match/RW/unresolved와 대표 entity·operation·DDL 해소를 보여 준다. 반환된 다음
+        offset으로 모든 검증 자료를 읽고, partial·미해소·미인식 operation을 제출 전에 고친다.
         """
         page_key = (call_regex, offset)
         if page_key in rendered_pages:
@@ -160,22 +145,11 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
 
     @tool
     def verify_external_rule(pattern: str) -> str:
-        """청크 분할 규칙 후보 1개를 실제 samples 에 적용 → 길이·키 결과 리포트.
+        """pattern을 production extractor로 모든 positive·negative sample에 검증한다.
 
-        **언제 사용**: 규칙을 설계한 뒤 submit_external 전에 **반드시** 규칙마다 1회.
-        결과가 나쁘면 규칙을 고쳐 재호출한다.
-
-        **인자**:
-        - `pattern`: MULTILINE 로 컴파일되는 정규식. 전체 매치 = 청크 하나.
-          key 는 named group 으로 (예: `(?P<key>...)`).
-        - key capture 이름은 항상 `key`다.
-
-        **결과 읽는 법**:
-        - 각 sample 의 매치 수와 (key → 매치 길이·원문 앞부분) 목록. 매치가 레코드 전체를
-          덮는지, key 가 올바른지 여기서 직접 확인한다.
-        - `REJECTED:` = 규칙 자체가 실격 (금지 구문·빈 키·zero-width 등) — 원인대로 수정.
-        - `NEGATIVE_MATCH` = 다른 형식 decoy 까지 삼킴 — 규칙이 너무 넓다.
-        - 어떤 sample 이 매치 0건이면 그 구조를 다시 관찰하라.
+        전체 match 하나가 record 하나여야 하고 capture 이름은 `key`다. sample별 match 수와
+        대표 key·길이·원문, unmatched tail, `REJECTED|NEGATIVE_MATCH`를 반환한다. 모든 규칙을
+        제출 전에 검증하고 대표 원문이 record 전체를 덮는지 확인한다.
         """
         lines: list[str] = []
         for index, sample in enumerate(samples):

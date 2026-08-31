@@ -44,14 +44,10 @@ def make_sample_exploration_tools(samples: list[str]):
 
     @tool
     def sample_overview(offset: int = 0) -> str:
-        """파일별 크기와 '줄 모양' 분포를 요약한다.
+        """모든 sample의 크기와 줄 모양 분포를 page로 요약한다.
 
-        **언제 사용**: 첫 관찰 단계에서 1회 — 구조가 몇 종류인지, 미리보기 밖
-        (파일 뒤쪽)에 다른 구조가 있는지를 여기서 판단한다.
-
-        **결과 읽는 법**: 모양(A=문자 뭉치, 9=숫자 뭉치)별 줄 수와 최초/최후 등장
-        줄 번호. 미리보기에서 못 본 모양이 있으면 그 줄 번호를 `read_sample_range`
-        로 정독하라.
+        모양별 건수와 최초·최후 줄을 보고 다른 구조는 `read_sample_range`로 확인한다.
+        `next_offset`이 null이 될 때까지 읽는다.
         """
         if offset < 0:
             return "INVALID_OFFSET: offset must be non-negative"
@@ -81,10 +77,9 @@ def make_sample_exploration_tools(samples: list[str]):
 
     @tool
     def read_sample_range(file_index: int, start_line: int) -> str:
-        """sample 파일의 임의 구간을 정독한다 (start_line 부터 50줄).
+        """sample 한 파일을 `start_line`부터 50줄의 번호 붙은 원문으로 읽는다.
 
-        **언제 사용**: overview 가 보여준 미리보기 밖 구조, verify 결과의
-        '이후 매치 없음' 구간을 직접 확인할 때.
+        `next_start_line`이 null이 될 때까지 전문을 이어 읽을 수 있다.
         """
         if not 0 <= file_index < len(line_lists):
             return f"INVALID: file_index 는 0~{len(line_lists) - 1}"
@@ -103,10 +98,9 @@ def make_sample_exploration_tools(samples: list[str]):
 
     @tool
     def grep_samples(pattern: str, offset: int = 0) -> str:
-        """정규식/토큰이 sample 전체 어디에 나오는지 찾는다 (파일·줄 번호 목록).
+        """모든 sample에서 정규식 위치와 대표 매치 원문을 찾는다.
 
-        **언제 사용**: 특정 토큰(구분자·헤더 후보)이 파일 전반에 고르게 나오는지,
-        앞부분에만 있는지 확인할 때.
+        파일·줄을 보존하며 `next_offset`이 null이 될 때까지 이어 읽는다.
         """
         try:
             compiled = regex.compile(pattern, regex.MULTILINE)

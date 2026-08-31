@@ -66,6 +66,10 @@
 - filesystem/sample/mining/code-node page header는 closure용 total/next만 남기고 current/returned 복창을
   제거한다. prompt의 도구 목록 표는 tool schema와 중복되므로 제거하되 작업 순서와 pagination 의무는
   system prompt에 유지한다.
+- 실제 provider tool wire를 직렬화해 description과 parameter schema를 별도 계측한다. description은
+  purpose·보안/선택 범위·page closure·production verify 의미로 줄이고, system workflow의 단계·예시·
+  운영 팁과 schema가 이미 소유한 default/signature 복창을 제거한다. numbered source와 match text는
+  후보 판정 근거이므로 절감량보다 판단 손실이 크면 유지한다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

@@ -484,7 +484,12 @@ DDL 미해소, 잘못된 op token처럼 실제 문제가 관찰된 page에만 �
 모든 Agent page header는 전수 closure에 필요한 `total`과 `next_offset|next_start_line`만 소유한다. 현재
 offset/start/requested range는 tool call에 이미 있고 returned count는 page body에서 결정되므로 결과가
 복창하지 않는다. Scan/External system prompt의 workflow는 tool 순서와 판단 의무를 소유하지만 tool
-이름·인자·한 줄 용도 표는 provider-facing tool schema 설명이 소유한다.
+이름·인자·한 줄 용도 표는 provider-facing tool schema 설명이 소유한다. provider-facing tool description은
+각 tool의 목적과 root/선택-source 경계, page 종료 조건, production verifier가 판정하는 의미만 한 번
+기술한다. system workflow의 단계·호출 순서·예시·운영 팁, tool 이름과 parameter schema에서 직접 읽히는
+signature/default, 반환 문자열 자체가 명시하는 오류 코드는 description에서 복창하지 않는다. 반대로
+numbered source, match 원문, key·match 길이, unmatched-tail 좌표는 regex·구조 후보를 판단하는 원자료이므로
+token 절감을 이유로 제거하지 않는다.
 
 Scanning·external proposal의 현재 root는 다음처럼 닫힌다.
 

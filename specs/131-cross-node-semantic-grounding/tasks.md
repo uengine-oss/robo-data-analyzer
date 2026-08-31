@@ -462,6 +462,20 @@
     `1444 passed, 4 skipped, 340 subtests`, authoritative unittest `1206 tests, skipped 2`; 실제
     LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B38 provider tool description 영양가 감사와 raw excerpt 보존 판정**
+  - [x] 실제 OpenAI-compatible wire 기준 baseline을 계측한다: Scan 7,870 chars 중 description 5,371,
+    External 3,002 chars 중 description 1,754다. parameter schema title/description은 provider 변환에서
+    이미 제거되므로 가짜 절감 대상으로 삼지 않는다.
+  - [x] system workflow와 겹치는 단계·예시·운영 팁·실패 열거를 제거하고 purpose, root/selected-source
+    경계, page closure, production verifier 의미만 tool description에 남긴다.
+  - [x] source line, match 원문, key·match 길이와 unmatched-tail 좌표는 규칙의 과대/과소 매치를 판단하는
+    유일 근거이므로 작은 문자 절감을 위해 제거하지 않는다. explicit representative excerpt 표시는 유지한다.
+  - [x] 실제 provider wire는 Scan 7,870→3,873 chars(-50.8%), External 3,002→2,026(-32.5%)이고
+    description만은 각각 5,371→1,493(-72.2%), 1,754→804(-54.2%)다. source/match excerpt 직접 반례와
+    필수 marker를 고정했다. focused `72 passed, 57 subtests`, 확대 `167 passed, 74 subtests`, 전체 pytest
+    `1447 passed, 4 skipped, 340 subtests`, authoritative unittest `1209 tests, skipped 2`; 실제
+    LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

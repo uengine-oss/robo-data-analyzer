@@ -114,7 +114,10 @@ verify의 같은 page 재호출은 앞서 대화에 존재하는 report를 다�
 Page tool은 전수 접근 종료를 증명하는 `total`과 `next_offset|next_start_line`을 유지한다. 호출 인자에 이미
 있는 현재 offset/start/requested range와 본문에서 바로 셀 수 있는 returned count는 header에서 복창하지
 않는다. system prompt는 작업 순서와 판단 계약을 소유하고, 각 tool의 이름·인자·결과 설명 표는 provider가
-함께 보내는 tool schema가 한 번 소유한다.
+함께 보내는 tool schema가 한 번 소유한다. 각 tool description은 목적, 다른 tool로 복원할 수 없는 인자
+의미, root/선택-source 경계, pagination 종료와 production 검증 의미만 소유한다. system workflow에 이미
+있는 호출 순서·단계명·운영 팁·예시와 tool 이름/default/schema에서 바로 보이는 서명은 반복하지 않는다.
+source line, match 원문, key·match 길이처럼 후보 판단의 유일 근거는 작은 절감 때문에 제거하지 않는다.
 같은 concern 재질문, 두 의미 동시 질의, hidden judge/repair, content retry, 자동 follow-up/tool loop는
 금지한다. 현재 runner와 provider SDK의 자동 재시도는 0이다. 서버가 request bytes를 받지 않았음이
 증명되는 전송 계약이 생기기 전에는 transport 실패도 다시 보내지 않는다. `deadline`·`length`·

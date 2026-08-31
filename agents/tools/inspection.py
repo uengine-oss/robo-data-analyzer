@@ -69,19 +69,10 @@ def make_list_code_nodes(
 
     @tool
     def list_code_nodes(file: str, offset: int = 0) -> str:
-        """파일 안 코드노드 / 메서드 목록 — step2 가 파싱한 결과.
+        """Parser가 만든 파일별 routine 목록을 원문 재파싱 없이 반환한다.
 
-        **언제 사용**:
-        - 본문보다 토큰 효율 ×5~×10 — 이름 / 시그니처만 알면 충분할 때.
-        - 이름 패턴 관찰 (`mpfm_*` / `findBy*` / `xx_validation`).
-        - `read_file_range(file, start, end)` 의 라인 범위 산출.
-
-        **인자**: `file` — `glob_search`가 반환한 프로젝트 상대 소스 경로.
-
-        **결과**: page 회계와 `items`를 가진 JSON. `next_offset`이 null이 될 때까지
-        이어 읽으면 파일의 모든 routine을 정확히 한 번 볼 수 있다.
-
-        **실패 응답**: `NO_FUNCTIONS` — 그 파일에 코드노드 0개. 대체 도구: `read_file` / `grep`.
+        프로젝트 상대 `file`의 `name|signature|start_line|end_line` JSON page다.
+        `next_offset`이 null이 될 때까지 읽으면 모든 routine을 한 번씩 본다.
         """
         lookup_key = Path(file).as_posix()
         fns = by_file.get(lookup_key)
@@ -114,48 +105,19 @@ def make_list_code_nodes(
 
 @tool
 def list_skills() -> str:
-    """SKILL 카탈로그 — 프레임워크 / DB 접근 패턴 사전 (`agents/skills/` 스캔).
+    """등록된 framework/DB SKILL 이름과 한 줄 설명을 나열한다.
 
-    **언제 사용**:
-    - Scan Agent Phase B: 시그널 수집 후 SKILL 매칭 시도.
-    - 각 SKILL.md 의 description 의 트리거 시그널 ↔ 관찰값 비교.
-
-    **결과 형식**:
-    - 한 줄당 `<skill_name>: <h1 헤더 1 줄 요약>`.
-    - `templates` 같은 메타 폴더 제외.
-
-    **실패 응답**:
-    - `NO_SKILLS_DIR` — agents/skills/ 디렉토리 자체 없음.
-    - `NO_SKILLS` — 등록된 SKILL 0개.
-
-    **운영 팁**:
-    - description 시그널이 Phase A 관찰값과 **모두** 일치할 때만 매칭 — 부분 일치는 Phase C
-      직접 정규식 작성 신호.
-    - 후보 여러 개라도 가장 확실한 1개만 `read_skill` 로 본문 가져옴.
+    관찰한 코드 신호가 모두 맞는 가장 가까운 후보 하나만 `read_skill`로 확인한다.
     """
     return build_skill_catalog(FRAMEWORK_SKILLS_DIR)
 
 
 @tool
 def read_skill(name: str) -> str:
-    """SKILL.md 본문 (자유 형식 마크다운).
+    """선택한 SKILL의 의미 계약을 내부 rule ID만 제거한 원문으로 반환한다.
 
-    **언제 사용**:
-    - `list_skills()` 로 매칭 후보 확정 후 본문 정독.
-    - 본문의 table-access 정규식 / 프레임워크 코드노드 목록을 읽어 `ScanResult` 로 정규화.
-
-    **인자**:
-    - `name`: `list_skills()` 결과의 skill 이름.
-
-    **결과 형식**: 의미 계약은 그대로이며 YAML의 Analyzer 내부 `id`만 제거한 본문.
-
-    **실패 응답**:
-    - `INVALID_SKILL_NAME: <name>` — 이름에 경로문자(`../` 등) 포함 — agents/skills/ 밖.
-    - `SKILL_NOT_FOUND: <name>` — 이름 오탈자 또는 SKILL.md 누락.
-
-    **금지**:
-    - 정규식은 본문 그대로 옮겨 적기 — 자기 말로 풀어쓰면 환각. (`verify_table_regex` 로 검증.)
-    - 여러 SKILL 동시 read X — 가장 확실한 1개만.
+    `list_skills`의 정확한 이름 하나만 허용하며 경로 이탈을 거부한다. 계약 정규식은
+    바꿔 쓰지 말고 그대로 사용한 뒤 `verify_table_regex`로 검증한다.
     """
     # 경로탈출 차단 — name 이 '../' 등으로 agents/skills/ 밖을 가리키면 거부.
     try:
