@@ -1,6 +1,11 @@
+import asyncio
+import json
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
 from llm import embedder
+from llm.usage.cost_budget import CostBudget
 
 
 def test_long_search_text_reaches_embedding_provider_without_truncation() -> None:
@@ -17,3 +22,77 @@ def test_long_search_text_reaches_embedding_provider_without_truncation() -> Non
 
     assert received == [[source]]
     assert vectors == [[0.25, 0.75]]
+
+
+class _EmbeddingResponse:
+    def __init__(self, *, usage: dict | None) -> None:
+        self._usage = usage
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        payload = {
+            "model": "text-embedding-3-small",
+            "data": [{"embedding": [0.25, 0.75]}],
+        }
+        if self._usage is not None:
+            payload["usage"] = self._usage
+        return payload
+
+
+class _EmbeddingClient:
+    def __init__(self, response: _EmbeddingResponse) -> None:
+        self.response = response
+
+    async def post(self, _url: str, *, json: dict) -> _EmbeddingResponse:
+        assert json == {
+            "model": embedder.SETTINGS.embedding.model,
+            "input": ["업무 의미"],
+        }
+        return self.response
+
+
+def test_paid_embedding_usage_is_persisted_and_charged() -> None:
+    response = _EmbeddingResponse(usage={"prompt_tokens": 7, "total_tokens": 7})
+    budget = CostBudget(limit_usd=1.0)
+    with tempfile.TemporaryDirectory() as temporary:
+        usage_path = Path(temporary) / "usage.jsonl"
+        vectors = asyncio.run(embedder._post(
+            _EmbeddingClient(response),
+            "https://provider.invalid/embeddings",
+            ["업무 의미"],
+            usage_log_path=usage_path,
+            cost_budget=budget,
+            agent_name="embedding:test",
+        ))
+        record = json.loads(usage_path.read_text(encoding="utf-8"))
+
+    assert vectors == [[0.25, 0.75]]
+    assert record["agent"] == "embedding:test"
+    assert record["model"] == "text-embedding-3-small"
+    assert record["input_tokens"] == 7
+    assert record["output_tokens"] == 0
+    assert record["cost_usd"] == 7 / 1_000_000 * 0.02
+    assert budget.spent_usd == record["cost_usd"]
+
+
+def test_paid_embedding_without_provider_usage_fails_closed() -> None:
+    response = _EmbeddingResponse(usage=None)
+    budget = CostBudget(limit_usd=1.0)
+    with tempfile.TemporaryDirectory() as temporary:
+        usage_path = Path(temporary) / "usage.jsonl"
+        try:
+            asyncio.run(embedder._post(
+                _EmbeddingClient(response),
+                "https://provider.invalid/embeddings",
+                ["업무 의미"],
+                usage_log_path=usage_path,
+                cost_budget=budget,
+            ))
+        except embedder.EmbeddingError as error:
+            assert "usage is missing" in str(error)
+        else:
+            raise AssertionError("missing paid embedding usage must fail")
+        assert not usage_path.exists()
+    assert budget.spent_usd == 0.0

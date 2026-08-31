@@ -56,6 +56,10 @@ models:
   gpt-5.4-mini:
     input_per_1m: 0.75
     output_per_1m: 4.50
+  # Official model page verified 2026-08-31.
+  text-embedding-3-small:
+    input_per_1m: 0.02
+    output_per_1m: 0.0
 
   # ── Qwen (OpenRouter 또는 자체 호스팅) ─────────────────────
   qwen-3-8b:

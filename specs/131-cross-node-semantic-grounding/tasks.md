@@ -490,6 +490,22 @@
   - [x] focused→확대→전체 pytest→authoritative unittest, diff/status/보호 WIP 감사를 통과한 뒤
     SDD·최종 HTML·핸드오프와 commit/push를 동기화한다.
 
+- [ ] **B40 post-refactor SKT 1,503줄 유료 최종 검증 1회**
+  - [x] 실행 모집단을 `zapamcom10150.c` 244줄 + `zapamcom13010.c` 1,259줄로 고정하고 source·DDL·
+    gold tree·baseline·runtime config·profile을 실행기가 새 run에서 다시 봉인하게 한다. 생성 의미 호출은
+    Summary 17 + FunctionTableUsage 4 + Rule 17 + TableDescription 2의 40건만 허용한다.
+  - [x] 생성 LLM 외에 OpenAI `text-embedding-3-small` SearchSegment 호출도 provider usage를 버리지 않고
+    같은 `usage.jsonl`과 run `CostBudget`에 기록한다. 공식 단가 $0.02/M input을 가격표에 등록하고 usage
+    누락·비정상 token·미등록 모델은 성공으로 승격하지 않는다.
+  - [ ] 사용자가 기존 생성 비용 $0.360159와 embedding 소액을 포함한 `ROBO_BUDGET_RUN_USD=0.50`
+    실행 임계를 확인한 뒤에만 진행한다. 직전 Neo4j 인증/SHOW DATABASES에서
+    `neo4j|test|framework|dbms|system`만 online인지 확인하고 다르면 즉시 중단한다.
+  - [ ] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF, 봉인 profile로 정확히 한 번 실행한다.
+    budget/transport/schema/quality 실패를 retry·fallback·축소 재질의로 우회하지 않는다.
+  - [ ] 새 usage의 생성 family 40건과 embedding request/token/비용, baseline diff, exact-once closure,
+    partial-upload external, 86·94행과 Rule↔Example 직접 의미를 판정하고 SDD·HTML·handoff를 갱신한 뒤
+    검증 commit을 push한다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

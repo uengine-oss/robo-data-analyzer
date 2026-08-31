@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 작업 현재상태
 
-**Updated**: 2026-08-31
+**Updated**: 2026-09-01
 **Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지한다. 다음 첫 좌표는 사용자 비용 확인 뒤 같은 1,503줄을 `gpt-5.4-mini`로 정확히 한 번 실제 검증하는 것이다. 실행 임계는 `$0.50`이며, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
@@ -2429,3 +2429,29 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   Catalog WIP와 금지 script는 읽기·수정·실행·stage하지 않았다. 다음 좌표는 이 비용을 사용자에게 먼저
   확인받은 뒤 같은 1,503줄에서 유료 실제 검증을 정확히 한 번 수행하는 것이다. 3분할과 GPU 복구 전
   약 5만 LOC 미검증 상태는 유지한다.
+
+## 127. 최종 유료 검증 task 복구와 embedding 비용 장부 폐쇄 (2026-08-31)
+
+- completion audit에서 `CURRENT_STATUS`는 post-refactor 유료 1회가 남았다고 했지만 `tasks.md`에는 해당
+  unchecked task가 없고 `spec.md` 상단은 Catalog·GPU만 남았다고 적힌 불일치를 찾았다. B40을 복구해
+  비용 승인→Neo4j gate→정확히 한 번 실행→generation/비용/의미/문서 판정을 명시했다. 기존 C02 actual을
+  최종 wire 변경 뒤 실행으로 오인하지 않는다.
+- 추가 비용 경로도 producer→consumer로 확인했다. 최종 run은 함수 17개의 SearchSegment를
+  `text-embedding-3-small`로 생성하지만 `llm/embedder.py`는 provider 응답의 `usage`를 버렸고 run
+  `CostBudget`과 `usage.jsonl`은 생성 LLM 40건만 셌다. 금액이 작다는 이유로 0으로 취급하지 않고,
+  OpenAI embedding 성공 응답마다 model·prompt_tokens·total_tokens·latency를 같은 usage 장부에 기록하고
+  공식 $0.02/M input 단가로 비용을 계산해 같은 `$0.50` 회로에 누적한다. usage가 없거나 비정상이면
+  이미 받은 vector를 미계측 성공으로 승격하지 않는다.
+- 실행 profile은 `_runs/framework/skt-1503-gpt54-mini/profile.yaml`이다. source는 1,503줄 두 파일,
+  baseline SHA-256은 `bc67d37c8143f345498a75eb448e9f6af4daff04cc8c3581f03442db9f9a14ef`,
+  gold tree SHA-256은 `34a84d3263c15c9e8453dac64321609b9f997d2b5032553b24376d29096bf467`다.
+  승인 뒤 환경은 `ROBO_LLM_CONFIG=gpt54_mini_openai`, `ROBO_LLM_RESPONSE_CACHE=false`,
+  `ROBO_BUDGET_RUN_USD=0.50`으로 고정하고 `scripts/analyze_data_dir.py --profile <profile>`을 한 번만
+  실행한다. 실행기는 current implementation/prompt/config/source/DDL/gold/baseline을 새 run에서 다시
+  봉인한다.
+- embedding·공유 budget 집중 회귀는 `78 passed, 17 subtests`, 전체 pytest는
+  `1457 passed, 4 skipped, 362 subtests`, authoritative unittest는 `1217 tests, skipped 2`다. 생성과
+  embedding이 다른 thread에서 같은 budget을 갱신해도 charge를 잃지 않고, OpenAI step의 run/budget
+  설정 누락은 공통 step 경계에서 실패한다. 이 절까지 유료 LLM/embedding, Neo4j 접근/write, SKT
+  재분석은 0회다. 다음 행동은 문서 diff와 commit/push를 닫고 사용자 비용 확인을 기다리는 것이다.
+  승인 직전 Neo4j gate를 새로 확인하며 미리 접속하지 않는다.

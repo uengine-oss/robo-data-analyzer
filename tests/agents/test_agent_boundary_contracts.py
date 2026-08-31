@@ -1,6 +1,7 @@
 """Agent contracts plus the LLM infrastructure they execute through."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import tempfile
 import unittest
@@ -568,6 +569,14 @@ class LlmBoundaryContractTest(unittest.TestCase):
             budget.add_sync(-0.25)
 
         self.assertEqual(budget.spent_usd, 0.5)
+
+    def test_sync_budget_charges_are_thread_safe(self) -> None:
+        budget = CostBudget(limit_usd=10.0)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _index: budget.add_sync(0.001), range(1_000)))
+
+        self.assertAlmostEqual(budget.spent_usd, 1.0, places=10)
 
     def test_negative_provider_token_count_is_rejected(self) -> None:
         response = SimpleNamespace(

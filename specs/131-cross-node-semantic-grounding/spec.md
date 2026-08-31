@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 Parser→Graph 제품 명세
 
-**Status**: Active — SKT 1,503줄 실제 생성·3층 검증·책임 slice push 완료. Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
-**Updated**: 2026-08-31
+**Status**: Active — SKT 1,503줄 기존 실제 생성·3층 검증과 production LLM wire 정리는 완료. 사용자 비용 확인 뒤 post-refactor 1,503줄 유료 검증 1회, Catalog pagination 외부 계약, GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
+**Updated**: 2026-09-01
 **Entry point**: `specs/131-cross-node-semantic-grounding/README.md`
 
 ## 1. 목표와 범위
@@ -193,10 +193,12 @@ Rule property는 `anchor_line`, `structural_condition`, `structural_effects`, `b
 
 ## 9. 성능과 검증
 
-수정은 formal red와 작은 실제 SKT 좌표에서 먼저 닫고 영향 범위를 점진 확대한다. 실제 유료 검증은
+수정은 formal red와 작은 실제 SKT 좌표에서 먼저 닫고 영향 범위를 점진 확대한다. 기존 실제 유료 검증은
 `zapamcom13010.c`와 `zapamcom10150.c`, 합계 1,503줄을 분석해 정확도, 누락, partial-upload external
-분류, 단계별 시간·token·cache를 판정했다. 약 5만 LOC 전체 재분석은 GPU 복구 뒤 모든 관련 수정의
-마지막에 한 번만 수행하며, 그 전까지 제품 규모 처리 속도는 미검증이다.
+분류, 단계별 시간·token·cache를 판정했다. 이후 production LLM wire가 바뀌었으므로 사용자 비용 확인 뒤
+같은 두 파일을 stable post-refactor hash에서 정확히 한 번 다시 실행해 새 입력·출력·비용·직접 의미와
+baseline diff를 닫는다. 약 5만 LOC 전체 재분석은 GPU 복구 뒤 모든 관련 수정의 마지막에 한 번만
+수행하며, 그 전까지 제품 규모 처리 속도는 미검증이다.
 
 최종 합격에는 세 층이 모두 필요하다.
 
@@ -225,7 +227,7 @@ Rule property는 `anchor_line`, `structural_condition`, `structural_effects`, `b
 - 표준/framework 제품 CALLS 0, unresolved graph node/label 0
 - graph stage/property/endpoint ledger와 active generation 불일치 0
 - 자동 회귀·결정론 전수 회계·봉인 직접 의미 판정 통과
-- 봉인한 SKT 2파일 1,503줄의 정확도·누락·external 분류·실행 비용 결과 공개
+- 봉인한 SKT 2파일 1,503줄의 post-refactor 정확도·누락·external 분류·생성 및 embedding 전체 비용 결과 공개
 - GPU 복구 전에는 실행하지 않은 약 5만 LOC 제품 규모 성능을 미검증으로 명시하고, 복구 뒤 마지막 한 번의
   동일 required-population 실행으로 baseline·단계별 시간·token·cache·누락 회계를 검증
 - constitution·spec·contracts·code·tests·최종 HTML 일치

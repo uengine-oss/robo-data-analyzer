@@ -1077,6 +1077,12 @@ commit 시간은 content-addressed post-commit run artifact로 확정한다. 속
 required population을 truncation·Top-N·sampling·skip·임의 token/item 상한·의미 fallback으로 줄이지
 않는다. 실행하지 않은 5만 LOC 전체 처리 속도는 미검증으로 남긴다.
 
+유료 provider 비용 장부는 생성 LLM만이 아니라 SearchSegment embedding도 포함한다. OpenAI embedding은
+성공 HTTP response가 반환한 model·prompt tokens·total tokens를 request별로 `usage.jsonl`에 기록하고,
+공식 입력 단가로 계산한 비용을 같은 run `CostBudget`에 누적한다. provider usage가 없거나 비정상이면
+vector가 있어도 미계측 성공으로 승격하지 않는다. 생성 의미의 logical invocation 수와 embedding
+provider request 수는 별도 집계하되 총 token·비용에는 둘 다 포함한다.
+
 최종 합격은 세 층을 모두 요구한다.
 
 1. 자동 회귀와 schema/parser/graph 검증

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 from dataclasses import dataclass, field
 
 from shared.config.settings import SETTINGS
@@ -46,6 +47,7 @@ class CostBudget:
     limit_usd: float = field(default_factory=lambda: SETTINGS.run_budget.run_usd)
     spent_usd: float = 0.0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _sync_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.limit_usd) or self.limit_usd <= 0:
@@ -60,13 +62,15 @@ class CostBudget:
         """비용 누적 (비동기) — 임계 초과 시 ``BudgetExceededError`` raise."""
         _require_nonnegative_finite(cost_usd, field_name="cost_usd")
         async with self._lock:
-            self.spent_usd += cost_usd
-            if self.spent_usd > self.limit_usd:
-                raise BudgetExceededError(self.spent_usd, self.limit_usd)
+            with self._sync_lock:
+                self.spent_usd += cost_usd
+                if self.spent_usd > self.limit_usd:
+                    raise BudgetExceededError(self.spent_usd, self.limit_usd)
 
     def add_sync(self, cost_usd: float) -> None:
         """비용 누적 (동기) — 미들웨어가 sync 환경에서 호출."""
         _require_nonnegative_finite(cost_usd, field_name="cost_usd")
-        self.spent_usd += cost_usd
-        if self.spent_usd > self.limit_usd:
-            raise BudgetExceededError(self.spent_usd, self.limit_usd)
+        with self._sync_lock:
+            self.spent_usd += cost_usd
+            if self.spent_usd > self.limit_usd:
+                raise BudgetExceededError(self.spent_usd, self.limit_usd)

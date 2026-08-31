@@ -79,6 +79,9 @@
   output $4.50/M)와 기존 실제 $0.360159를 기준으로 25% 변동 여유는 $0.450199다. 실행 시
   `ROBO_BUDGET_RUN_USD=0.50`을 사용하되 post-charge 누적 차단을 provider의 절대 청구 상한으로
   표현하지 않는다. 비용 확인 전 유료 호출은 0회다.
+- 같은 run의 SearchSegment OpenAI embedding도 `text-embedding-3-small` 공식 $0.02/M input 단가로
+  성공 HTTP response별 usage를 기록하고 동일 budget에 누적한다. 생성 40호출과 embedding request 수를
+  섞어 logical generation count를 바꾸지 않되 총 provider token·비용에서는 어느 쪽도 누락하지 않는다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

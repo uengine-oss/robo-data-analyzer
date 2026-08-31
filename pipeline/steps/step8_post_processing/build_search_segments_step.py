@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 import time
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
 
 from llm import embedder
-from pipeline.execution.step_config import step_config
+from llm.usage.cost_budget import CostBudget
+from pipeline.execution.step_config import require_step_config_value, step_config
 from pipeline.languages import ROUTINE_LABELS
 from pipeline.publication.search_segments import search_segment_stable_id
 from search.corpus.embed_material import compose_embed_text
@@ -36,6 +38,12 @@ async def build_search_segments_step(
 
     cfg = step_config(config)
     stream = cfg.get("stream")
+    usage_log_path = None
+    cost_budget = None
+    if SETTINGS.embedding.provider == "openai":
+        run = require_step_config_value(cfg, "run", step=_STEP)
+        cost_budget = require_step_config_value(cfg, "cost_budget", step=_STEP)
+        usage_log_path = run.run_dir / "usage.jsonl"
     code_nodes = state.get("code_nodes", [])
     started = time.monotonic()
     with step_processing_scope(_STEP, stream):
@@ -43,6 +51,8 @@ async def build_search_segments_step(
             _build_search_segments,
             code_nodes,
             embedder.fingerprint(),
+            usage_log_path=usage_log_path,
+            cost_budget=cost_budget,
         )
     log_info(
         _STEP,
@@ -54,7 +64,13 @@ async def build_search_segments_step(
     return {"search_segments": segments}
 
 
-def _build_search_segments(code_nodes: list, embedding_model_id: str) -> list[dict]:
+def _build_search_segments(
+    code_nodes: list,
+    embedding_model_id: str,
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+) -> list[dict]:
     """Create one full, source-addressed segment per routine with a summary."""
     material: list[tuple[object, str]] = []
     seen_ids: set[str] = set()
@@ -71,7 +87,16 @@ def _build_search_segments(code_nodes: list, embedding_model_id: str) -> list[di
 
     if not material:
         return []
-    vectors = embedder.encode_texts([text for _node, text in material])
+    texts = [text for _node, text in material]
+    if usage_log_path is None:
+        vectors = embedder.encode_texts(texts)
+    else:
+        vectors = embedder.encode_texts(
+            texts,
+            usage_log_path=usage_log_path,
+            cost_budget=cost_budget,
+            agent_name="embedding:search_segments",
+        )
     if len(vectors) != len(material):
         raise ValueError(
             "embedding provider returned a different population than requested: "

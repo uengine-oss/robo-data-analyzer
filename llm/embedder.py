@@ -13,12 +13,18 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+import time
 from typing import Callable, List, Sequence
 
 import httpx
 
 from shared.config.settings import SETTINGS
 from llm.configs.loader import load_llm_config
+from llm.usage.cost_budget import CostBudget
+from llm.usage.pricing import compute_cost
+from llm.usage.token_usage import TokenUsageRecord
+from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
 
 Vector = List[float]
@@ -36,7 +42,13 @@ def fingerprint() -> str:
     return f"{SETTINGS.embedding.provider}:{SETTINGS.embedding.model}"
 
 
-def encode_texts(texts: Sequence[str]) -> list[Vector]:
+def encode_texts(
+    texts: Sequence[str],
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+    agent_name: str = "embedding",
+) -> list[Vector]:
     """텍스트 → 벡터. 입력 순서를 그대로 유지한다. 빈 입력은 모델 로드 없이 빈 결과."""
     if not texts:
         return []
@@ -46,7 +58,19 @@ def encode_texts(texts: Sequence[str]) -> list[Vector]:
             f"알 수 없는 임베딩 공급자: {SETTINGS.embedding.provider!r} (가능: {sorted(_ENCODERS)})"
         )
     exact_texts = list(texts)
-    vectors = encode(exact_texts)
+    if SETTINGS.embedding.provider == "openai" and usage_log_path is not None:
+        if cost_budget is None:
+            raise EmbeddingError(
+                "paid embedding usage requires the run CostBudget"
+            )
+        vectors = _encode_remote(
+            exact_texts,
+            usage_log_path=usage_log_path,
+            cost_budget=cost_budget,
+            agent_name=agent_name,
+        )
+    else:
+        vectors = encode(exact_texts)
     if len(vectors) != len(exact_texts):
         raise EmbeddingError(
             "임베딩 결과 수 불일치: "
@@ -86,28 +110,102 @@ def _resolve_endpoint() -> tuple[str, str]:
     return api_base.rstrip("/") + "/embeddings", api_key
 
 
-async def _post(client: httpx.AsyncClient, url: str, inputs: list[str]) -> list[Vector]:
+async def _post(
+    client: httpx.AsyncClient,
+    url: str,
+    inputs: list[str],
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+    agent_name: str = "embedding",
+) -> list[Vector]:
+    started = time.monotonic()
     resp = await client.post(url, json={"model": SETTINGS.embedding.model, "input": inputs})
     resp.raise_for_status()
-    return [item["embedding"] for item in resp.json()["data"]]
+    payload = resp.json()
+    vectors = [item["embedding"] for item in payload["data"]]
+    if usage_log_path is not None:
+        if cost_budget is None:
+            raise EmbeddingError("paid embedding usage requires the run CostBudget")
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            raise EmbeddingError(
+                "embedding response usage is missing; paid call cannot be accounted"
+            )
+        input_tokens = usage.get("prompt_tokens")
+        total_tokens = usage.get("total_tokens")
+        if (
+            isinstance(input_tokens, bool)
+            or not isinstance(input_tokens, int)
+            or input_tokens < 0
+            or isinstance(total_tokens, bool)
+            or not isinstance(total_tokens, int)
+            or total_tokens < input_tokens
+        ):
+            raise EmbeddingError(
+                "embedding response usage has invalid prompt_tokens/total_tokens"
+            )
+        model = payload.get("model") or SETTINGS.embedding.model
+        if not isinstance(model, str) or not model.strip():
+            raise EmbeddingError("embedding response model is missing")
+        record = TokenUsageRecord(
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=0,
+            total_tokens=total_tokens,
+            latency_ms=round((time.monotonic() - started) * 1000),
+        )
+        cost_usd = compute_cost(record)
+        persist_usage_and_charge_budget(
+            usage_log_path,
+            agent_name,
+            record,
+            cost_usd,
+            cost_budget,
+        )
+    return vectors
 
 
 async def _send(
-    client: httpx.AsyncClient, url: str, texts: list[str], gate: asyncio.Semaphore
+    client: httpx.AsyncClient,
+    url: str,
+    texts: list[str],
+    gate: asyncio.Semaphore,
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+    agent_name: str = "embedding",
 ) -> list[Vector]:
     """한 묶음 전송. 서버 거부는 분할·백오프로 흡수하고, 끝내 실패하면 raise."""
     for attempt in range(SETTINGS.embedding.max_retries):
         try:
             async with gate:
-                return await _post(client, url, texts)
+                return await _post(
+                    client,
+                    url,
+                    texts,
+                    usage_log_path=usage_log_path,
+                    cost_budget=cost_budget,
+                    agent_name=agent_name,
+                )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code not in _RETRYABLE:
                 raise EmbeddingError(f"임베딩 서버 오류 {exc.response.status_code}") from exc
             if len(texts) > 1:
                 half = len(texts) // 2
                 head, tail = await asyncio.gather(
-                    _send(client, url, texts[:half], gate),
-                    _send(client, url, texts[half:], gate),
+                    _send(
+                        client, url, texts[:half], gate,
+                        usage_log_path=usage_log_path,
+                        cost_budget=cost_budget,
+                        agent_name=agent_name,
+                    ),
+                    _send(
+                        client, url, texts[half:], gate,
+                        usage_log_path=usage_log_path,
+                        cost_budget=cost_budget,
+                        agent_name=agent_name,
+                    ),
                 )
                 return head + tail
             await asyncio.sleep(0.4 * 2**attempt)      # 단건 거부 = 부하. 물러났다 다시.
@@ -116,7 +214,13 @@ async def _send(
     )
 
 
-async def _encode_remote_async(texts: list[str]) -> list[Vector]:
+async def _encode_remote_async(
+    texts: list[str],
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+    agent_name: str = "embedding",
+) -> list[Vector]:
     url, api_key = _resolve_endpoint()
     chunks = _budget_chunks(texts, SETTINGS.embedding.char_budget)
     gate = asyncio.Semaphore(SETTINGS.embedding.concurrency)
@@ -127,7 +231,18 @@ async def _encode_remote_async(texts: list[str]) -> list[Vector]:
         timeout=SETTINGS.embedding.timeout_seconds, headers={"Authorization": f"Bearer {api_key}"}
     ) as client:
         results = await asyncio.gather(
-            *(_send(client, url, [texts[i] for i in chunk], gate) for chunk in chunks)
+            *(
+                _send(
+                    client,
+                    url,
+                    [texts[i] for i in chunk],
+                    gate,
+                    usage_log_path=usage_log_path,
+                    cost_budget=cost_budget,
+                    agent_name=agent_name,
+                )
+                for chunk in chunks
+            )
         )
 
     vectors: list[Vector | None] = [None] * len(texts)
@@ -140,8 +255,19 @@ async def _encode_remote_async(texts: list[str]) -> list[Vector]:
     return vectors  # type: ignore[return-value]
 
 
-def _encode_remote(texts: list[str]) -> list[Vector]:
-    return asyncio.run(_encode_remote_async(texts))
+def _encode_remote(
+    texts: list[str],
+    *,
+    usage_log_path: Path | None = None,
+    cost_budget: CostBudget | None = None,
+    agent_name: str = "embedding",
+) -> list[Vector]:
+    return asyncio.run(_encode_remote_async(
+        texts,
+        usage_log_path=usage_log_path,
+        cost_budget=cost_budget,
+        agent_name=agent_name,
+    ))
 
 
 # ── 로컬 인코딩 (폴백 전용) ────────────────────────────────
