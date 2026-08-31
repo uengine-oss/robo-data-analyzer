@@ -19,7 +19,7 @@ _LEGACY_KINDS = (
 )
 _FACT_KINDS = (
     "call", "callable", "import", "symbol", "literal", "assignment",
-    "parameter", "structural_expression", "macro", "embedded_language",
+    "parameter", "binding_target", "scope_directive", "structural_expression", "macro", "embedded_language",
     "conditional_region",
 )
 _V2_COMPLETENESS_KINDS = tuple(
@@ -40,8 +40,15 @@ _STRUCTURAL_EXPRESSION_ROLES = frozenset({
     "update_expression",
 })
 _SCOPE_KINDS = frozenset({
-    "translation_unit", "function", "block", "function_prototype",
+    "translation_unit", "package", "class", "function", "lambda", "comprehension", "block",
+    "function_prototype",
 })
+_BINDING_TARGET_CONTEXTS = frozenset({
+    "assignment", "annotated_assignment", "augmented_assignment",
+    "for_target", "with_target", "except_target", "comprehension_target",
+    "function_definition", "class_definition", "delete_target",
+})
+_SCOPE_DIRECTIVE_KINDS = frozenset({"global", "nonlocal"})
 _IR2_FORBIDDEN_SEMANTIC_FIELDS = frozenset({
     "binding", "adapterSchema", "bindingKey", "compatibilityKey",
     "compatibilityStatus", "compatibilityScope", "definitionStatus",
@@ -160,6 +167,8 @@ class CallEvidenceFact:
     receiver_range: EvidenceRange | None
     argument_ranges: tuple[EvidenceRange, ...]
     scope_path: tuple[ScopeEvidence, ...]
+    callee_path_ranges: tuple[EvidenceRange, ...]
+    database_link_range: EvidenceRange | None
     grammar_rule: str
     presence: Mapping[str, Any]
 
@@ -170,6 +179,7 @@ class CallableEvidenceFact:
     source_id: str
     callable_range: EvidenceRange
     name_range: EvidenceRange
+    name_path_ranges: tuple[EvidenceRange, ...]
     terminal_name: str
     role: str
     ast_node_range: EvidenceRange | None
@@ -188,6 +198,9 @@ class CallableEvidenceFact:
             "source_id": self.source_id,
             "range": self.callable_range.as_dict(),
             "name_range": self.name_range.as_dict(),
+            "name_path_ranges": [
+                item.as_dict() for item in self.name_path_ranges
+            ],
             "terminal_name": self.terminal_name,
             "ast_node_range": (
                 self.ast_node_range.as_dict()
@@ -200,6 +213,85 @@ class CallableEvidenceFact:
             "grammar_rule": self.grammar_rule,
             "presence_status": self.presence["status"],
             "presence": dict(self.presence),
+        }
+
+
+@dataclass(frozen=True)
+class ParameterEvidenceFact:
+    fact_id: str
+    source_id: str
+    parameter_range: EvidenceRange
+    terminal_name: str
+    scope_path: tuple[ScopeEvidence, ...]
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "source_id": self.source_id,
+            "range": self.parameter_range.as_dict(),
+            "terminal_name": self.terminal_name,
+            "scope_path": [item.as_record() for item in self.scope_path],
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
+        }
+
+
+@dataclass(frozen=True)
+class BindingTargetSyntaxEvidence:
+    schema: str
+    root: SyntaxComponentEvidence
+
+    def as_record(self) -> dict[str, Any]:
+        return {"schema": self.schema, "root": self.root.as_record()}
+
+
+@dataclass(frozen=True)
+class BindingTargetEvidenceFact:
+    fact_id: str
+    source_id: str
+    target_range: EvidenceRange
+    binding_context: str
+    scope_path: tuple[ScopeEvidence, ...]
+    syntax: BindingTargetSyntaxEvidence
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "source_id": self.source_id,
+            "range": self.target_range.as_dict(),
+            "binding_context": self.binding_context,
+            "scope_path": [item.as_record() for item in self.scope_path],
+            "syntax": self.syntax.as_record(),
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
+        }
+
+
+@dataclass(frozen=True)
+class ScopeDirectiveEvidenceFact:
+    fact_id: str
+    source_id: str
+    name_range: EvidenceRange
+    terminal_name: str
+    directive_kind: str
+    scope_path: tuple[ScopeEvidence, ...]
+    grammar_rule: str
+    presence: Mapping[str, Any]
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "source_id": self.source_id,
+            "range": self.name_range.as_dict(),
+            "terminal_name": self.terminal_name,
+            "directive_kind": self.directive_kind,
+            "scope_path": [item.as_record() for item in self.scope_path],
+            "grammar_rule": self.grammar_rule,
+            "presence_status": self.presence["status"],
         }
 
 
@@ -262,6 +354,7 @@ class ImportEvidenceFact:
     source_id: str
     directive_range: EvidenceRange
     directive_kind: str
+    scope_path: tuple[ScopeEvidence, ...]
     entries: tuple[ImportBindingFact, ...]
     grammar_rule: str
     presence: Mapping[str, Any]
@@ -330,6 +423,9 @@ class ValidatedCommonEvidence:
     decoded_text: str
     call_facts: tuple[CallEvidenceFact, ...]
     callable_facts: tuple[CallableEvidenceFact, ...]
+    parameter_facts: tuple[ParameterEvidenceFact, ...]
+    binding_target_facts: tuple[BindingTargetEvidenceFact, ...]
+    scope_directive_facts: tuple[ScopeDirectiveEvidenceFact, ...]
     structural_expression_facts: tuple[StructuralExpressionEvidenceFact, ...]
     import_facts: tuple[ImportEvidenceFact, ...]
     macro_facts: tuple[MacroEvidenceFact, ...]
@@ -674,10 +770,21 @@ def _validate_call(
     if not isinstance(payload, dict):
         raise _fail("call.payload", "object required")
     if version == "2.0.0":
-        _require_exact_fields(payload, {
+        required_fields = {
             "calleeRange", "calleeKind", "terminalName", "receiverRange",
             "argumentRanges", "scopePath",
-        }, field="call.payload")
+        }
+        optional_fields = {"calleePathRanges", "databaseLinkRange"}
+        actual_fields = set(payload)
+        if not required_fields.issubset(actual_fields) or not actual_fields.issubset(
+            required_fields | optional_fields
+        ):
+            raise _fail(
+                "call.payload",
+                "required fields and optional SQL callee structure only; "
+                f"missing={sorted(required_fields - actual_fields)}, "
+                f"unexpected={sorted(actual_fields - required_fields - optional_fields)}",
+            )
         forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
         if forbidden:
             raise _fail("call.payload", f"Parser semantic fields forbidden: {sorted(forbidden)}")
@@ -741,6 +848,59 @@ def _validate_call(
         or not _contains(callee_range, receiver_range)
     ):
         raise _fail("call.payload.receiverRange", "invalid receiver subrange")
+    has_path = "calleePathRanges" in payload
+    has_link = "databaseLinkRange" in payload
+    if has_path != has_link:
+        raise _fail(
+            "call.payload", "calleePathRanges and databaseLinkRange must be supplied together",
+        )
+    callee_path_ranges: list[EvidenceRange] = []
+    database_link_range: EvidenceRange | None = None
+    if has_path:
+        path_values = payload.get("calleePathRanges")
+        if not isinstance(path_values, list) or not path_values:
+            raise _fail("call.payload.calleePathRanges", "nonempty array required")
+        previous_component_end = callee_range.char_offset
+        for index, value in enumerate(path_values):
+            component = _range(
+                value,
+                field=f"call.payload.calleePathRanges[{index}]",
+                source_length=len(source),
+            )
+            if (
+                component.char_length == 0
+                or not _contains(callee_range, component)
+                or component.char_offset < previous_component_end
+            ):
+                raise _fail(
+                    f"call.payload.calleePathRanges[{index}]",
+                    "ordered nonempty callee subrange required",
+                )
+            previous_component_end = component.end
+            callee_path_ranges.append(component)
+        if terminal_name is not None:
+            terminal_component = callee_path_ranges[-1]
+            if source[terminal_component.char_offset:terminal_component.end] != terminal_name:
+                raise _fail(
+                    "call.payload.calleePathRanges",
+                    "last path component must be the exact terminalName",
+                )
+        link_value = payload.get("databaseLinkRange")
+        if link_value is not None:
+            database_link_range = _range(
+                link_value,
+                field="call.payload.databaseLinkRange",
+                source_length=len(source),
+            )
+            if (
+                database_link_range.char_length == 0
+                or not _contains(callee_range, database_link_range)
+                or database_link_range.char_offset < previous_component_end
+            ):
+                raise _fail(
+                    "call.payload.databaseLinkRange",
+                    "nonempty callee subrange after path components required",
+                )
     scope_path = (
         _validate_scope_path(
             payload.get("scopePath"), field="call.payload.scopePath",
@@ -757,6 +917,8 @@ def _validate_call(
         receiver_range=receiver_range,
         argument_ranges=tuple(arguments),
         scope_path=scope_path,
+        callee_path_ranges=tuple(callee_path_ranges),
+        database_link_range=database_link_range,
         grammar_rule=grammar_rule,
         presence=dict(presence),
     )
@@ -775,10 +937,21 @@ def _validate_callable(
     payload = fact.get("payload")
     if fact_range.char_length == 0 or not isinstance(payload, dict):
         raise _fail(field, "nonempty callable range and object payload required")
-    _require_exact_fields(payload, {
+    required_fields = {
         "role", "nameRange", "astNodeRange", "scopePath", "scopeRange",
         "declarationPoint", "syntax",
-    }, field=field)
+    }
+    optional_fields = {"namePathRanges"}
+    actual_fields = set(payload)
+    if not required_fields.issubset(actual_fields) or not actual_fields.issubset(
+        required_fields | optional_fields
+    ):
+        raise _fail(
+            field,
+            "required callable fields and optional name path only; "
+            f"missing={sorted(required_fields - actual_fields)}, "
+            f"unexpected={sorted(actual_fields - required_fields - optional_fields)}",
+        )
     forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
     if forbidden:
         raise _fail(field, f"Parser semantic fields forbidden: {sorted(forbidden)}")
@@ -793,6 +966,29 @@ def _validate_callable(
     ):
         raise _fail(f"{field}.nameRange", "nonempty callable subrange required")
     terminal_name = source[name_range.char_offset:name_range.end]
+    name_path_ranges: list[EvidenceRange] = []
+    if "namePathRanges" in payload:
+        raw_name_path = payload.get("namePathRanges")
+        if not isinstance(raw_name_path, list) or not raw_name_path:
+            raise _fail(f"{field}.namePathRanges", "nonempty array required")
+        previous_end = -1
+        for index, value in enumerate(raw_name_path):
+            component = _range(
+                value,
+                field=f"{field}.namePathRanges[{index}]",
+                source_length=len(source),
+            )
+            if component.char_length == 0 or component.char_offset < previous_end:
+                raise _fail(
+                    f"{field}.namePathRanges[{index}]",
+                    "ordered nonempty source range required",
+                )
+            previous_end = component.end
+            name_path_ranges.append(component)
+        if name_path_ranges[-1] != name_range:
+            raise _fail(
+                f"{field}.namePathRanges", "last component must equal nameRange",
+            )
     role = payload.get("role")
     if role not in _CALLABLE_ROLES:
         raise _fail(f"{field}.role", f"invalid value {role!r}")
@@ -867,6 +1063,7 @@ def _validate_callable(
         source_id=source_id,
         callable_range=fact_range,
         name_range=name_range,
+        name_path_ranges=tuple(name_path_ranges),
         terminal_name=terminal_name,
         role=str(role),
         ast_node_range=ast_node_range,
@@ -938,6 +1135,151 @@ def _validate_structural_expression(
         role=str(role),
         scope_path=scope_path,
         syntax=StructuralExpressionSyntaxEvidence(schema=schema, root=root),
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
+def _validate_parameter(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> ParameterEvidenceFact:
+    field = "parameter.payload"
+    if fact_range.char_length == 0:
+        raise _fail("parameter.range", "nonempty grammar name range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(payload, {"scopePath"}, field=field)
+    scope_path = _validate_scope_path(
+        payload.get("scopePath"), field=f"{field}.scopePath",
+        source_length=len(source), occurrence_range=fact_range,
+    )
+    owner = scope_path[-1]
+    if owner.kind not in {"function", "lambda"}:
+        raise _fail(
+            f"{field}.scopePath",
+            "innermost parameter scope must be a function or lambda",
+        )
+    terminal_name = source[fact_range.char_offset:fact_range.end]
+    if not terminal_name:
+        raise _fail("parameter.range", "name source slice is empty")
+    return ParameterEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        parameter_range=fact_range,
+        terminal_name=terminal_name,
+        scope_path=scope_path,
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
+def _validate_binding_target(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> BindingTargetEvidenceFact:
+    field = "binding_target.payload"
+    if fact_range.char_length == 0:
+        raise _fail("binding_target.range", "nonempty grammar target range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(
+        payload, {"bindingContext", "scopePath", "syntax"}, field=field,
+    )
+    forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
+    if forbidden:
+        raise _fail(field, f"Parser semantic fields forbidden: {sorted(forbidden)}")
+    binding_context = payload.get("bindingContext")
+    if binding_context not in _BINDING_TARGET_CONTEXTS:
+        raise _fail(
+            f"{field}.bindingContext", f"invalid value {binding_context!r}",
+        )
+    scope_path = _validate_scope_path(
+        payload.get("scopePath"), field=f"{field}.scopePath",
+        source_length=len(source), occurrence_range=fact_range,
+    )
+    raw_syntax = payload.get("syntax")
+    if not isinstance(raw_syntax, dict):
+        raise _fail(f"{field}.syntax", "object required")
+    _require_exact_fields(raw_syntax, {"schema", "root"}, field=f"{field}.syntax")
+    schema = raw_syntax.get("schema")
+    if schema != "python-binding-target-syntax/v1":
+        raise _fail(
+            f"{field}.syntax.schema",
+            f"expected 'python-binding-target-syntax/v1', got {schema!r}",
+        )
+    root = _validate_syntax_component(
+        raw_syntax.get("root"), field=f"{field}.syntax.root",
+        source=source, outer=fact_range, token_coordinates=set(),
+    )
+    if root.range != fact_range:
+        raise _fail(f"{field}.syntax.root.range", "must equal the fact range")
+    if root.grammar_rule != grammar_rule:
+        raise _fail(
+            f"{field}.syntax.root.grammarRule", "must equal grammarRuleRef",
+        )
+    return BindingTargetEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        target_range=fact_range,
+        binding_context=str(binding_context),
+        scope_path=scope_path,
+        syntax=BindingTargetSyntaxEvidence(schema=str(schema), root=root),
+        grammar_rule=grammar_rule,
+        presence=dict(presence),
+    )
+
+
+def _validate_scope_directive(
+    fact: Mapping[str, Any],
+    *,
+    source_id: str,
+    fact_range: EvidenceRange,
+    grammar_rule: str,
+    presence: Mapping[str, Any],
+    source: str,
+) -> ScopeDirectiveEvidenceFact:
+    field = "scope_directive.payload"
+    if fact_range.char_length == 0:
+        raise _fail("scope_directive.range", "nonempty grammar name range required")
+    payload = fact.get("payload")
+    if not isinstance(payload, dict):
+        raise _fail(field, "object required")
+    _require_exact_fields(payload, {"directiveKind", "scopePath"}, field=field)
+    forbidden = set(payload) & _IR2_FORBIDDEN_SEMANTIC_FIELDS
+    if forbidden:
+        raise _fail(field, f"Parser semantic fields forbidden: {sorted(forbidden)}")
+    directive_kind = payload.get("directiveKind")
+    if directive_kind not in _SCOPE_DIRECTIVE_KINDS:
+        raise _fail(
+            f"{field}.directiveKind", f"invalid value {directive_kind!r}",
+        )
+    scope_path = _validate_scope_path(
+        payload.get("scopePath"), field=f"{field}.scopePath",
+        source_length=len(source), occurrence_range=fact_range,
+    )
+    terminal_name = source[fact_range.char_offset:fact_range.end]
+    if not terminal_name:
+        raise _fail("scope_directive.range", "name source slice is empty")
+    return ScopeDirectiveEvidenceFact(
+        fact_id=str(fact.get("factId") or ""),
+        source_id=source_id,
+        name_range=fact_range,
+        terminal_name=terminal_name,
+        directive_kind=str(directive_kind),
+        scope_path=scope_path,
         grammar_rule=grammar_rule,
         presence=dict(presence),
     )
@@ -1453,6 +1795,10 @@ def _validate_import(
         _require_exact_fields(payload, {
             "directiveKind", "targetKind", "targetRange",
         }, field="import.payload")
+    elif version == "2.0.0":
+        _require_exact_fields(payload, {
+            "directiveKind", "scopePath", "entries",
+        }, field="import.payload")
     else:
         _require_exact_fields(payload, {
             "directiveKind", "entries",
@@ -1462,6 +1808,12 @@ def _validate_import(
         raise _fail(
             "import.payload.directiveKind",
             f"invalid value {directive_kind!r}",
+        )
+    scope_path = ()
+    if version == "2.0.0":
+        scope_path = _validate_scope_path(
+            payload.get("scopePath"), field="import.payload.scopePath",
+            source_length=len(source), occurrence_range=fact_range,
         )
     if version == "1.0.0":
         if directive_kind != "include":
@@ -1510,6 +1862,7 @@ def _validate_import(
         source_id=source_id,
         directive_range=fact_range,
         directive_kind=str(directive_kind),
+        scope_path=scope_path,
         entries=entries,
         grammar_rule=grammar_rule,
         presence=dict(presence),
@@ -1867,6 +2220,9 @@ def validate_common_evidence(
     emitted_by_kind = {kind: 0 for kind in allowed_kinds}
     calls: list[CallEvidenceFact] = []
     callables: list[CallableEvidenceFact] = []
+    parameters: list[ParameterEvidenceFact] = []
+    binding_targets: list[BindingTargetEvidenceFact] = []
+    scope_directives: list[ScopeDirectiveEvidenceFact] = []
     structural_expressions: list[StructuralExpressionEvidenceFact] = []
     imports: list[ImportEvidenceFact] = []
     macros: list[MacroEvidenceFact] = []
@@ -1938,6 +2294,48 @@ def validate_common_evidence(
                 presence=presence,
                 source=source,
             ))
+        elif kind == "parameter":
+            if version != "2.0.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "parameter structural payload requires common evidence 2.0.0",
+                )
+            parameters.append(_validate_parameter(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
+        elif kind == "binding_target":
+            if version != "2.0.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "binding target structural payload requires common evidence 2.0.0",
+                )
+            binding_targets.append(_validate_binding_target(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
+        elif kind == "scope_directive":
+            if version != "2.0.0":
+                raise _fail(
+                    f"facts[{index}].kind",
+                    "scope directive structural payload requires common evidence 2.0.0",
+                )
+            scope_directives.append(_validate_scope_directive(
+                fact,
+                source_id=source_id,
+                fact_range=fact_range,
+                grammar_rule=grammar_rule,
+                presence=presence,
+                source=source,
+            ))
         elif kind == "import":
             imports.append(_validate_import(
                 fact,
@@ -1991,6 +2389,9 @@ def validate_common_evidence(
         decoded_text=source,
         call_facts=tuple(calls),
         callable_facts=tuple(callables),
+        parameter_facts=tuple(parameters),
+        binding_target_facts=tuple(binding_targets),
+        scope_directive_facts=tuple(scope_directives),
         structural_expression_facts=tuple(structural_expressions),
         import_facts=tuple(imports),
         macro_facts=tuple(macros),
