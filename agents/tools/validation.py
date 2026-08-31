@@ -150,7 +150,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
     )
 
     @tool
-    def verify_external_rule(pattern: str, key_group: str = "key") -> str:
+    def verify_external_rule(pattern: str) -> str:
         """청크 분할 규칙 후보 1개를 실제 samples 에 적용 → 스팬·키 결과 리포트.
 
         **언제 사용**: 규칙을 설계한 뒤 submit_external 전에 **반드시** 규칙마다 1회.
@@ -159,10 +159,10 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
         **인자**:
         - `pattern`: MULTILINE 로 컴파일되는 정규식. 전체 매치 = 청크 하나.
           key 는 named group 으로 (예: `(?P<key>...)`).
-        - `key_group`: key 를 담은 그룹 이름 (소문자·숫자·밑줄만).
+        - key capture 이름은 항상 `key`다.
 
         **결과 읽는 법**:
-        - 각 sample 의 매치 수와 (key → 매치 원문 앞부분) 목록. 매치가 레코드 전체를
+        - 각 sample 의 매치 수와 (key → 매치 길이·원문 앞부분) 목록. 매치가 레코드 전체를
           덮는지, key 가 올바른지 여기서 직접 확인한다.
         - `REJECTED:` = 규칙 자체가 실격 (금지 구문·빈 키·zero-width 등) — 원인대로 수정.
         - `NEGATIVE_MATCH` = 다른 형식 decoy 까지 삼킴 — 규칙이 너무 넓다.
@@ -171,7 +171,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
         lines: list[str] = []
         for index, sample in enumerate(samples):
             try:
-                matches = probe_extraction_rule(pattern, key_group, sample)
+                matches = probe_extraction_rule(pattern, "key", sample)
             except ExternalSkillValidationError as error:
                 return f"REJECTED: {error}"
             lines.append(f"sample[{index}]: 매치 {len(matches)}건 (파일 {len(sample):,}자)")
@@ -179,7 +179,9 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
                 excerpt = sample[match.start:match.end].replace("\n", "\\n")
                 if len(excerpt) > 90:
                     excerpt = excerpt[:90] + "…"
-                lines.append(f"  key='{match.key}' span=[{match.start}:{match.end}] text='{excerpt}'")
+                lines.append(
+                    f"  key='{match.key}' chars={match.end - match.start} text='{excerpt}'"
+                )
             if len(matches) > 8:
                 lines.append(f"  … 외 {len(matches) - 8}건")
             # 큰 파일 안전망: 매치가 앞부분에만 몰려 있으면 뒤쪽에 다른 구조가 있다는 신호.
@@ -195,7 +197,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
         negative_hits = 0
         for sample in negative_samples:
             try:
-                if probe_extraction_rule(pattern, key_group, sample):
+                if probe_extraction_rule(pattern, "key", sample):
                     negative_hits += 1
             except ExternalSkillValidationError as error:
                 # 검증기는 negative 에도 규칙을 돌리므로 여기서 죽는 규칙은 승격에서

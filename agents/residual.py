@@ -58,6 +58,14 @@ class ResidualOutcome:
     patterns_found: int = 0
 
 
+@dataclass(frozen=True)
+class _ResidualPatternCandidate:
+    """Analyzer-owned materialization of one identity-free model proposal."""
+
+    table_access_patterns: list[TableAccessPattern]
+    ddl_transform_override: DdlTransform | None
+
+
 async def run_residual_loop(
     *,
     unresolved_cases: list[dict],
@@ -242,7 +250,7 @@ async def _find_pattern(
     tables: list[Table],
     cost_budget: CostBudget,
     round_no: int,
-) -> ResidualPatternResult:
+) -> _ResidualPatternCandidate:
     """잔여 샘플 1배치 → strict schema로 패턴/변환을 한 번 제안한다."""
     values = _residual_prompt_values(
         _cases_with_enclosing_source(sample, project_root, code_nodes),
@@ -250,12 +258,24 @@ async def _find_pattern(
         active_patterns=active_patterns,
         round_no=round_no,
     )
-    return await run_yaml_rule(
+    proposal = await run_yaml_rule(
         prompts_dir=_RESIDUAL_PROMPTS_DIR,
         rule_name=_RESIDUAL_RULE,
         user_values=values,
         response_model=ResidualPatternResult,
         budget=cost_budget,
+    )
+    return _ResidualPatternCandidate(
+        table_access_patterns=[
+            TableAccessPattern(
+                id=f"RP{round_no}_{index}",
+                **pattern.model_dump(),
+            )
+            for index, pattern in enumerate(
+                proposal.table_access_patterns, start=1,
+            )
+        ],
+        ddl_transform_override=proposal.ddl_transform_override,
     )
 
 
@@ -272,6 +292,10 @@ def _residual_prompt_values(
 
     YAML이 고정 영역→변동 영역 순서를 소유하므로 이 함수는 값만 만든다.
     """
+    pattern_keys = {
+        pattern.id: f"P{index}"
+        for index, pattern in enumerate(active_patterns, start=1)
+    }
     return {
         "id": f"residual-round-{round_no}",
         "framework_runtime_functions": (
@@ -279,12 +303,18 @@ def _residual_prompt_values(
         ),
         "ddl_tables": ", ".join(sorted(t.name for t in tables)) or "(DDL 없음)",
         "confirmed_patterns": json.dumps(
-            [p.model_dump() for p in active_patterns],
+            {
+                pattern_keys[pattern.id]: _pattern_prompt_body(pattern)
+                for pattern in active_patterns
+            },
             ensure_ascii=False,
             indent=2,
         ),
         "confirmed_exclusions": json.dumps(
-            [rule.model_dump() for rule in scan.table_access_exclusion_rules],
+            [
+                rule.model_dump(exclude={"id"})
+                for rule in scan.table_access_exclusion_rules
+            ],
             ensure_ascii=False,
             indent=2,
         ),
@@ -292,7 +322,16 @@ def _residual_prompt_values(
             ddl_transform.model_dump(), ensure_ascii=False
         ),
         "residual_cases": json.dumps(
-            [_prompt_case(case) for case in sample], ensure_ascii=False, indent=2
+            [
+                _prompt_case(
+                    case,
+                    active_patterns=active_patterns,
+                    pattern_keys=pattern_keys,
+                )
+                for case in sample
+            ],
+            ensure_ascii=False,
+            indent=2,
         ),
     }
 
@@ -310,21 +349,40 @@ def _attempted_patterns(
     return [pattern for pattern in active_patterns if pattern.id in attempted_ids]
 
 
-def _prompt_case(case: dict) -> dict:
+def _pattern_prompt_body(pattern: TableAccessPattern) -> dict:
+    """Project an internal pattern to the semantic body visible to the model."""
+    return {
+        "call_regex": pattern.call_regex,
+        "op_mappings": [mapping.model_dump() for mapping in pattern.op_mappings],
+    }
+
+
+def _prompt_case(
+    case: dict,
+    *,
+    active_patterns: list[TableAccessPattern],
+    pattern_keys: dict[str, str],
+) -> dict:
     """Return only facts that can change the proposed common access pattern.
 
     Physical identity and coordinate metadata remain in the Analyzer-owned residual
     ledger.  The model needs the unresolved call, why confirmed patterns did not
     resolve it, and an exact line-numbered source window — nothing else.
     """
-    attempts = [
-        {
-            "pattern_id": attempt.get("pattern_id"),
+    patterns_by_id = {pattern.id: pattern for pattern in active_patterns}
+    attempts = []
+    for attempt in (case.get("attempted_patterns") or []):
+        pattern_id = str(attempt.get("pattern_id") or "")
+        pattern = patterns_by_id.get(pattern_id)
+        if pattern is None:
+            raise ResidualPatternVerificationError(
+                f"residual attempt references an unknown internal pattern: {pattern_id!r}"
+            )
+        attempts.append({
+            "pattern": pattern_keys[pattern_id],
             "groups": attempt.get("groups") or {},
             "ddl_lookup_result": attempt.get("ddl_lookup_result"),
-        }
-        for attempt in (case.get("attempted_patterns") or [])
-    ]
+        })
     return {
         "call_text": case.get("call_text"),
         "attempted_patterns": attempts,

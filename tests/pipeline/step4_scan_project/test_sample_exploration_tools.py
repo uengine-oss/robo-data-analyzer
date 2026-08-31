@@ -54,7 +54,7 @@ class SampleExplorationToolsTest(unittest.TestCase):
 
     def test_verify_warns_about_unmatched_tail(self) -> None:
         verify = make_verify_external_rule_tool([BIG], [])
-        report = verify.invoke({"pattern": r"^REC\|(?P<key>\w+)\|.*$", "key_group": "key"})
+        report = verify.invoke({"pattern": r"^REC\|(?P<key>\w+)\|.*$"})
         self.assertIn("매치 299건", report)
         self.assertIn("매치가 없다", report)          # 뒤쪽 EVT 구간 미매치 경고
         self.assertIn("read_sample_range(0,", report)

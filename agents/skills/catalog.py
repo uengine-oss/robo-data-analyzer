@@ -61,6 +61,38 @@ SKILL_CONTRACT_KEYS = (
 )
 
 
+def model_visible_skill_document(document: str) -> str:
+    """Remove Analyzer-owned contract IDs from YAML shown to the Scan Agent."""
+    def without_ids(value):
+        if isinstance(value, dict):
+            return {
+                key: without_ids(item)
+                for key, item in value.items()
+                if key != "id"
+            }
+        if isinstance(value, list):
+            return [without_ids(item) for item in value]
+        return value
+
+    def project(match: re.Match[str]) -> str:
+        try:
+            data = yaml.safe_load(match.group(1))
+        except yaml.YAMLError as error:
+            raise SkillCatalogError(
+                f"model-visible SKILL yaml projection failed: {error}"
+            ) from error
+        if not isinstance(data, dict):
+            return match.group(0)
+        rendered = yaml.safe_dump(
+            without_ids(data),
+            allow_unicode=True,
+            sort_keys=False,
+        )
+        return f"```yaml\n{rendered}```"
+
+    return _YAML_FENCE_RE.sub(project, document)
+
+
 def load_skill_contract(
     skill_name: str, *, skills_dir: Path = FRAMEWORK_SKILLS_DIR,
 ) -> dict:

@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from llm.structured_schema import CompactLlmResponse
 
 
-class StrictAgentOutput(BaseModel):
+class StrictAgentOutput(CompactLlmResponse):
     """에이전트가 계약 밖 필드를 조용히 흘리지 못하게 하는 공통 출력 경계."""
-
-    model_config = ConfigDict(extra="forbid")
-
 
 # ═══════════════════════════════════════════════════════════════
 # Scan Agent 출력
@@ -265,6 +264,55 @@ class ApiContract(StrictAgentOutput):
     )
 
 
+class ProposedTableAccessPattern(StrictAgentOutput):
+    """Model-owned raw pattern body; Analyzer assigns its internal identity."""
+
+    call_regex: str
+    op_mappings: list[OpMapping]
+
+
+class ProposedWrapperKeyRule(StrictAgentOutput):
+    kind: Literal["wrapper_key"] = "wrapper_key"
+    wrapper: str
+    separator: str = "_"
+    op_tokens: list[str]
+    suffix_digits: int = Field(0, ge=0, le=8)
+    entity_not_ending: str = ""
+    op_mappings: list[OpMapping]
+
+
+class ProposedMethodCallRule(StrictAgentOutput):
+    kind: Literal["method_call"] = "method_call"
+    receiver_suffix: str = ""
+    receiver_name: str = ""
+    op_prefixes: list[str]
+    entity_from: Literal["receiver", "first_arg_string"]
+    first_arg_charset: str = r"\w"
+    op_mappings: list[OpMapping]
+
+
+class ProposedSqlFragmentRule(StrictAgentOutput):
+    kind: Literal["sql_fragment"] = "sql_fragment"
+    keyword: str
+    before_entity: str = ""
+    after_entity: str = ""
+    op_mappings: list[OpMapping]
+
+
+class ProposedEmbeddedSqlRule(StrictAgentOutput):
+    kind: Literal["embedded_sql"] = "embedded_sql"
+    delimiter_start: str
+    delimiter_end: str
+
+
+ProposedTableAccessRule = (
+    ProposedWrapperKeyRule
+    | ProposedMethodCallRule
+    | ProposedSqlFragmentRule
+    | ProposedEmbeddedSqlRule
+)
+
+
 class ScanProposal(StrictAgentOutput):
     """Unknown-project Scan Agent가 제안할 수 있는 최소 계약.
 
@@ -274,10 +322,8 @@ class ScanProposal(StrictAgentOutput):
     """
 
     matched_skill: Optional[str] = Field(..., description="매칭된 SKILL 이름 또는 null")
-    table_access_rules: list[
-        WrapperKeyRule | MethodCallRule | SqlFragmentRule | EmbeddedSqlRule
-    ] = Field(default_factory=list)
-    table_access_patterns: list[TableAccessPattern] = Field(default_factory=list)
+    table_access_rules: list[ProposedTableAccessRule] = Field(default_factory=list)
+    table_access_patterns: list[ProposedTableAccessPattern] = Field(default_factory=list)
     ddl_transform: DdlTransform = Field(
         default_factory=lambda: DdlTransform(ddl_naming_rule="as_is")
     )
@@ -435,7 +481,7 @@ class ResidualPatternResult(StrictAgentOutput):
     구성 요소(``TableAccessPattern`` / ``DdlTransform``)는 공유하되, 기존 변환을 그대로
     복사하지 않고 바꿀 때만 override를 낸다.
     """
-    table_access_patterns: list[TableAccessPattern] = Field(
+    table_access_patterns: list[ProposedTableAccessPattern] = Field(
         ...,
         description="잔여 케이스의 새 공통 접근 패턴. production 코드가 검증한다",
     )

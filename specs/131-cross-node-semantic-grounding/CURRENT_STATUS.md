@@ -2302,3 +2302,32 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   모델이 작성하는 pattern `id`와 confirmed-pattern ID가 남아 있다. 다음 slice에서 proposal body와 내부
   stable rule identity를 분리해 Analyzer가 순번 identity를 부여하고, external-format Agent의 rule `name`이
   실제 지속·검증 의미인지 같은 기준으로 판정한다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.
+
+## 122. Scan/residual/external proposal의 모델 작성 ID 제거 (2026-08-31)
+
+- Scan: 모델 response의 raw pattern과 4종 DSL rule에서 `id`를 제거했다. 모델은 regex/operation/DSL
+  의미 body만 제안하며 `_proposal_to_scan_result`가 검증 전에 `S1..`/`P1..` 내부 순번을 부여한다.
+  known SKILL 정본의 rule ID는 결정론 loader에는 남지만 `read_skill`이 모델에 보여주는 YAML에서는
+  제거한다.
+- residual: 새 pattern 출력에는 ID가 없다. active confirmed pattern은 의미 body의 `P1..Pn` 요청 map,
+  case의 attempted pattern은 해당 순번만 참조한다. stable `pattern_id`, exclusion ID와 regex 중복은
+  모델 input에 없다. Analyzer 내부 ledger는 기존 ID로 transform-only 검증 대상을 정확히 결합한다.
+- external: 모델 경계를 `ExternalFormatProposal{rules[{pattern}]}`로 줄였다. skill name은
+  `external-<extension>-<group ordinal>`, rule name은 `r1..`로 Analyzer가 부여하고 key capture는 `key`로
+  고정한다. 검증 tool 결과도 절대 char span 대신 의미 있는 match 길이만 보낸다. persistence path,
+  match attribution, exact coverage 정렬과 fingerprint 검증은 그대로다.
+- schema: provider-facing 공통 base가 실제 검증 제약이 아닌 `title|description` annotation을 재귀 제거한다.
+  실제 필드 이름 `description`은 보존하고 required/properties/enum/pattern/minLength/extra-forbid는 유지한다.
+  agent schema는 Scan 9,137→3,353 chars(-63.3%), residual 3,459→1,001(-71.1%), external
+  666→335(-49.7%)다. 대표 parsed output은 175→154(-12.0%), 186→163(-12.4%),
+  124→58(-53.2%) chars다. 대표 residual 동적 입력은 684→632 chars(-7.6%)다. 봉인 실제 호출이 없어
+  실제 token 절감으로 과장하지 않는다.
+- 검증: fixture 기대값 1건을 actual `_s`로 교정한 뒤 agents+Step4/5 확대 회귀
+  `330 passed, 43 subtests`를 통과했고,
+  전체 pytest `1439 passed, 4 skipped, 338 subtests`, authoritative unittest `1201 tests, skipped 2`다.
+  실제 LLM/API, Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호 Catalog WIP와 금지 script는
+  읽기·수정·실행·stage하지 않았다.
+- production 모델 경계 11종과 callsite를 정적 inventory로 다시 닫았다. 남은 path/file index/line은 Agent가
+  실제 원문을 선택·검증하거나 사용 발생을 판단하는 데 필요한 tool/semantic selector이며 graph/storage
+  identity가 아니다. 다음 좌표는 prompt와 tool 결과의 반복 payload를 같은 영양가 기준으로 감사한다.
+  약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.

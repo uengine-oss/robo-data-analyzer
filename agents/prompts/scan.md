@@ -146,8 +146,10 @@ SKILL 매칭 여부와 미매칭일 때 필요한 custom 접근 규칙을 `ScanP
 | `framework_runtime_functions` | **SKILL 미매칭일 때만** 근거로 확인한 런타임 함수. 없으면 생략 |
 | `call_wrappers` | **SKILL 미매칭일 때만** 근거로 확인한 호출 wrapper. 없으면 생략 |
 
-`table_access_patterns` 의 각 항목: `id`, `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
+`table_access_patterns` 의 각 항목: `call_regex`(명명 그룹 `<entity>`+`<op_token>`),
 `op_mappings`(token→표준 SQL op list).
+
+규칙·패턴의 ID는 출력하지 않는다. Analyzer가 검증·재적용 장부에 필요한 내부 순번을 부여한다.
 
 `op_mappings` 의 각 항목은 `token`/`op` 두 필드. `op` 는 **반드시 4가지 중 하나**:
 SELECT / INSERT / UPDATE / DELETE. READ / WRITE / CREATE 같은 값 금지 — READ/WRITE 는

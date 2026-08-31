@@ -158,6 +158,7 @@ async def _learn_group_skill(
     stream,
     skills_root: Path,
     loaded_skills: list[ExternalSkill],
+    skill_ordinal: int,
 ) -> tuple[ValidatedExternalSkill | None, tuple[str, str] | None]:
     """한 형식 그룹의 새 skill 학습 — Agent 제안 → 검증 → 조건부 저장.
 
@@ -193,6 +194,7 @@ async def _learn_group_skill(
             llm_semaphore=llm_semaphore,
             pause=pause,
             stream_emit=stream.emit if stream is not None else None,
+            skill_ordinal=skill_ordinal,
         )
         validated = validate_external_skill(
             proposed.skill, held_out_samples, negative_samples=negative_samples
@@ -291,7 +293,9 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
     with step_processing_scope(_STEP, stream):
         for file, detail in undecodable:
             reject([file], "undecodable_text", detail)
+        extension_ordinals: dict[str, int] = defaultdict(int)
         for extension, group_profile, files in format_groups:
+            extension_ordinals[extension] += 1
             await gate()
             samples = [decoded[file.source_file_id] for file in files]
             member_ids = {file.source_file_id for file in files}
@@ -341,6 +345,7 @@ async def scan_external_step(state: dict, config: Optional[RunnableConfig] = Non
                     stream=stream,
                     skills_root=skills_root,
                     loaded_skills=loaded_skills,
+                    skill_ordinal=extension_ordinals[extension],
                 )
                 if validated is None:
                     reject(files, *failure)

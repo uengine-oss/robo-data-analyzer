@@ -32,15 +32,21 @@ class ProbeExtractionRuleTest(unittest.TestCase):
 class VerifyExternalRuleToolTest(unittest.TestCase):
     def test_tool_reports_matches_and_negative_hits(self) -> None:
         tool = make_verify_external_rule_tool([SAMPLE], [DECOY, SAMPLE])
-        report = tool.invoke({"pattern": r"^(?P<key>[A-Z]{3})=\d;.*$", "key_group": "key"})
+        report = tool.invoke({"pattern": r"^(?P<key>[A-Z]{3})=\d;.*$"})
         self.assertIn("매치 2건", report)
         self.assertIn("key='AAA'", report)
+        self.assertIn("chars=", report)
+        self.assertNotIn("span=[", report)
+        self.assertEqual(
+            {"pattern"},
+            set(tool.args_schema.model_json_schema()["properties"]),
+        )
         # SAMPLE 자신이 negative 에도 있으므로 과잉 매치 경고가 나와야 한다.
         self.assertIn("NEGATIVE_MATCH", report)
 
     def test_tool_reports_rejection_reason(self) -> None:
         tool = make_verify_external_rule_tool([SAMPLE], [])
-        report = tool.invoke({"pattern": r"(?P<key>x?)", "key_group": "key"})
+        report = tool.invoke({"pattern": r"(?P<key>x?)"})
         self.assertTrue(report.startswith("REJECTED:"))
 
 

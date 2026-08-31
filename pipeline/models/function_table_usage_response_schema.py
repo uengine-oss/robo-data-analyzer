@@ -20,7 +20,7 @@ from pipeline.models.function_table_usage import (
     group_function_table_usage_slots,
     project_function_table_usages,
 )
-from pipeline.models.llm_wire_schema import CompactLlmResponse
+from llm.structured_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     SemanticFrame,
     SemanticSlot,

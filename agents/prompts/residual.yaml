@@ -9,8 +9,11 @@ user_template_specific: |
   op_mappings의 op는 SELECT/INSERT/UPDATE/DELETE 중 하나만 쓴다. 기존 정규식과 같은
   패턴을 다시 내지 않는다. entity 표기만 DDL과 어긋나면 새 정규식 대신
   ddl_transform_override를 사용한다. 현재 변환을 바꾸지 않으면 override는 null이다.
+  confirmed pattern의 `P1..Pn`은 이 요청에서 attempted pattern을 연결하는 순번일 뿐이며
+  출력하거나 새 pattern 이름으로 사용하지 않는다.
   둘 다 입증할 수 없으면 빈 table_access_patterns와 null override를 낸다. 이유·상태·근거
-  문장은 출력하지 않는다. Analyzer가 빈 제안을 종료로 판정한다.
+  문장은 출력하지 않는다. 패턴 ID도 출력하지 않는다. Analyzer가 내부 순번을 부여하고 빈 제안을
+  종료로 판정한다.
 
 user_template_inputs: |
   # 라운드 공통 확정 맥락

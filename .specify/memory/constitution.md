@@ -82,8 +82,8 @@
 
 - 모델 응답은 closed schema를 사용한다. 여러 의미값의 swap을 순서만으로 탐지할 수 없는 family만
   Analyzer가 미리 배정한 연속 순번 local key를 사용하며, 그 key에 stable ID·hash·line/range를
-  인코딩하지 않는다. extra field와 임의 key를 거부한다. schema의 설명용 title과 동적 fingerprint는
-  의미 제약이 아니므로 provider wire에 넣지 않는다.
+  인코딩하지 않는다. extra field와 임의 key를 거부한다. schema의 설명용 title·description과 동적
+  fingerprint는 의미 제약이 아니며 prompt와 중복되므로 provider wire에 넣지 않는다.
 - Summary 모델은 함수 전체 흐름의 `summary`와 허용된 `stereotype`을 한 번만 만든다. 세부 문장을
   따로 생성해 기계적으로 이어 붙인 것을 최종 Summary로 승격하지 않는다.
 - Table 모델은 Analyzer가 확정한 직접 `(function, table, access mode)`만 설명한다. 하위 함수의 table

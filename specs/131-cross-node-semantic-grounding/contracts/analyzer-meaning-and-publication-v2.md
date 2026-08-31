@@ -475,6 +475,34 @@ strict root이고 Rule은 effect/row의 두 exact map이다. 입력의 condition
 strict root를 사용한다. 어느 family든 모델 출력에는 evidence, confidence, question, 내부 ID/hash,
 임의 extra, 자유형식 missing-context가 없다.
 
+Scanning·external proposal의 현재 root는 다음처럼 닫힌다.
+
+```yaml
+# unknown project Scan
+matched_skill: <검증할 SKILL 이름 또는 null>
+table_access_rules: [<id 없는 DSL 의미 body>]
+table_access_patterns:
+  - call_regex: <검증할 raw pattern>
+    op_mappings: [{token: <raw>, op: <표준 DML>}]
+
+# residual
+table_access_patterns:
+  - call_regex: <새 pattern>
+    op_mappings: [{token: <raw>, op: <표준 DML>}]
+ddl_transform_override: <새 전체 변환 또는 null>
+
+# unknown external format
+rules:
+  - pattern: <전체 record span과 (?P<key>...)를 가진 pattern>
+```
+
+Scan/residual pattern ID와 external skill/rule name은 모델이 작성하지 않는다. Analyzer가 검증·통계·
+재적용·저장에 필요한 내부 순번을 부여한다. residual 입력의 confirmed pattern은 `P1..Pn` 요청 map이고
+attempted case는 이 순번만 참조한다. 이는 여러 active pattern 중 어떤 실패인지 연결하는 최소 local key며
+제품 identity가 아니다. external `key_group`은 항상 `key`라 출력하지 않는다. provider schema는 required,
+enum, pattern, 길이, `additionalProperties:false` 같은 제약만 보내며 prompt와 중복되는 title·description은
+보내지 않는다.
+
 Analyzer가 모델 의미값과 내부 참조 장부를 결합하는 의미 상태는 다음처럼 서로 다른 실패를 섞지 않는다.
 
 ```text

@@ -418,6 +418,25 @@
   - 전체 pytest `1436 passed, 4 skipped, 334 subtests`, authoritative unittest `1198 tests,
     skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B35 Scan/residual/external proposal ID 제거와 schema annotation 축약**
+  - [x] Scan의 raw/DSL pattern ID를 모델 schema에서 제거하고 Analyzer가 `S/P` 내부 순번을 부여한다.
+  - [x] residual 출력 pattern ID와 입력의 stable `pattern_id`를 제거하고 confirmed/attempted 결합에만
+    `P1..Pn` request-local 순번을 사용한다. SKILL exclusion과 model-visible SKILL YAML의 내부 ID도
+    제거한다.
+  - [x] external-format 출력의 skill name, rule name, key_group을 제거한다. Analyzer가 확장자 그룹 순번과
+    rule 순번을 부여하고 capture 이름은 의미 계약 `key`로 고정한다. 검증 tool은 절대 char span 대신
+    match 길이만 반환한다.
+  - [x] 모든 provider-facing response schema에서 prompt와 중복되는 title·description annotation을
+    제거하되 closed/required/enum/pattern/길이 제약을 보존한다.
+  - [x] production 모델 경계 11종과 callsite를 정적 inventory로 닫고 Search glossary schema까지 같은
+    compact strict base를 적용한다. 원문 선택·검증에 필요한 path/file index/line은 tool/semantic selector로
+    유지하며 graph/storage identity와 구분한다.
+  - agent response schema는 Scan 9,137→3,353 chars(-63.3%), residual 3,459→1,001(-71.1%),
+    external 666→335(-49.7%)다. 대표 parsed output은 각각 12.0%, 12.4%, 53.2% 줄었고 대표 residual
+    동적 pattern/exclusion/case 입력은 684→632 chars(-7.6%)다. 실제 token으로 과장하지 않는다.
+  - 전체 pytest `1439 passed, 4 skipped, 338 subtests`, authoritative unittest `1201 tests,
+    skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

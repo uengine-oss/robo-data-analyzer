@@ -21,7 +21,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.analysis_context import ReferencedSymbolContext
-from pipeline.models.llm_wire_schema import CompactLlmResponse
+from llm.structured_schema import CompactLlmResponse
 from pipeline.models.rule_materialization import validate_structural_effect
 
 

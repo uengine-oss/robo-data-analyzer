@@ -1,6 +1,7 @@
 """Machine inventory for every production LLM response boundary."""
 from __future__ import annotations
 
+import json
 import unittest
 
 from pydantic import ValidationError
@@ -24,11 +25,12 @@ from pipeline.models.table_description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
+from search.query.rewrite import GlossaryRewriteResponse
 from pipeline.models.function_table_usage_response_schema import (
     batch_function_table_usages_response_model,
     function_table_usages_response_model,
 )
-from pipeline.steps.step4_scan_project.external_skills import ExternalSkillProposal
+from pipeline.steps.step4_scan_project.external_skills import ExternalFormatProposal
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
@@ -46,11 +48,22 @@ def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) 
         case.assertFalse(variant.get("additionalProperties", True))
 
 
-def _assert_no_schema_titles(case: unittest.TestCase, value) -> None:
+def _assert_no_schema_titles(
+    case: unittest.TestCase,
+    value,
+    *,
+    property_map: bool = False,
+) -> None:
     if isinstance(value, dict):
-        case.assertNotIn("title", value)
-        for item in value.values():
-            _assert_no_schema_titles(case, item)
+        if not property_map:
+            case.assertNotIn("title", value)
+            case.assertNotIn("description", value)
+        for key, item in value.items():
+            _assert_no_schema_titles(
+                case,
+                item,
+                property_map=not property_map and key == "properties",
+            )
     elif isinstance(value, list):
         for item in value:
             _assert_no_schema_titles(case, item)
@@ -89,13 +102,13 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             (ResidualPatternResult, {
                 "table_access_patterns", "ddl_transform_override",
             }),
-            (ExternalSkillProposal, {
-                "name", "rules",
-            }),
+            (ExternalFormatProposal, {"rules"}),
+            (GlossaryRewriteResponse, {"substitutions"}),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
+                _assert_no_schema_titles(self, model.model_json_schema())
 
     def test_dynamic_semantic_envelopes_are_closed_and_required(self) -> None:
         table_evidence = {
@@ -189,10 +202,21 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         self.assertEqual(["matched_skill"], schema["required"])
         self.assertNotIn("table_access_rules", schema["required"])
         self.assertNotIn("evidence", schema["properties"])
+        self.assertNotIn('"id"', json.dumps(schema))
         self.assertNotIn("evidence_locations", schema["properties"])
         self.assertNotIn("confidence", schema["properties"])
         self.assertNotIn("analysis_status", schema["properties"])
         self.assertNotIn("no_match_reason", schema["properties"])
+
+    def test_pattern_proposal_boundaries_do_not_ask_the_model_for_ids(self) -> None:
+        for model in (ScanProposal, ResidualPatternResult, ExternalFormatProposal):
+            with self.subTest(model=model.__name__):
+                schema = model.model_json_schema()
+                rendered = json.dumps(schema)
+                self.assertNotIn('"id"', rendered)
+                if model is ExternalFormatProposal:
+                    self.assertNotIn('"name"', rendered)
+                    self.assertNotIn('"key_group"', rendered)
 
 
 if __name__ == "__main__":

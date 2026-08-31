@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, create_model
 
 from pipeline.languages import stereotype_values
 from pipeline.models.code_analysis_output import SummaryOutput
-from pipeline.models.llm_wire_schema import CompactLlmResponse
+from llm.structured_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     SemanticFrame,
     SemanticSlot,

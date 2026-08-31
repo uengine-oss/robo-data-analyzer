@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.code_analysis_output import GroundedColumnDescription, TableDescription
-from pipeline.models.llm_wire_schema import CompactLlmResponse
+from llm.structured_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,

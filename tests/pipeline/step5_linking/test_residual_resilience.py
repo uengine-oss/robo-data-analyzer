@@ -142,7 +142,8 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
                 round_no=1,
             )
 
-        self.assertIs(expected, result)
+        self.assertEqual([], result.table_access_patterns)
+        self.assertIsNone(result.ddl_transform_override)
         invoke.assert_awaited_once()
         kwargs = invoke.await_args.kwargs
         self.assertEqual("residual", kwargs["rule_name"])
@@ -208,7 +209,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
 
         self.assertEqual(
             pattern.call_regex,
-            json.loads(values["confirmed_patterns"])[0]["call_regex"],
+            json.loads(values["confirmed_patterns"])["P1"]["call_regex"],
         )
         self.assertNotIn('"regex"', values["residual_cases"])
         self.assertIn('"entity": "ORDERS"', values["residual_cases"])
@@ -218,6 +219,11 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             {"call_text", "attempted_patterns", "numbered_source"},
             set(rendered_case),
         )
+        self.assertNotIn("pattern_id", values["residual_cases"])
+        self.assertEqual(
+            "P1",
+            rendered_case["attempted_patterns"][0]["pattern"],
+        )
         self.assertNotIn("codebase_notes", values)
         self.assertNotIn("matched_skill", values)
         residual_prompt = (
@@ -226,7 +232,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("{codebase_notes}", residual_prompt)
         exclusions = json.loads(values["confirmed_exclusions"])
-        self.assertEqual("non_table_key", exclusions[0]["id"])
+        self.assertNotIn("id", exclusions[0])
         self.assertEqual("_seq", exclusions[0]["entity_suffix"])
 
     async def test_other_value_error_remains_fatal(self) -> None:
@@ -300,7 +306,7 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
             for index in range(1, 5)
         ]
         proposals = [
-            ResidualPatternResult(
+            SimpleNamespace(
                 table_access_patterns=[TableAccessPattern(
                     id=f"pattern_{index}",
                     call_regex=rf"(?P<op_token>SELECT) (?P<entity>T{index})",
@@ -364,12 +370,12 @@ class ResidualResilienceTest(IsolatedAsyncioTestCase):
 
     async def test_rejected_proposal_is_fatal_not_unresolved_success(self) -> None:
         baseline = SimpleNamespace(edges=[], unresolved=[])
-        proposed = ResidualPatternResult(
-            table_access_patterns=[{
-                "id": "dead",
-                "call_regex": r"(?P<op_token>SELECT) (?P<entity>ORDERS)",
-                "op_mappings": [{"token": "SELECT", "op": "SELECT"}],
-            }],
+        proposed = SimpleNamespace(
+            table_access_patterns=[TableAccessPattern(
+                id="RP1_1",
+                call_regex=r"(?P<op_token>SELECT) (?P<entity>ORDERS)",
+                op_mappings=[OpMapping(token="SELECT", op="SELECT")],
+            )],
             ddl_transform_override=None,
         )
         verdict = SimpleNamespace(ok=False, summary="dead rule")

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import regex
 import yaml
 
+from llm.structured_schema import CompactLlmResponse
 from shared.files.paths import resolve_within
 from shared.files.run_cache_context import read_run_text
 
@@ -71,8 +72,22 @@ class _ExternalRuleSet(BaseModel):
         return self
 
 
-class ExternalSkillProposal(_ExternalRuleSet):
-    """The model-owned reusable format name and already verified extraction rules."""
+class ProposedExternalExtractionRule(CompactLlmResponse):
+    """Identity-free model proposal; every pattern must expose ``key``."""
+
+    pattern: Annotated[str, Field(min_length=1)]
+
+
+class ExternalFormatProposal(CompactLlmResponse):
+    """Minimal model output for an unknown external format."""
+
+    rules: tuple[ProposedExternalExtractionRule, ...]
+
+    @model_validator(mode="after")
+    def _nonempty_rules(self) -> "ExternalFormatProposal":
+        if not self.rules:
+            raise ValueError("rules must contain at least one entry")
+        return self
 
 
 class ExternalSkill(_ExternalRuleSet):

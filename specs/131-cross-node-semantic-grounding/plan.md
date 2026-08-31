@@ -47,9 +47,12 @@
   의무 하나만 유지한다.
 - Rule·FunctionTableUsage·DBMS batch는 순서만으로 값 교환을 탐지할 수 없으므로 exact response 결합에
   필요한 최소 순번 key만 유지한다. key는 `C1/E1/R1/FT1/N1`처럼 짧고 연속적이며 line/range·stable ID·
-  hash를 포함하지 않는다. response schema의 설명용 title·동적 fingerprint도 제거한다.
+  hash를 포함하지 않는다. response schema의 설명용 title·description·동적 fingerprint도 제거한다.
 - TableDescription은 FunctionTableUsage LLM 문장을 재입력하지 않고 DDL/source와 결정론 직접 사용
   사실만 소비한다. 빈 optional 값과 다른 필드에서 완전히 복원되는 값은 직렬화하지 않는다.
+- Scan/residual pattern과 external-format rule은 모델이 의미 body만 제안하고 Analyzer가 검증용 내부
+  identity를 부여한다. residual 교차 참조만 요청 내 `P1..Pn`을 사용하며 external key capture는 `key`로
+  고정한다. model-visible SKILL 계약에서는 내부 rule ID를 제거한다.
 - 모든 이름은 producer→consumer→storage→search에서 같은 개념을 표현하도록 통일한다.
 
 ### P4. LLM 실행 경계

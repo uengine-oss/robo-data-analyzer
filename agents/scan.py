@@ -210,8 +210,16 @@ def _skill_owned_values(contract: dict) -> dict:
 
 
 def _proposal_to_scan_result(proposal: ScanProposal) -> ScanResult:
-    """Convert a model proposal without inventing or copying provenance metadata."""
-    data = proposal.model_dump()
+    """Assign Analyzer-owned rule identities to an otherwise identity-free proposal."""
+    data = proposal.model_dump(exclude={"table_access_rules", "table_access_patterns"})
+    data["table_access_rules"] = [
+        parse_rule({"id": f"S{index}", **rule.model_dump()})
+        for index, rule in enumerate(proposal.table_access_rules, start=1)
+    ]
+    data["table_access_patterns"] = [
+        TableAccessPattern(id=f"P{index}", **pattern.model_dump())
+        for index, pattern in enumerate(proposal.table_access_patterns, start=1)
+    ]
     if (
         proposal.matched_skill is None
         and not proposal.table_access_rules

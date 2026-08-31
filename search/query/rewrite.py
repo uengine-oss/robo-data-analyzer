@@ -10,8 +10,9 @@ import os
 import re
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
+from llm.structured_schema import CompactLlmResponse
 from search.query.glossary import build as build_glossary, render_for_prompt
 from search.query import query_llm
 from search.ranking.recall import tokenize
@@ -22,7 +23,7 @@ _ccache: dict[tuple[str, str], "QueryRewriteResult"] = {}
 _ABBREV = re.compile(r"^[A-Za-z][A-Za-z0-9&-]+$")
 
 
-class GlossarySubstitution(BaseModel):
+class GlossarySubstitution(CompactLlmResponse):
     """사용자 질의의 한 표현을 용어집의 정확한 표준어에 연결한다."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -31,7 +32,7 @@ class GlossarySubstitution(BaseModel):
     canonical_term: str = Field(description="용어집에 실제로 존재하는 표준어 하나")
 
 
-class GlossaryRewriteResponse(BaseModel):
+class GlossaryRewriteResponse(CompactLlmResponse):
     """모델이 결정하는 유일한 값: 근거가 있는 용어 치환 목록."""
 
     model_config = ConfigDict(extra="forbid", strict=True)

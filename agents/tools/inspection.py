@@ -25,7 +25,12 @@ from shared.files.paths import PathOutsideRoot, resolve_within
 from shared.files.run_cache_context import read_run_text
 from graph.schema.graph_nodes import CodeNode
 from pipeline.languages import statement_labels
-from agents.skills.catalog import FRAMEWORK_SKILLS_DIR, SkillCatalogError, build_skill_catalog
+from agents.skills.catalog import (
+    FRAMEWORK_SKILLS_DIR,
+    SkillCatalogError,
+    build_skill_catalog,
+    model_visible_skill_document,
+)
 
 # agents/skills/ 경로
 
@@ -144,7 +149,7 @@ def read_skill(name: str) -> str:
     **인자**:
     - `name`: `list_skills()` 결과의 skill 이름.
 
-    **결과 형식**: SKILL.md 본문 그대로.
+    **결과 형식**: 의미 계약은 그대로이며 YAML의 Analyzer 내부 `id`만 제거한 본문.
 
     **실패 응답**:
     - `INVALID_SKILL_NAME: <name>` — 이름에 경로문자(`../` 등) 포함 — agents/skills/ 밖.
@@ -162,4 +167,4 @@ def read_skill(name: str) -> str:
     md = skill_dir / "SKILL.md"
     if not md.is_file():
         return f"SKILL_NOT_FOUND: {name}"
-    return read_run_text(md, encoding="utf-8")
+    return model_visible_skill_document(read_run_text(md, encoding="utf-8"))

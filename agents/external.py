@@ -14,8 +14,9 @@ from agents.tools.validation import make_verify_external_rule_tool
 from llm.usage.cost_budget import CostBudget
 from pipeline.execution.pause_controller import PauseController
 from pipeline.steps.step4_scan_project.external_skills import (
+    ExternalExtractionRule,
+    ExternalFormatProposal,
     ExternalSkill,
-    ExternalSkillProposal,
     ExternalSkillValidationError,
     ValidatedExternalSkill,
     validate_external_skill,
@@ -29,7 +30,20 @@ class ExternalAgentRejected(RuntimeError):
     pass
 
 
-ProposalInvoker = Callable[[], Awaitable[ExternalSkillProposal]]
+ProposalInvoker = Callable[[], Awaitable[ExternalFormatProposal]]
+
+
+def _analyzer_skill_name(extension: str, ordinal: int) -> str:
+    """Build a stable internal slug without asking the model for identity prose."""
+    body = "".join(
+        character.lower()
+        if character.isascii() and character.isalnum()
+        else "-"
+        for character in extension.lstrip(".")
+    )
+    while "--" in body:
+        body = body.replace("--", "-")
+    return f"external-{body.strip('-') or 'format'}-{ordinal}"
 
 
 def _user_message(extension: str, samples: list[str]) -> str:
@@ -45,7 +59,7 @@ def _user_message(extension: str, samples: list[str]) -> str:
         f"extension: {extension}",
         "training_sample_inventory (원문은 sample 도구로 필요한 페이지를 읽는다):",
         json.dumps(inventory, ensure_ascii=False, indent=2),
-        "형식을 관찰·검증한 뒤 ExternalSkillProposal 을 submit_external 로 제출하라.",
+        "형식을 관찰·검증한 뒤 ExternalFormatProposal 을 submit_external 로 제출하라.",
     ])
 
 
@@ -60,12 +74,13 @@ async def run_external_agent(
     pause: PauseController,
     stream_emit: Optional[Callable[[dict], None]] = None,
     proposal_invoker: ProposalInvoker | None = None,
+    skill_ordinal: int = 1,
 ) -> ValidatedExternalSkill:
     """Request one proposal and accept it only after deterministic validation."""
     if not samples:
         raise ExternalAgentRejected("external agent requires at least one text sample")
 
-    async def default_invoke() -> ExternalSkillProposal:
+    async def default_invoke() -> ExternalFormatProposal:
         # 도구는 전부 "파일 전문" 기준 — 미리보기는 앞부분일 뿐이며, 큰 파일과
         # 뒤에서 구조가 바뀌는 파일은 탐색 도구로 확인한다. verify 는 production
         # 엔진 그대로라 "에이전트가 검증한 것 == 검증기가 실행할 것" (Scan 동형).
@@ -80,7 +95,7 @@ async def run_external_agent(
             invoke_id="proposal",
             system_prompt=read_run_text(_SYSTEM_PROMPT_PATH, encoding="utf-8"),
             tools=tools,
-            response_format=ExternalSkillProposal,
+            response_format=ExternalFormatProposal,
             user_message=_user_message(extension, samples),
             run_dir=run_dir,
             cost_budget=cost_budget,
@@ -93,8 +108,15 @@ async def run_external_agent(
         async with llm_semaphore:
             draft = await invoke()
         skill = ExternalSkill(
-            name=draft.name,
-            rules=draft.rules,
+            name=_analyzer_skill_name(extension, skill_ordinal),
+            rules=tuple(
+                ExternalExtractionRule(
+                    name=f"r{index}",
+                    pattern=rule.pattern,
+                    key_group="key",
+                )
+                for index, rule in enumerate(draft.rules, start=1)
+            ),
             extensions=(extension.lower(),) if extension else (),
         )
         try:

@@ -13,8 +13,9 @@ from unittest.mock import AsyncMock, patch
 
 from agents.contracts import ScanProposal, ScanResult
 from agents.rule_compiler import compile_exclusion_rules, compile_rules, split_rules
-from agents.scan import _finalize, _hydrate_skill_contract
+from agents.scan import _finalize, _hydrate_skill_contract, _proposal_to_scan_result
 from agents.skills.catalog import SkillCatalogError, load_skill_contract
+from agents.tools.inspection import read_skill
 from graph.schema.graph_nodes import CodeNode, Table
 from pipeline.steps.step5_linking.link_tables.regex_table_linker import PatternVerdict
 
@@ -219,6 +220,28 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
                 "matched_skill": None,
                 "no_match_reason": "no reusable table syntax",
             })
+
+    def test_model_pattern_body_gets_analyzer_owned_identity(self):
+        proposal = ScanProposal.model_validate({
+            "matched_skill": None,
+            "table_access_patterns": [{
+                "call_regex": r"(?P<op_token>SELECT) (?P<entity>\w+)",
+                "op_mappings": [{"token": "SELECT", "op": "SELECT"}],
+            }],
+        })
+
+        result = _proposal_to_scan_result(proposal)
+
+        self.assertEqual("P1", result.table_access_patterns[0].id)
+        self.assertNotIn("id", proposal.table_access_patterns[0].model_dump())
+
+    def test_scan_agent_skill_view_omits_internal_rule_ids(self):
+        document = read_skill.invoke({"name": "proframe-c-pfm-dbio"})
+
+        self.assertNotIn("id: proframe_mpfmdbio", document)
+        self.assertNotIn("id: proframe_mpfmdbio_sequence", document)
+        self.assertIn("wrapper: mpfmdbio", document)
+        self.assertIn("entity_suffix: _s", document)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 Parser→Graph 제품 명세
 
 **Status**: Active — SKT 1,503줄 실제 생성·3층 검증·책임 slice push 완료. Catalog pagination 외부 계약과 GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
-**Updated**: 2026-08-29
+**Updated**: 2026-08-31
 **Entry point**: `specs/131-cross-node-semantic-grounding/README.md`
 
 ## 1. 목표와 범위
@@ -92,13 +92,20 @@ question, evidence 복창은 모델 입력·출력에서 제외한다. Summary�
 request-local 순번 key를 허용한다. 이 key에는 stable ID·hash·line/range를 인코딩하지 않는다. 결합과
 감사에 필요한 canonical evidence와 좌표는 Analyzer 내부에만 둔다.
 
+unknown Scan과 residual의 모델 출력은 pattern/rule 의미 body만 가지며 pattern ID는 Analyzer가 검증
+장부에 내부 순번으로 부여한다. residual의 confirmed pattern과 attempted pattern 결합에만 `P1..Pn`
+요청 순번을 사용한다. unknown external-format 출력은 검증할 `pattern`만 가지며 skill/rule 이름과
+고정 `key` capture 계약은 Analyzer가 부여한다. SKILL 원문의 내부 rule ID도 모델-visible YAML에서
+제거한다.
+
 ## 6. LLM 호출 계약
 
 허용된 생성 호출은 unknown project Scan, unknown external-format adapter, unmatched table pattern,
 함수 Summary, FunctionTableUsage, Rule meaning, Table/Column description뿐이다. Module·Component·Glossary·
 Example은 LLM 0회다. 정적 callsite inventory가 이 목록 밖의 호출을 실패시킨다.
 
-모든 family는 byte-identical 공통 prefix와 strict closed schema를 사용한다. 첫 실제 요청이 cache
+모든 family는 byte-identical 공통 prefix와 strict closed schema를 사용한다. schema에는 검증 제약이
+아닌 title·description annotation을 넣지 않고 prompt가 의미 설명을 한 번만 소유한다. 첫 실제 요청이 cache
 warm-up이며 dummy 요청은 없다. Summary·Table·Rule은 서로 기다리지 않고 비차단 병렬 실행한다.
 같은 concern 재질문, 두 의미 동시 질의, hidden judge/repair, content retry, 자동 follow-up/tool loop는
 금지한다. 현재 runner와 provider SDK의 자동 재시도는 0이다. 서버가 request bytes를 받지 않았음이

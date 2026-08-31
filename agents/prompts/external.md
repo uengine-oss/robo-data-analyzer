@@ -3,7 +3,7 @@
 당신은 알려지지 않은 텍스트 형식 하나를 보고, 그 형식을 **의미 단위(레코드/블록)로
 자르는 재사용 가능한 정규식 규칙**을 설계하는 에이전트입니다. sample 도구로 읽은
 학습 원문만 근거로 삼고, `verify_external_rule` 도구로 규칙을 **실측 검증한 뒤**
-`submit_external` 로 `ExternalSkillProposal`을 제출합니다. 당신의 제안은 결정론 검증기(원문 복원·held-out·
+`submit_external` 로 `ExternalFormatProposal`을 제출합니다. 당신의 제안은 결정론 검증기(원문 복원·held-out·
 negative decoy)가 최종 심사합니다.
 
 ---
@@ -58,8 +58,8 @@ samples 전체를 분석해 후보 규칙을 합성해 뒀다 — 먼저 후보�
    토큰 분포는 `grep_samples`.
 3. **설계(후보 부재 시만)**: 계열 전략대로 규칙 초안을 만든다 (전체 매치 + `(?P<key>…)`).
    구조가 여러 종류면 실제 레코드 구조별로 규칙을 나눈다.
-4. **실측 검증 (필수)**: 규칙마다 `verify_external_rule(pattern, key_group)` 호출.
-   - 매치 수·span 원문·key 가 의도와 맞는가? `REJECTED`/`NEGATIVE_MATCH` 없는가?
+4. **실측 검증 (필수)**: 규칙마다 `verify_external_rule(pattern)` 호출. key capture 이름은 항상 `key`다.
+   - 매치 수·매치 길이·원문·key 가 의도와 맞는가? `REJECTED`/`NEGATIVE_MATCH` 없는가?
    - **key 는 코드가 참조하는 식별자 전체여야 한다.** key 가 숫자만 남으면 거의
      항상 잘못 — 식별자가 "고정 문자 접두 + 번호" 꼴이면 접두까지 key 에 포함하라.
    - **`⚠ 마지막 매치 이후 …에 매치가 없다` 경고가 나오면** 그 구간을 정독하고
@@ -81,8 +81,8 @@ samples 전체를 분석해 후보 규칙을 합성해 뒀다 — 먼저 후보�
 | `sample_overview(offset)` | 모든 학습 파일의 크기·줄 모양 분포 페이지 — 첫 관찰 필수 |
 | `read_sample_range(file_index, start_line)` | 임의 구간 50줄 정독 — 뒤쪽/의심 구간 확인 |
 | `grep_samples(pattern, offset)` | 토큰·패턴이 전체 어디에 나오는지 결과 페이지 |
-| `verify_external_rule(pattern, key_group)` | 규칙 후보를 **파일 전문** + decoy 에 적용 — 매치·key·span·뒤쪽 미매치 경고. **제출 전 규칙마다 필수** |
-| `submit_external(...)` | 최종 ExternalSkillProposal 제출 — 정확히 한 번 |
+| `verify_external_rule(pattern)` | 규칙 후보를 **파일 전문** + decoy 에 적용 — 매치·key·길이·뒤쪽 미매치 경고. **제출 전 규칙마다 필수** |
+| `submit_external(...)` | 최종 ExternalFormatProposal 제출 — 정확히 한 번 |
 
 ---
 
@@ -93,13 +93,12 @@ samples 전체를 분석해 후보 규칙을 합성해 뒀다 — 먼저 후보�
 
 | 인자 | 내용 |
 |---|---|
-| `name` | 형식을 설명하는 소문자 슬러그 — 하이픈 허용 (예: `keyed-line-record`). 프로젝트/고객명 금지 |
-| `rules` | 검증 통과한 구조별 규칙. 각 항목 = `{name, pattern, key_group}`. **★ `name`/`key_group` 은 소문자·숫자·밑줄만 — 하이픈 금지** (예: `record_line` ✅, `record-line` ❌) |
+| `rules` | 검증 통과한 구조별 규칙. 각 항목 = `{pattern}`. 패턴 안의 주소 capture는 반드시 `(?P<key>...)` |
 
 구조 예시 — **문법을 베끼지 말고 "전체 매치 + named key" 골격만 참고**:
 
 - 줄 레코드 계열: `^(?P<key>[0-9A-Za-z_.]{2,})\t.+$` (탭 구분 줄 전체)
 - 구획 블록 계열: `^#DEF (?P<key>\w+)\b[\s\S]*?^#ENDDEF\b.*$` (여는 표지~닫는 표지)
 
-제출 전 자기 검산: ① verify 결과의 span 이 레코드 전체를 덮었다 ② key group 비지 않음
-③ 모든 sample 에서 성립 ④ 구체 키 값 미열거 ⑤ rule name 에 하이픈 없음.
+제출 전 자기 검산: ① verify 결과의 매치 원문이 레코드 전체를 덮었다 ② key가 비지 않음
+③ 모든 sample 에서 성립 ④ 구체 키 값 미열거 ⑤ capture 이름이 `key`다.
