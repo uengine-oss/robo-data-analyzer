@@ -31,6 +31,26 @@ def prompt_evidence_sha256(prompt_dir: Path) -> str:
     return digest.hexdigest()
 
 
+def exact_response_schema(evidence: object) -> dict[str, object]:
+    """Unwrap tracing's content-addressed schema envelope without trusting it."""
+    if not isinstance(evidence, dict):
+        raise ValueError("recorded response schema is missing")
+    if set(evidence) == {"sha256", "bytes", "schema"}:
+        schema = evidence.get("schema")
+        if not isinstance(schema, dict):
+            raise ValueError("recorded response schema envelope is invalid")
+        canonical = json.dumps(
+            schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        if evidence.get("bytes") != len(canonical) or evidence.get(
+            "sha256",
+        ) != hashlib.sha256(canonical).hexdigest():
+            raise ValueError("recorded response schema envelope hash mismatch")
+        return schema
+    # Historical evidence before the tracing envelope stored the exact schema.
+    return evidence
+
+
 def seed_recorded_responses(
     run_dir: Path,
     *,
@@ -60,9 +80,9 @@ def seed_recorded_responses(
             record = json.loads(line)
             response = record.get("response")
             parsed = response.get("parsed") if isinstance(response, dict) else None
-            response_schema = record.get("response_schema")
+            response_schema = exact_response_schema(record.get("response_schema"))
             metadata = record.get("metadata")
-            if parsed is None or not isinstance(response_schema, dict):
+            if parsed is None:
                 raise ValueError(
                     f"incomplete recorded response: {path.name}:{line_number}"
                 )
