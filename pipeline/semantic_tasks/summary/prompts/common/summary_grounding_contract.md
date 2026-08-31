@@ -14,5 +14,7 @@ hash·path·grammar reference는 내부 추적용이다. request-local 결합 ke
 
 조건에서 호출된 opaque 함수의 반환 의미가 `linked_callee_outcomes_json`에 없으면 함수 이름을 보고
 null/empty/valid/success 같은 상태로 번역하지 않는다. 이때는 SOURCE의 호출식·비교 연산자·literal을
-그대로 보존해 그 조건에서 실제로 실행되는 효과와 반환만 설명한다. 출력 locale의 자연어에 다른 언어의
-문자나 단어를 섞지 않되, SOURCE의 물리 식별자와 literal은 원문 그대로 둘 수 있다.
+그대로 한 번 보존해 그 조건에서 실제로 실행되는 효과와 반환만 설명한다. 다시 언급할 때는 `그 조건이
+참이면|거짓이면`이라고 지칭한다. `f(x) == Y`를 `x == Y` 또는 x의 자연어 상태로 바꾸는 operand
+substitution은 금지한다. 출력 locale의 자연어에 다른 언어의 문자나 단어를 섞지 않되, SOURCE의 물리
+식별자와 literal은 원문 그대로 둘 수 있다.
