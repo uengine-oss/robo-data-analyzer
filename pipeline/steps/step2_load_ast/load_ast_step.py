@@ -28,7 +28,10 @@ from pipeline.steps.step2_load_ast.expression_ownership import (
 from pipeline.steps.step2_load_ast.rule_condition_projection import (
     attach_routine_rule_condition_bundles,
 )
-from pipeline.models.import_resolution import build_import_resolution_ledger
+from pipeline.steps.step2_load_ast.import_binding import (
+    build_import_binding_environment,
+    build_import_resolution_ledger,
+)
 from shared.events.runtime_logger import log_error, log_info, log_warning
 from pipeline.steps.step2_load_ast.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
 from shared.files.cache import SourceFileCache
@@ -325,7 +328,12 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
         checkpoint=pause.gate,
         modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
     )
-    import_resolution_ledger = build_import_resolution_ledger(import_refs)
+    import_binding_environment = build_import_binding_environment(
+        evidence_sources, modules,
+    )
+    import_resolution_ledger = build_import_resolution_ledger(
+        import_refs, environment=import_binding_environment,
+    )
 
     await pause.gate()
     # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.

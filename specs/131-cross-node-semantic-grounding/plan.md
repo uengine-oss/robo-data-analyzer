@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 구현 계획
 
-**Updated**: 2026-08-29
+**Updated**: 2026-08-31
 **Requirements**: `spec.md`
 **Current state**: `CURRENT_STATUS.md`
 
@@ -27,6 +27,9 @@
 ### P2. 호출·데이터·외부 연결
 
 - 모든 call occurrence를 한 종료 상태로 분류한다.
+- 모든 import binding entry를 Parser 사실과 명시적인 선택 source/module 환경에 결합해
+  `internal|external|excluded|unresolved` 중 하나로 exact-once 종결한다. 환경 부재와 완전한 빈 환경을
+  구분하고 basename·suffix 일치만으로 internal을 만들지 않는다.
 - 사용자 internal pair만 CALLS로 만들고 occurrence와 pair를 분리한다.
 - 표준·library·framework 제공 함수 edge를 제외한다.
 - 직접 table/column access와 external exact key만 소유 함수에 결속한다.
@@ -37,6 +40,8 @@
 - source, 구조 지도, symbol, table, callee outcome, 검증 project contract를 비중복 section으로 조립한다.
 - 모델에 내부 ID/hash/range/status/evidence/question/confidence가 노출되지 않게 하고, 구조 사실은
   request-local `facts`에 한 번만 두며 출력 칸은 `fact_refs`로 참조하는 정적 계약을 둔다.
+- import occurrence/fact/module ID는 결정적 exact-once ledger 안에만 유지하며 LLM packet과 제품 그래프에
+  전달하지 않는다.
 - 모든 이름은 producer→consumer→storage→search에서 같은 개념을 표현하도록 통일한다.
 
 ### P4. LLM 실행 경계

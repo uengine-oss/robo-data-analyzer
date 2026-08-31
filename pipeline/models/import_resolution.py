@@ -14,15 +14,10 @@ from typing import Any, Literal, Mapping, Sequence
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
-ImportOutcome = Literal["resolved", "excluded", "unresolved"]
+ImportOutcome = Literal["internal", "external", "excluded", "unresolved"]
 ImportEvidenceVersion = Literal[
     "1.0.0", "1.1.0", "1.2.0", "2.0.0", "2.1.0",
 ]
-_STRUCTURED_IMPORT_EVIDENCE_VERSIONS = frozenset({
-    "1.1.0", "1.2.0", "2.0.0", "2.1.0",
-})
-
-
 class ImportEvidenceRange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -83,7 +78,7 @@ class ImportResolutionOccurrence(BaseModel):
     locality: Literal["local", "system", "unspecified"]
     outcome: ImportOutcome
     reason: str = ""
-    resolved_module_ids: tuple[str, ...] = ()
+    internal_module_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _closed_occurrence(self) -> "ImportResolutionOccurrence":
@@ -125,110 +120,28 @@ class ImportResolutionOccurrence(BaseModel):
                 or value_range.end > self.range.end
             ):
                 raise ValueError(f"{name} range must be a nonempty statement subrange")
-        if self.evidence_version == "1.0.0" and self.outcome == "resolved":
-            raise ValueError("legacy import evidence cannot authorize resolution")
-        if self.presence_status != "active" and self.outcome == "resolved":
-            raise ValueError("non-active import cannot authorize resolution")
-        if self.evidence_status != "complete" and self.outcome == "resolved":
-            raise ValueError("incomplete import evidence cannot authorize resolution")
-        if self.outcome == "resolved":
-            if self.reason or not self.resolved_module_ids:
-                raise ValueError("resolved import requires targets and no degraded reason")
-        elif not self.reason or self.resolved_module_ids:
+        if self.evidence_version == "1.0.0" and self.outcome == "internal":
+            raise ValueError("legacy import evidence cannot authorize internal binding")
+        if self.presence_status != "active" and self.outcome == "internal":
+            raise ValueError("non-active import cannot authorize internal binding")
+        if self.evidence_status != "complete" and self.outcome == "internal":
+            raise ValueError("incomplete import evidence cannot authorize internal binding")
+        if self.outcome == "internal":
+            if self.reason or not self.internal_module_ids:
+                raise ValueError("internal import requires targets and no degraded reason")
+        elif not self.reason or self.internal_module_ids:
             raise ValueError(
-                "non-resolved import requires reason and cannot claim resolved targets"
+                "non-internal import requires reason and cannot claim internal targets"
             )
         if (
-            any(not value for value in self.resolved_module_ids)
-            or len(self.resolved_module_ids) != len(set(self.resolved_module_ids))
+            any(not value for value in self.internal_module_ids)
+            or len(self.internal_module_ids) != len(set(self.internal_module_ids))
         ):
-            raise ValueError("resolved module IDs must be unique and nonblank")
+            raise ValueError("internal module IDs must be unique and nonblank")
         return self
 
     def as_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
-
-
-def _outcome(ref: Mapping[str, Any], entry: Mapping[str, Any]) -> tuple[str, str]:
-    version = str(ref.get("evidence_version") or "")
-    status = str(ref.get("evidence_status") or "")
-    presence = str(ref.get("presence_status") or "")
-    if version not in _STRUCTURED_IMPORT_EVIDENCE_VERSIONS:
-        return "unresolved", "insufficient_structured_import_evidence"
-    if status != "complete":
-        return "unresolved", "insufficient_import_evidence_completeness"
-    if presence == "inactive":
-        return "excluded", "inactive_import"
-    if presence != "active":
-        return "unresolved", "insufficient_import_presence"
-    if entry.get("import_kind") == "computed":
-        return "unresolved", "insufficient_computed_import_target"
-    return "unresolved", "insufficient_import_binding_environment"
-
-
-def build_import_resolution_ledger(
-    import_refs: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    """Produce exactly one explicit outcome for every canonical import binding entry."""
-    rows: list[dict[str, Any]] = []
-    seen_fact_ids: set[str] = set()
-    for ref in import_refs:
-        import_id = str(ref.get("import_id") or "")
-        if not import_id:
-            # Parser explicitly unsupported/not-applicable projections have no fact.
-            continue
-        if import_id in seen_fact_ids:
-            raise ValueError(f"duplicate canonical import fact: {import_id}")
-        seen_fact_ids.add(import_id)
-        entries = ref.get("entries")
-        if not isinstance(entries, list) or not entries:
-            raise ValueError(f"canonical import fact has no binding entries: {import_id}")
-        for expected_entry_ordinal, entry in enumerate(entries):
-            if not isinstance(entry, Mapping):
-                raise ValueError(f"import binding entry must be an object: {import_id}")
-            entry_ordinal = entry.get("entry_ordinal")
-            if entry_ordinal != expected_entry_ordinal:
-                raise ValueError(
-                    f"import binding entry order mismatch: {import_id}:"
-                    f"{entry_ordinal}!={expected_entry_ordinal}"
-                )
-            outcome, reason = _outcome(ref, entry)
-            occurrence_id = import_occurrence_id(import_id, expected_entry_ordinal)
-            row = {
-                "occurrence_id": occurrence_id,
-                "import_id": import_id,
-                "ordinal": len(rows),
-                "entry_ordinal": expected_entry_ordinal,
-                "evidence_version": ref.get("evidence_version"),
-                "source_id": ref.get("source_id"),
-                "line": ref.get("line"),
-                "end_line": ref.get("end_line"),
-                "range": ref.get("range"),
-                "directive_kind": ref.get("directive_kind"),
-                "grammar_rule": ref.get("grammar_rule"),
-                "presence_status": ref.get("presence_status"),
-                "evidence_status": ref.get("evidence_status"),
-                "import_kind": entry.get("import_kind"),
-                "target_kind": entry.get("target_kind"),
-                "target": entry.get("target"),
-                "target_range": entry.get("target_range"),
-                "path_components": list(entry.get("path_components") or []),
-                "path_component_ranges": list(
-                    entry.get("path_component_ranges") or []
-                ),
-                "member": entry.get("member"),
-                "member_range": entry.get("member_range"),
-                "alias": entry.get("alias"),
-                "alias_range": entry.get("alias_range"),
-                "relative_level": entry.get("relative_level"),
-                "wildcard": entry.get("wildcard"),
-                "locality": entry.get("locality"),
-                "outcome": outcome,
-                "reason": reason,
-                "resolved_module_ids": [],
-            }
-            rows.append(ImportResolutionOccurrence.model_validate(row).as_dict())
-    return normalize_import_resolution_ledger(rows)
 
 
 def normalize_import_resolution_ledger(
@@ -321,7 +234,7 @@ def validate_import_resolution_summary(value: Any) -> dict[str, Any]:
         raise ValueError("import resolution summary counts must be nonnegative integers")
     if not isinstance(by_outcome, dict) or not isinstance(by_reason, dict):
         raise ValueError("import resolution summary breakdown objects required")
-    if set(by_outcome) - {"resolved", "excluded", "unresolved"} or any(
+    if set(by_outcome) - {"internal", "external", "excluded", "unresolved"} or any(
         isinstance(count, bool) or not isinstance(count, int) or count < 0
         for count in (*by_outcome.values(), *by_reason.values())
     ):

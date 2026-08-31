@@ -433,9 +433,16 @@
   - 이름·괄호·문자열 정규식 추측 없이 exact occurrence를 internal/external/excluded/unresolved 중 하나로
     종결하고 nested call과 partial-upload 반례를 함께 검증한다.
 
-- [ ] **C08 import 25건의 binding environment 폐쇄**
-  - 실제 import fact와 선택 scope를 언어별 symbol/type/module 환경에 연결한다.
-  - basename heuristic 없이 internal/external/unresolved를 exact-once 분류하고 최소 실제 범위를 검증한다.
+- [x] **C08 import 25건의 binding environment 폐쇄**
+  - [x] 환경 미제공과 완전한 선택 source/module 환경을 별도 상태로 표현한다.
+  - [x] C quoted include는 포함 파일의 디렉터리, angle/quoted include는 봉인된 ordered include root로만
+    internal을 승인한다. basename·suffix 후보만으로 결속하지 않는다.
+  - [x] 선택 source closure에 target suffix 후보가 있되 search path가 불충분하면 unresolved, 후보가 전혀
+    없으면 external, 비활성 import는 excluded로 exact-once 종결한다.
+  - [x] outcome을 `internal|external|excluded|unresolved`로 닫고 internal만 module ID를 소유하게 한다.
+    occurrence/fact/module ID는 내부 ledger에만 유지하며 LLM packet·제품 node로 공개하지 않는다.
+  - [x] no-environment, local/internal, include-root/internal, suffix-only/unresolved, outside/external,
+    invalid/computed, inactive, duplicate 반례와 봉인된 실제 25건을 검증한다.
 
 ## D. 인도
 

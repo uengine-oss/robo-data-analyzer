@@ -182,7 +182,7 @@ class RunRegistryContractTest(unittest.TestCase):
             "alias_range": None, "relative_level": 0, "wildcard": False,
             "locality": "local", "outcome": "unresolved",
             "reason": "insufficient_import_binding_environment",
-            "resolved_module_ids": [],
+            "internal_module_ids": [],
         }
 
         ledger, seen = run_executor._capture_import_resolution_update(

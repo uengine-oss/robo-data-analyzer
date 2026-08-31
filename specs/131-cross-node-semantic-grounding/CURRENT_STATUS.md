@@ -2201,3 +2201,35 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   exact-once·저장·결과 결합용 ID는 내부에 유지하고, 응답 재결합에 위치만으로 오결합 위험이 실재하는
   구간에만 최소 local key 하나를 허용하며 그 근거와 토큰 비용을 기록한다. 사소한 의미 이득보다 토큰
   손실이 큰 필드도 제거 대상으로 본다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.
+
+## 119. import 25건의 선택 source binding environment 폐쇄 (2026-08-31)
+
+- 원인 확정: 기존 `build_import_resolution_ledger`는 Parser import fact만 받고 선택 source, language,
+  module projection, include root를 전혀 받지 않았다. 따라서 active·complete·structured import도 모두
+  `insufficient_import_binding_environment` unresolved로 고정했다. sealed 2-file closure에는 C source 두
+  개뿐이고 20개 unique target header가 하나도 없으므로 현재 업로드 경계에서의 올바른 실제 종료 상태는
+  unresolved가 아니라 external이다.
+- 계약과 구현: import 결속을 모델 normalization에서 Step 2의 명시 binder로 분리했다. 환경 미제공과
+  완전한 선택 환경을 구분하고 outcome을 `internal|external|excluded|unresolved`로 닫았다. C quoted include는
+  현재 파일 디렉터리, quoted/angle include는 봉인된 ordered include root의 exact path만 internal로 승인한다.
+  target suffix 후보가 있지만 search path가 없으면 unresolved, 후보 자체가 없으면 external이며 basename
+  heuristic은 사용하지 않는다. internal만 `internal_module_ids`를 가지며 C module은 표시용 절대
+  `file_path`가 아니라 `code_file_id(source_id)` exact identity로 검증한다.
+- ID 경계: occurrence/fact/module ID, range, grammar와 hash는 내부 exact-once ledger·publication closure
+  검증에만 유지한다. import binder는 LLM을 호출하지 않고 이 내부 ID를 LLM packet이나 제품 node로
+  공개하지 않는다. 따라서 사용자의 ID 제거 원칙과 결속 정확성 양쪽을 보존한다.
+- actual: generation `20260831_063541_470a779494a7`의 `zapamcom10150.c` 7건과
+  `zapamcom13010.c` 18건을 같은 source/AST closure에서 재생했다. 결과는 external 25,
+  unresolved/internal/excluded 0이며 reason은 `target_outside_selected_source_closure` 25다. 두 번의 ledger는
+  byte-stable이고 summary SHA-256은
+  `7880cbf52b3c1f7a540a69ea46f1d217a1236757c1d43bc6ea01068ec846618e`다.
+- 검증: Step 2 확대 `166 passed, 2 skipped`, graph/execution/publication 확대
+  `193 passed, 1 skipped, 36 subtests passed`, 전체 pytest
+  `1440 passed, 4 skipped, 342 subtests passed`, authoritative unittest
+  `1202 tests, skipped 2`다. `git diff --check` 오류는 0이다. LLM/API 호출·Neo4j 접근/write·새 DB·SKT
+  재분석은 0회이며 보호된 Catalog WIP와 출처 미확정 script는 수정·읽기·실행·stage하지 않았다.
+- 다음 첫 좌표는 LLM 입출력의 정보가치/토큰 감사다. stable/call/source/candidate/resolution ID, hash,
+  path, offset/range, grammar reference, 중복 설명을 모델 판단에 실제 필요하지 않으면 제거한다. 내부
+  exact-once ID는 모델에 보내지 않고, 순서 결합이 안전하지 않은 지점에만 최소 request-local key를
+  허용한다. 그 다음 postprocess/graph/storage/docs를 같은 기준으로 닫는다. 약 5만 LOC 성능은 GPU 복구
+  전까지 미검증이다.

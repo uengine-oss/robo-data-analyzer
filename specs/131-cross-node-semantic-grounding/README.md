@@ -1,7 +1,7 @@
 # spec 131 — Analyzer 의미 무손실 작업 진입점
 
 **Status**: Active
-**Updated**: 2026-08-29
+**Updated**: 2026-08-31
 **Role**: 현재 Analyzer SDD와 작업 상태의 단일 진입점
 
 이 디렉터리에는 현재 실행 가능한 Analyzer spec만 둔다. 과거 보고서·실험·실행 결과를 다시
@@ -24,6 +24,7 @@
 | `tasks.md` | 남은 작업과 완료 증거 |
 | `contracts/parser-structural-facts-v2.md` | Parser 구조 사실 wire |
 | `contracts/analyzer-meaning-and-publication-v2.md` | Analyzer 의미·공개 wire |
+| `contracts/import-binding-environment-v1.md` | 선택 source 환경의 import 결속·종료 상태 wire |
 | `CURRENT_STATUS.md` | 현재 HEAD·완료·미검증·다음 행동 |
 
 ## spec 밖 자료

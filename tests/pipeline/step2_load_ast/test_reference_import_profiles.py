@@ -4,8 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from graph.schema.graph_nodes import CodeNode, Constant
-from pipeline.models.import_resolution import build_import_resolution_ledger
+from graph.schema.graph_nodes import CodeNode, Constant, Module
+from graph.schema.node_ids import code_file_id
+from pipeline.steps.step2_load_ast.import_binding import (
+    build_import_binding_environment,
+    build_import_resolution_ledger,
+)
 from pipeline.steps.step2_load_ast.token_matcher import link_references
 
 
@@ -15,14 +19,21 @@ class ImportResolutionLedgerTest(unittest.TestCase):
         *, import_id: str = "a" * 64, evidence_version: str = "1.1.0",
         presence_status: str = "active", evidence_status: str = "complete",
         import_kind: str = "source_file", target_kind: str = "quoted",
-        entries: list[dict] | None = None,
+        entries: list[dict] | None = None, source_id: str = "main.c",
+        target_path: str = "common.h",
     ) -> dict:
+        raw_target = (
+            f'"{target_path}"' if target_kind == "quoted"
+            else f"<{target_path}>"
+        )
         binding = {
             "entry_ordinal": 0, "import_kind": import_kind,
-            "target_kind": target_kind, "target": '"common.h"',
-            "target_range": {"charOffset": 9, "charLength": 10},
-            "path_components": ["common.h"],
-            "path_component_ranges": [{"charOffset": 10, "charLength": 8}],
+            "target_kind": target_kind, "target": raw_target,
+            "target_range": {"charOffset": 9, "charLength": len(raw_target)},
+            "path_components": [target_path],
+            "path_component_ranges": [{
+                "charOffset": 10, "charLength": len(target_path),
+            }],
             "member": None, "member_range": None,
             "alias": None, "alias_range": None,
             "relative_level": 0, "wildcard": False,
@@ -31,12 +42,25 @@ class ImportResolutionLedgerTest(unittest.TestCase):
         return {
             "import_id": import_id, "evidence_version": evidence_version,
             "legacy_name": "preview only", "name": "preview only",
-            "source_id": "main.c", "line": 1,
-            "end_line": 1, "range": {"charOffset": 0, "charLength": 20},
+            "source_id": source_id, "line": 1,
+            "end_line": 1, "range": {"charOffset": 0, "charLength": 80},
             "directive_kind": "include", "entries": entries or [binding],
             "grammar_rule": "includeLine", "presence_status": presence_status,
             "evidence_status": evidence_status,
         }
+
+    @staticmethod
+    def _environment(
+        *source_ids: str, c_include_roots: tuple[str, ...] = (),
+    ):
+        return build_import_binding_environment(
+            [{"source_id": source_id, "language": "c"} for source_id in source_ids],
+            [Module(
+                id=code_file_id(source_id), name=Path(source_id).name,
+                file_path=source_id, label="FILE",
+            ) for source_id in source_ids],
+            c_include_roots=c_include_roots,
+        )
 
     def test_internal_filename_candidate_does_not_replace_missing_binding_environment(self) -> None:
         ledger = build_import_resolution_ledger([self._ref()])
@@ -46,7 +70,93 @@ class ImportResolutionLedgerTest(unittest.TestCase):
         self.assertEqual(
             "insufficient_import_binding_environment", ledger[0]["reason"],
         )
-        self.assertEqual([], ledger[0]["resolved_module_ids"])
+        self.assertEqual([], ledger[0]["internal_module_ids"])
+
+    def test_exact_quoted_local_header_is_internal(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(source_id="src/main.c")],
+            environment=self._environment("src/main.c", "src/common.h"),
+        )
+
+        self.assertEqual("internal", ledger[0]["outcome"])
+        self.assertEqual(
+            [code_file_id("src/common.h")], ledger[0]["internal_module_ids"],
+        )
+        self.assertEqual("", ledger[0]["reason"])
+
+    def test_exact_ordered_include_root_header_is_internal(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(target_kind="angle")],
+            environment=self._environment(
+                "main.c", "include/common.h", c_include_roots=("include",),
+            ),
+        )
+
+        self.assertEqual("internal", ledger[0]["outcome"])
+        self.assertEqual(
+            [code_file_id("include/common.h")], ledger[0]["internal_module_ids"],
+        )
+
+    def test_suffix_candidate_without_search_path_stays_unresolved(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(target_kind="angle")],
+            environment=self._environment("main.c", "vendor/common.h"),
+        )
+
+        self.assertEqual("unresolved", ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_c_include_search_environment", ledger[0]["reason"],
+        )
+
+    def test_target_absent_from_selected_closure_is_external(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(target_kind="angle")],
+            environment=self._environment("main.c"),
+        )
+
+        self.assertEqual("external", ledger[0]["outcome"])
+        self.assertEqual(
+            "target_outside_selected_source_closure", ledger[0]["reason"],
+        )
+        self.assertEqual([], ledger[0]["internal_module_ids"])
+
+    def test_parent_path_target_is_invalid_not_normalized(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(target_kind="angle", target_path="../common.h")],
+            environment=self._environment("main.c", "common.h"),
+        )
+
+        self.assertEqual("unresolved", ledger[0]["outcome"])
+        self.assertEqual("invalid_c_import_target", ledger[0]["reason"])
+
+    def test_selected_header_without_file_module_stays_unresolved(self) -> None:
+        environment = build_import_binding_environment(
+            [
+                {"source_id": "src/main.c", "language": "c"},
+                {"source_id": "src/common.h", "language": "c"},
+            ],
+            [Module(
+                id=code_file_id("src/main.c"), name="main.c",
+                file_path="src/main.c", label="FILE",
+            )],
+        )
+        ledger = build_import_resolution_ledger(
+            [self._ref(source_id="src/main.c")], environment=environment,
+        )
+
+        self.assertEqual("unresolved", ledger[0]["outcome"])
+        self.assertEqual("invalid_c_file_module_projection", ledger[0]["reason"])
+
+    def test_computed_target_stays_unresolved_with_complete_environment(self) -> None:
+        ledger = build_import_resolution_ledger(
+            [self._ref(import_kind="computed", target_kind="computed")],
+            environment=self._environment("main.c"),
+        )
+
+        self.assertEqual("unresolved", ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_computed_import_target", ledger[0]["reason"],
+        )
 
     def test_inactive_import_is_excluded_not_used_as_scope(self) -> None:
         ledger = build_import_resolution_ledger([

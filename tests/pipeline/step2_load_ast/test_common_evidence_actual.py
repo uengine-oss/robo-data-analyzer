@@ -14,10 +14,10 @@ from pipeline.models.call_resolution import (
     summarize_call_resolution_ledger,
 )
 from pipeline.models.import_resolution import (
-    build_import_resolution_ledger,
     normalize_import_resolution_ledger,
     summarize_import_resolution_ledger,
 )
+from pipeline.steps.step2_load_ast.import_binding import build_import_resolution_ledger
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,
@@ -305,7 +305,7 @@ def test_actual_parser_facts_bind_to_framework_routines_exactly_once() -> None:
         "insufficient_import_binding_environment": 449,
         "inactive_import": 1,
     })
-    assert all(not row["resolved_module_ids"] for row in import_ledger)
+    assert all(not row["internal_module_ids"] for row in import_ledger)
     assert sum(owner.values()) == len(first)
     assert all(site["call_id"] and site["source_id"] for site in first)
 
