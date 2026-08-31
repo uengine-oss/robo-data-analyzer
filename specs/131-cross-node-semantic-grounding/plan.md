@@ -87,6 +87,10 @@
 - provider-managed `gpt-5.4-mini-2026-03-17`의 hard limit과 disclosure는
   `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml` 및 그 SHA-256을 실행 환경에 명시해
   현재 config와 함께 봉인한다. 빈 ref/hash나 모델 불일치 상태로 실행하지 않는다.
+- 첫 승인 명령이 provider 호출 전 adapter schema binding에서 실패하면 같은 run을 실제 검증으로
+  승격하지 않는다. canonical/provider semantic schema는 title-free로 유지하고, adapter copy의 고정
+  protocol name 하나만 허용한다. 실패 증거와 비용 0을 봉인한 뒤 자동 재실행하지 않고 새 사용자 확인을
+  받는다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

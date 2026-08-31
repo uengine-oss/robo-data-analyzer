@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 Parser→Graph 제품 명세
 
-**Status**: Active — SKT 1,503줄 기존 실제 생성·3층 검증과 production LLM wire 정리는 완료. 사용자 비용 확인 뒤 post-refactor 1,503줄 유료 검증 1회, Catalog pagination 외부 계약, GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
+**Status**: Active — SKT 1,503줄 기존 실제 생성·3층 검증과 production LLM wire 정리는 완료. 승인된 post-refactor 실행은 provider 전 schema binding 실패로 비용 0이며 adapter 최소 수정·회귀까지 완료. 새 사용자 확인 뒤 provider-bearing 1,503줄 검증, Catalog pagination 외부 계약, GPU 복구 후 약 5만 LOC 최종 성능 검증이 남아 있음
 **Updated**: 2026-09-01
 **Entry point**: `specs/131-cross-node-semantic-grounding/README.md`
 

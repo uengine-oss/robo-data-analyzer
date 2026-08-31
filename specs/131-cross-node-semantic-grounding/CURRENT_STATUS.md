@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-09-01
-**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지한다. 다음 첫 좌표는 사용자 비용 확인 뒤 같은 1,503줄을 `gpt-5.4-mini`로 정확히 한 번 실제 검증하는 것이다. 실행 임계는 `$0.50`이며, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
+**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 승인된 1,503줄 실행은 provider 호출 전 LangChain schema binding에서 중단되어 비용은 0원이며, adapter-only 고정 이름 수정과 전체 회귀를 통과했다. 기존 `framework` DB의 active generation은 그대로 유지한다. 재실행은 새 사용자 확인 전 보류하고, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2460,3 +2460,28 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   설정 누락은 공통 step 경계에서 실패한다. 이 절까지 유료 LLM/embedding, Neo4j 접근/write, SKT
   재분석은 0회다. 다음 행동은 문서 diff와 commit/push를 닫고 사용자 비용 확인을 기다리는 것이다.
   승인 직전 Neo4j gate를 새로 확인하며 미리 접속하지 않는다.
+
+## 128. 승인 실행의 pre-provider schema binding 실패와 최소 adapter 수정 (2026-09-01)
+
+- 사용자가 `$0.50` 실행 임계를 확인한 뒤 Neo4j 인증과 `SHOW DATABASES`를 다시 검사했다.
+  `neo4j|test|framework|dbms|system` 다섯 DB만 존재하고 모두 online인 상태에서 봉인 profile 명령을
+  한 번 호출했다. run은 `20260831_154536_dc22f691d908`, sealed input SHA-256은
+  `8d70418bd2299296d29bf7b52bf3cb294a0c54365301f03846c4c8b6b2a38d13`이다.
+- 실행은 첫 Summary provider request를 만들기 전에 LangChain `with_structured_output`에서 실패했다.
+  compact canonical JSON Schema가 의도대로 `title`을 갖지 않지만, 설치된 OpenAI adapter는 raw JSON
+  Schema를 response/tool format으로 변환할 때 최상위 `title`을 protocol name으로 요구했다. 실패 run에는
+  `usage.jsonl`, `usage_summary.json`, `failure-usage-summary.json`이 모두 없으므로 생성 LLM과 embedding
+  request·token·비용은 각각 0이다. retry·fallback·축소 재질의·자동 재실행은 하지 않았다.
+- 실패 generation은 `failed`이고 product node/relationship을 남기지 않았다. 기존 active generation
+  `20260831_063541_470a779494a7`은 교체되지 않았다. 따라서 이 run은 제품 의미·비용·속도 검증으로
+  승격하지 않는다.
+- canonical/provider semantic schema에 `title|description`을 되돌리지 않았다. 바인딩 직전 deep copy에
+  단 하나의 고정값 `structured_response`만 넣고, LangChain이 이를 바깥 `json_schema.name` 또는 tool
+  function name으로 소비하게 했다. 실제 adapter-bound 내부 semantic schema는 다시 title-free이며
+  Summary/Table/Rule 응답 필드, request-local 결합 key, Analyzer exact-once ID에는 변화가 없다. production
+  request inventory도 이 필수 binding metadata와 의미 schema를 구분한다.
+- 실제 `ChatOpenAI` 객체로 `provider_default|json_schema|function_calling` 세 경계를 network 없이
+  바인딩하는 회귀를 추가했다. focused 결과는 `36 passed, 42 subtests`, 전체 pytest는
+  `1459 passed, 4 skipped, 365 subtests`, authoritative unittest는 `1218 tests, skipped 2`다.
+  이 수정 뒤에도 실제 provider 호출과 Neo4j write는 0회다. 성공한 post-refactor 1,503줄 검증은 여전히
+  남아 있으며, 이미 한 번 명령을 시도했으므로 재실행은 새 사용자 확인 뒤에만 한다.

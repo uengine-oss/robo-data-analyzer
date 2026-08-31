@@ -20,7 +20,10 @@ from agents.tools.sampling import make_sample_exploration_tools
 from agents.tools.validation import make_verify_external_rule_tool
 from graph.schema.graph_nodes import CodeNode
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
-from llm.structured_output import provider_structured_output_schema
+from llm.structured_output import (
+    STRUCTURED_RESPONSE_NAME,
+    provider_structured_output_binding_schema,
+)
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.function_table_usage_response_schema import (
@@ -91,7 +94,7 @@ def _yaml_request(
 ) -> ProviderRequest:
     rule = _load_rule(prompts_dir, rule_name)
     method = rule.get("structured_output_method") or "json_schema"
-    schema = provider_structured_output_schema(
+    schema = provider_structured_output_binding_schema(
         response_model.model_json_schema(), method=method,
     )
     locale_token = set_response_locale("ko")
@@ -346,7 +349,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
             ProviderRequest(
                 "search_glossary", "search:function_calling",
                 search_system, "주문을 조회해줘",
-                provider_structured_output_schema(
+                provider_structured_output_binding_schema(
                     GlossaryRewriteResponse.model_json_schema(),
                     method="function_calling",
                 ),
@@ -373,9 +376,15 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
     def test_response_wires_have_no_internal_identity_or_schema_prose(self):
         for item in self._inventory():
             with self.subTest(boundary=item.name):
-                self.assertEqual(set(), _schema_annotations(item.response_schema))
+                semantic_schema = dict(item.response_schema)
+                if item.transport.startswith(("yaml:", "search:")):
+                    self.assertEqual(
+                        STRUCTURED_RESPONSE_NAME,
+                        semantic_schema.pop("title"),
+                    )
+                self.assertEqual(set(), _schema_annotations(semantic_schema))
                 self.assertFalse(
-                    _schema_property_names(item.response_schema)
+                    _schema_property_names(semantic_schema)
                     & _FORBIDDEN_RESPONSE_KEYS,
                 )
 

@@ -4,8 +4,14 @@ import unittest
 from unittest.mock import MagicMock
 
 import jsonschema
+from langchain_openai import ChatOpenAI
 
-from llm.structured_output import _inline_local_refs, bind_structured_output
+from llm.structured_output import (
+    STRUCTURED_RESPONSE_NAME,
+    _inline_local_refs,
+    bind_structured_output,
+    provider_structured_output_schema,
+)
 
 
 class StructuredOutputBindingTest(unittest.TestCase):
@@ -34,10 +40,49 @@ class StructuredOutputBindingTest(unittest.TestCase):
 
     def test_json_schema_is_explicit_without_function_strict_flag(self) -> None:
         llm = MagicMock()
-        bind_structured_output(llm, {"type": "object"}, method="json_schema")
+        canonical = {"type": "object"}
+        bind_structured_output(llm, canonical, method="json_schema")
+        provider = llm.with_structured_output.call_args.args[0]
         kwargs = llm.with_structured_output.call_args.kwargs
+        self.assertEqual(STRUCTURED_RESPONSE_NAME, provider["title"])
+        self.assertNotIn("title", canonical)
         self.assertEqual("json_schema", kwargs["method"])
         self.assertNotIn("strict", kwargs)
+
+    def test_all_methods_bind_title_free_schema_with_real_openai_adapter(self) -> None:
+        canonical = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
+        llm = ChatOpenAI(
+            model="gpt-5.4-mini-2026-03-17",
+            api_key="sk-test",
+        )
+
+        for method in ("provider_default", "json_schema", "function_calling"):
+            with self.subTest(method=method):
+                bound = bind_structured_output(llm, canonical, method=method)
+                raw = bound.first.steps__["raw"]
+                if method == "function_calling":
+                    function = raw.kwargs["tools"][0]["function"]
+                    self.assertEqual(STRUCTURED_RESPONSE_NAME, function["name"])
+                    semantic_schema = function["parameters"]
+                else:
+                    response_format = raw.kwargs["response_format"]["json_schema"]
+                    self.assertEqual(
+                        STRUCTURED_RESPONSE_NAME,
+                        response_format["name"],
+                    )
+                    semantic_schema = response_format["schema"]
+                self.assertEqual(canonical, semantic_schema)
+                self.assertNotIn("title", semantic_schema)
+
+        self.assertEqual(
+            canonical,
+            provider_structured_output_schema(canonical, method="json_schema"),
+        )
 
     def test_function_provider_copy_inlines_local_defs_without_mutating_canonical(self) -> None:
         canonical = {

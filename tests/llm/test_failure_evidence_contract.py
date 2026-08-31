@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.messages import AIMessage
 
 from llm.repetition_guard import RepetitionLoopAborted
+from llm.structured_output import STRUCTURED_RESPONSE_NAME
 from llm.runners.model_output_error import ModelOutputError
 from llm.runners.invocation import _extract_partial_content, _write_error_record
 from llm.runners.yaml_llm_runner import run_yaml_rule
@@ -188,8 +189,9 @@ class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
         record = entered[-1]
         return prompts_dir, with_structured_output, record
 
-    async def test_provider_receives_canonical_json_schema_and_internal_model_returns(self) -> None:
+    async def test_provider_receives_binding_copy_and_internal_model_returns(self) -> None:
         prompts_dir, boundary, _record = await self._invoke({"value": "parsed"})
+        canonical = _Response.model_json_schema()
 
         result = await run_yaml_rule(
             prompts_dir=prompts_dir,
@@ -200,7 +202,12 @@ class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
 
         schema_arg = boundary.call_args.args[0]
         self.assertIsInstance(schema_arg, dict)
-        self.assertEqual(_Response.model_json_schema(), schema_arg)
+        self.assertEqual(STRUCTURED_RESPONSE_NAME, schema_arg["title"])
+        self.assertEqual(
+            {**canonical, "title": STRUCTURED_RESPONSE_NAME},
+            schema_arg,
+        )
+        self.assertEqual("_Response", canonical["title"])
         self.assertTrue(boundary.call_args.kwargs["include_raw"])
         self.assertEqual("function_calling", boundary.call_args.kwargs["method"])
         self.assertTrue(boundary.call_args.kwargs["strict"])

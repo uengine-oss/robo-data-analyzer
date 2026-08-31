@@ -498,12 +498,19 @@
     같은 `usage.jsonl`과 run `CostBudget`에 기록한다. 공식 단가 $0.02/M input을 가격표에 등록하고 usage
     누락·비정상 token·미등록 모델은 성공으로 승격하지 않는다. 실행 환경에 embedding provider/model을
     명시하며 계측되는 유료 request의 HTTP 실패는 재전송하거나 분할하지 않는다.
-  - [ ] 사용자가 기존 생성 비용 $0.360159와 embedding 소액을 포함한 `ROBO_BUDGET_RUN_USD=0.50`
+  - [x] 사용자가 기존 생성 비용 $0.360159와 embedding 소액을 포함한 `ROBO_BUDGET_RUN_USD=0.50`
     실행 임계를 확인한 뒤에만 진행한다. 직전 Neo4j 인증/SHOW DATABASES에서
     `neo4j|test|framework|dbms|system`만 online인지 확인하고 다르면 즉시 중단한다.
+  - [x] 승인된 명령을 한 번 시도했으나 첫 provider request 전 LangChain raw JSON Schema binding이
+    최상위 protocol name 부재로 실패했다. run `20260831_154536_dc22f691d908`에는 usage 파일과 비용이
+    없고 실패 generation product도 0이며 기존 active generation을 보존했다. 자동 재실행하지 않는다.
+  - [x] canonical/provider semantic schema는 title-free로 유지하고 adapter deep copy에만 고정
+    `structured_response` 이름 하나를 넣는다. 실제 OpenAI adapter의 세 structured-output method가
+    내부 의미 schema에 title을 남기지 않고 local bind되는 회귀와 production request inventory를 닫는다.
   - [ ] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF,
     `ROBO_EMBED_PROVIDER=openai`, `ROBO_EMBED_MODEL=text-embedding-3-small`, 봉인 profile로 정확히 한 번
-    실행한다. 모델 runtime ref는 `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml`, SHA-256은
+    provider-bearing 검증을 완료한다. 첫 pre-provider 실패 뒤 재시도는 새 사용자 확인을 받는다. 모델
+    runtime ref는 `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml`, SHA-256은
     `3ff661a0c93471260738fe7813de3fed8a0741d35c6c23a81498442d6e5ca1e3`으로 고정한다.
     budget/transport/schema/quality 실패를 retry·fallback·축소 재질의로 우회하지 않는다.
   - [ ] 새 usage의 생성 family 40건과 embedding request/token/비용, baseline diff, exact-once closure,
