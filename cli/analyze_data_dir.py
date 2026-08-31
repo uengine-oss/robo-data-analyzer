@@ -63,6 +63,7 @@ from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
 from shared.config.settings import SETTINGS
 from shared.events.ndjson_event_stream import NDJSONStream
+from shared.events.runtime_logger import redact_sensitive_text
 from pipeline.execution.run_executor import execute_run
 from pipeline.execution.analysis_profile import (
     AnalysisProfile,
@@ -252,7 +253,8 @@ async def main(
         try:
             await analyze_one(pd, inputs)
         except Exception as e:
-            print(f"\n[FAIL] {pd.name}: {type(e).__name__}: {e}")
+            safe_error = redact_sensitive_text(f"{type(e).__name__}: {e}")
+            print(f"\n[FAIL] {pd.name}: {safe_error}")
             failures.append((pd, e))
 
     if failures:

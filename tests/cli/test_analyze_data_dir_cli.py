@@ -1,8 +1,10 @@
 """운영자 분석 CLI가 파이프라인 실패를 성공 exit로 숨기지 않는지 검증."""
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -49,6 +51,40 @@ class AnalyzeDataDirCliTest(unittest.IsolatedAsyncioTestCase):
                     data_dir_override=data_dir,
                     database_override="test",
                 )
+
+    async def test_failed_project_redacts_operator_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_dir = Path(temporary_directory)
+            source = data_dir / "source"
+            source.mkdir()
+            (source / "sample.c").write_text("int main(void){}", encoding="utf-8")
+            output = io.StringIO()
+
+            with (
+                patch.object(
+                    subject,
+                    "analyze_one",
+                    new=AsyncMock(side_effect=RuntimeError("secret-value")),
+                ),
+                patch.object(subject, "set_override"),
+                patch.object(
+                    subject,
+                    "redact_sensitive_text",
+                    return_value="RuntimeError: [REDACTED]",
+                ) as redact,
+                redirect_stdout(output),
+            ):
+                with self.assertRaises(subject.AnalysisBatchError):
+                    await subject.main(
+                        None,
+                        "framework",
+                        data_dir_override=data_dir,
+                        database_override="test",
+                    )
+
+        redact.assert_called_once_with("RuntimeError: secret-value")
+        self.assertIn("[FAIL] source: RuntimeError: [REDACTED]", output.getvalue())
+        self.assertNotIn("secret-value", output.getvalue())
 
     async def test_missing_target_is_an_input_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
