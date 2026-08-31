@@ -866,7 +866,7 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
                     return_value=True,
                 ),
                 patch(
-                    "llm.runners.yaml_llm_runner.response_cache.make_key",
+                    "llm.runners.yaml_llm_runner.response_cache.make_key_from_schema",
                     return_value="k" * 64,
                 ) as make_cache_key,
                 patch(

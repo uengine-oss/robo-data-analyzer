@@ -142,7 +142,10 @@ async def run_yaml_rule(
         effective_max_tokens = (
             cfg.max_tokens if requested_max_tokens is None else requested_max_tokens
         )
-        cache_key = response_cache.make_key(
+        # Dynamic exact-key response models may rebuild an equivalent schema with
+        # different generated definition names on a second call.  Use the schema
+        # captured once above for cache identity, provider binding, and tracing.
+        cache_key = response_cache.make_key_from_schema(
             rule_name=rule_name,
             system_prompt=str(messages[0].content),
             user_content=str(messages[1].content),
@@ -157,16 +160,28 @@ async def run_yaml_rule(
             extra_body=cfg.extra_body,
             repetition_guard=guard_on,
             structured_output_method=structured_output_method,
-            response_model=response_model,
+            response_schema=response_schema,
         )
         cached = response_cache.load(cache_key, response_model)
         if (
             cached is None
             and SETTINGS.analysis_llm.response_cache_require_hit
         ):
-            raise response_cache.RequiredResponseCacheMiss(
-                f"required response cache miss for rule {rule_name!r}"
+            error = response_cache.RequiredResponseCacheMiss(
+                f"required response cache miss for rule {rule_name!r}; "
+                f"request_sha256={cache_key}"
             )
+            _write_error_record(
+                rule_name,
+                system_prompt,
+                user_content,
+                user_values,
+                error,
+                int((time.monotonic() - cache_start) * 1000),
+                response_schema,
+                structured_output_method,
+            )
+            raise error
     if cached is not None:
         lookup_ms = int((time.monotonic() - cache_start) * 1000)
         # 적중도 LLM 호출이다 — 적재를 건너뛰면 "모든 LLM 호출을 usage.jsonl 에 적재"
