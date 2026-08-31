@@ -20,7 +20,6 @@ robo.cmd up analyzer
 | 유지보수 | `refresh_pricing.py` | 개발자 | LLM 가격표 수동 갱신 절차 안내 |
 | 직접 의미 검토 export | `export_semantic_review_packets.py` | 검증자 | 지정 run의 실제 prompt·응답·Rule 원천·findings·활성 graph를 선택 target 또는 전수 packet으로 봉인 |
 | 의미 빈값 전수 감사 | `inventory_semantic_outputs.py` | 검증자 | actual prompt와 지정 graph를 read-only 조인해 silent blank/status/finding/좌표 충돌을 집계 |
-| 수동 GPU 대화 | `send_text_to_gpu.py` | 개발자 | workspace `gpu-chat.cmd`가 사용하는 최소 텍스트 클라이언트 |
 
 `reset_neo4j_schema.py`는 파괴적 복구 도구이므로 평상시 실행하지 않습니다.
 Strategy A 실행기, 특정 APAS/쇼핑몰 run을 전제로 한 표기법 probe와 표본 수정기는 저장소에 남기지 않습니다.
