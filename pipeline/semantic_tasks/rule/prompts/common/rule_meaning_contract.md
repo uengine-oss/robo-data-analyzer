@@ -13,6 +13,9 @@ Analyzer가 `conditions`, `effects`, `rows`의 좌표·극성·소유권·직접
 - `implementation_detail`: 언어·라이브러리·프레임워크 사용법, 포인터 역참조 보호,
   로깅·정리처럼 업무 정책 자체가 아닌 구현 절차다. 업무 입력의 필수 여부나 허용값 검사는
   단순 방어 코드로 취급하지 않는다.
+- 프레임워크 예외 handler에서 업무 조건·업무 상태 변경 없이 오류값만 반환하는 행은
+  packet의 직접 효과만으로 판별 가능한 `implementation_detail`이다. 이런 행을
+  `insufficient`로 분류하지 않는다.
 - `insufficient`: 현재 packet만으로 두 범주를 구별할 수 없다.
 
 입력에 없는 업무 코드값 뜻, 이름 모양에서 추측한 정책, callee 내부 절차, 다른 row/effect의 의미를
