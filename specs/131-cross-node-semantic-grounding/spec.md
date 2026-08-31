@@ -1,6 +1,6 @@
 # Analyzer 의미 무손실 Parser→Graph 제품 명세
 
-**Status**: Active — Analyzer 코드·구조·리소스 이관과 provider-bearing 1,503줄 3층 검증은 완료. Catalog pagination의 Analyzer 소비자와 양끝 계약도 완료했으며, 보호된 Catalog WIP에 생산자를 구현하고 실제 양끝 통합을 검증하는 일만 남아 있음. GPU와 약 5만 LOC 성능 gate는 2026-09-01 사용자 결정으로 현재 완료 범위에서 제외
+**Status**: Complete — Analyzer 코드·구조·리소스 이관, provider-bearing 1,503줄 3층 검증, Catalog lossless pagination 생산자·소비자·실제 양끝 통합을 완료. GPU와 약 5만 LOC 성능 gate는 2026-09-01 사용자 결정으로 현재 완료 범위에서 제외
 **Updated**: 2026-09-01
 **Entry point**: `specs/131-cross-node-semantic-grounding/README.md`
 

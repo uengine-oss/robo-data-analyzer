@@ -130,9 +130,9 @@
 4. 전체 정적 회귀와 prompt hash
 5. 봉인한 SKT 2파일 1,503줄 실제 생성과 직접 의미 판정
 6. 선택 source의 baseline diff, exact-once ledger, 새 실패 좌표부터 전수 감사
-7. 봉인 1,503줄 provider-bearing 3층 검증과 Catalog pagination의 Analyzer 소비자·명시 계약 완료.
-   보호된 Catalog WIP의 snapshot/cursor 생산자와 실제 양끝 통합은 명시 권한 뒤 수행한다. GPU/약
-   5만 LOC 성능은 사용자 결정으로 현재 범위 밖이며 미실행 상태를 그대로 기록
+7. 봉인 1,503줄 provider-bearing 3층 검증과 Catalog pagination의 immutable snapshot/cursor 생산자,
+   Analyzer 전-page 소비자, 실제 FastAPI·localhost TCP 양끝 통합 완료. GPU/약 5만 LOC 성능은 사용자
+   결정으로 현재 범위 밖이며 미실행 상태를 그대로 기록
 
 현재 완료된 속도 판정은 같은 1,503줄 required population을 손실 없이 처리한 단계별 시간과 token으로만
 한정한다. 약 5만 LOC 제품 규모 성능은 현재 범위 밖이자 미검증이다. 결과 수를 줄이는 cap이나 skip은

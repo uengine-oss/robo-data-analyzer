@@ -74,6 +74,11 @@ class RepositoryLayoutTest(unittest.TestCase):
         remaining = sorted(path for path in REMOVED_IMPLEMENTATIONS if (REPO / path).exists())
         self.assertEqual([], remaining)
 
+    def test_legacy_one_shot_catalog_discovery_does_not_reappear(self) -> None:
+        transport = (REPO / "integrations" / "catalog.py").read_text(encoding="utf-8")
+        self.assertNotIn("get_table_discovery", transport)
+        self.assertNotIn("max_tables", transport)
+
     def test_pipeline_uses_the_approved_responsibility_tree(self) -> None:
         required = {
             "pipeline/analysis_ir/parser_facts",

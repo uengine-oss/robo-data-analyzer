@@ -569,14 +569,14 @@
   - GPU 복구 전에는 약 5만 LOC 전체 재분석을 수행하지 않는다.
   - 선택 1,503줄 결과를 전체 SKT 처리 시간이나 처리량으로 일반화하지 않는다.
 
-- [ ] **C05 Catalog 전체 테이블 pagination 계약 연결**
+- [x] **C05 Catalog 전체 테이블 pagination 계약 연결**
   - [x] Analyzer는 고정 snapshot의 모든 page를 무제한 순회하고 version·datasource·snapshot·page·
     total·cursor·quote-aware identity를 검증한다. terminal closure 전에는 `_merge`를 호출하지 않으며
     legacy/truncated fallback 없이 누락·중복·cycle·drift를 fail-closed한다.
   - [x] 양끝 계약을 `contracts/catalog-table-discovery-pagination-v1.md`로 고정했다.
-  - [ ] Catalog가 보호된 기존 WIP 위에서 immutable snapshot, deterministic page, opaque cursor,
-    exact-once terminal closure를 생산하고 실제 양끝 통합 검증을 통과해야 한다. 명시 권한 전에는
-    해당 WIP를 수정하거나 stage하지 않는다.
+  - [x] Catalog가 immutable snapshot, deterministic page, opaque cursor, exact-once terminal
+    closure를 생산한다. 실제 FastAPI 3-page와 격리 localhost TCP 양끝 통합에서 Fabric population은
+    한 번만 열거되고 각 table detail은 정확히 한 번 소비됨을 검증했다.
 
 - [x] **C06 약 5만 LOC GPU 성능 gate의 현재 목표 제외**
   - 2026-09-01 사용자가 GPU 여부와 약 5만 LOC 성능 gate를 이번 완료 조건에서 명시적으로 제외했다.

@@ -2,6 +2,32 @@
 
 **Updated**: 2026-09-01
 
+**Status**: 완료. Analyzer 코드·구조·리소스 개편, post-refactor 1,503줄 B40 검증, Catalog C05
+lossless pagination 생산자·소비자·실제 양끝 통합을 모두 닫았다. 최종 active generation은
+`20260831_184122_8e811c336ba9`, judge는 `acceptance_ready=true`, blocking finding과 CALL/import
+미해결은 0이다. GPU 및 약 5만 LOC 성능은 사용자 지시로 이번 목표에서 제외했으며 미실행 상태다.
+
+## 132. Catalog C05 producer and real cross-service closure (2026-09-01)
+
+- 사용자가 Catalog의 기존 modified/untracked WIP 수정·stage를 명시 승인했다. Architect와 goal-verify는
+  계속 전면 범위 밖이며 변경하지 않았다.
+- Catalog `GET /robo/tables/discovery`는 최초 요청에서 Fabric table identity 전체를 한 번 열거해
+  quote-aware canonical identity로 검증·정렬하고 bounded TTL immutable snapshot에 봉인한다. continuation은
+  snapshot·datasource·sample_limit·page_size에 묶인 opaque cursor만 허용하며, 만료·축출·교차 snapshot·
+  제어값 drift를 fail-closed한다.
+- 각 page는 고정 `total_tables`, contiguous `page_index`, terminal `next_cursor=null`을 생산한다. 전송 실패는
+  해당 table을 `degraded=true`로 보존하지만 성공 응답의 malformed identity·duplicate table/column은 page를
+  실패시킨다. `max_tables`, `truncated`, offset, legacy alias는 production wire에서 제거했다.
+- 실제 Catalog FastAPI route를 production Analyzer consumer가 3 page로 읽는 contract test와 별도 localhost
+  TCP uvicorn test를 통과했다. 둘 다 Fabric population listing 1회, table detail exact-once와 deterministic
+  order를 검증한다.
+- 최종 전체 회귀는 Catalog pytest `73 passed, 28 subtests passed`, authoritative unittest `46 tests, OK`;
+  Analyzer pytest `1494 passed, 5 skipped, 359 subtests passed`, authoritative unittest `1261 tests,
+  OK (skipped=2)`다. LLM, embedding, GPU, Neo4j 접근·write, 새 DB, 추가 재분석은 0회다.
+- Catalog 검증 slice는 `699811e`로 `main`과 `origin/main`에 push했다.
+- Catalog object identity resolver WIP도 quoted case 보존 결함을 수정하고 exact/unresolved·dedup·schema·link·
+  column·provider 오류 회귀와 함께 완료했다. 기존 sample context와 graph visibility 회귀도 모두 통과했다.
+
 ## 131. Analyzer-side C05 lossless pagination closure (2026-09-01)
 
 - Analyzer의 Catalog discovery 소비자를 독립 모듈 `integrations/catalog_discovery.py`로 분리했다.
@@ -102,7 +128,6 @@
   exact Analyzer-owned names. Foreign constraints and indexes are never dropped.
 - Still open: C05 Catalog snapshot/cursor pagination. Required server files are protected
   pre-existing WIP and remain deliberately unmodified and unstaged.
-**Status**: Analyzer 코드·구조·리소스 개편과 post-refactor 1,503줄 B40 검증은 완료했다. 최종 active generation은 `20260831_184122_8e811c336ba9`, judge는 `acceptance_ready=true`, blocking finding과 CALL/import 미해결은 0이다. GPU 및 약 5만 LOC 성능은 사용자 지시로 이번 목표에서 제외했다. 남은 spec-131 목표는 보호된 Catalog WIP에 snapshot/cursor pagination을 구현하고 Analyzer가 전 page를 exact-once 병합하는 C05 하나다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
