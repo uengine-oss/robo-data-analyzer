@@ -20,8 +20,6 @@ robo.cmd up analyzer
 | 복구 | `reset_neo4j_schema.py` | 운영자 | 오염된 Neo4j 제약·인덱스 복구 |
 | 유지보수 | `refresh_pricing.py` | 개발자 | LLM 가격표 수동 갱신 절차 안내 |
 | 의미검증 export | `export_semantic_review_packets.py` | 검증자 | 명시된 표본의 현재 `test` graph 결과를 검토 packet으로 export |
-| 의미검증 조인 | `build_semantic_verification_packets.py` | 검증자 | 명시 입력만 사용해 prompt→response→graph 증거를 hash-pinned packet으로 조인 |
-| 증거 도달 감사 | `audit_semantic_context_packets.py` | 검증자 | 언어 지식 없이 gold evidence 행의 prompt 도달 여부만 검사 |
 | 의미 빈값 전수 감사 | `inventory_semantic_outputs.py` | 검증자 | actual prompt와 지정 graph를 read-only 조인해 silent blank/status/finding/좌표 충돌을 집계 |
 | 수동 GPU 대화 | `send_text_to_gpu.py` | 개발자 | workspace `gpu-chat.cmd`가 사용하는 최소 텍스트 클라이언트 |
 
