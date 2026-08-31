@@ -503,7 +503,9 @@
     `neo4j|test|framework|dbms|system`만 online인지 확인하고 다르면 즉시 중단한다.
   - [ ] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF,
     `ROBO_EMBED_PROVIDER=openai`, `ROBO_EMBED_MODEL=text-embedding-3-small`, 봉인 profile로 정확히 한 번
-    실행한다. budget/transport/schema/quality 실패를 retry·fallback·축소 재질의로 우회하지 않는다.
+    실행한다. 모델 runtime ref는 `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml`, SHA-256은
+    `3ff661a0c93471260738fe7813de3fed8a0741d35c6c23a81498442d6e5ca1e3`으로 고정한다.
+    budget/transport/schema/quality 실패를 retry·fallback·축소 재질의로 우회하지 않는다.
   - [ ] 새 usage의 생성 family 40건과 embedding request/token/비용, baseline diff, exact-once closure,
     partial-upload external, 86·94행과 Rule↔Example 직접 의미를 판정하고 SDD·HTML·handoff를 갱신한 뒤
     검증 commit을 push한다.

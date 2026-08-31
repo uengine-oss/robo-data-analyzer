@@ -84,6 +84,9 @@
   섞어 logical generation count를 바꾸지 않되 총 provider token·비용에서는 어느 쪽도 누락하지 않는다.
   실행 환경에서 provider/model을 `openai`/`text-embedding-3-small`로 명시하고, 유료 embedding의
   HTTP 실패를 재전송·분할로 우회하지 않는다.
+- provider-managed `gpt-5.4-mini-2026-03-17`의 hard limit과 disclosure는
+  `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml` 및 그 SHA-256을 실행 환경에 명시해
+  현재 config와 함께 봉인한다. 빈 ref/hash나 모델 불일치 상태로 실행하지 않는다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

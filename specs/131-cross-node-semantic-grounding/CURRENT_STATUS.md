@@ -2447,10 +2447,13 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   gold tree SHA-256은 `34a84d3263c15c9e8453dac64321609b9f997d2b5032553b24376d29096bf467`다.
   승인 뒤 환경은 `ROBO_LLM_CONFIG=gpt54_mini_openai`, `ROBO_LLM_RESPONSE_CACHE=false`,
   `ROBO_EMBED_PROVIDER=openai`, `ROBO_EMBED_MODEL=text-embedding-3-small`,
-  `ROBO_BUDGET_RUN_USD=0.50`으로 고정하고 `scripts/analyze_data_dir.py --profile <profile>`을 한 번만
-  실행한다. 실행기는 current implementation/prompt/config/source/DDL/gold/baseline을 새 run에서 다시
-  봉인한다. 실행 직전 preflight에서 저장소 기본 embedding이 `sglang:BAAI/bge-m3`임을 확인했으므로
-  위 두 embedding 환경값을 생략하지 않는다. 계측되는 유료 embedding HTTP 실패는 재전송·분할하지 않는다.
+  `ROBO_BUDGET_RUN_USD=0.50`으로 고정한다. 모델 runtime ref는
+  `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml`, SHA-256은
+  `3ff661a0c93471260738fe7813de3fed8a0741d35c6c23a81498442d6e5ca1e3`으로 명시한 뒤
+  `scripts/analyze_data_dir.py --profile <profile>`을 한 번만 실행한다. 실행기는 current
+  implementation/prompt/config/source/DDL/gold/baseline을 새 run에서 다시 봉인한다. 실행 직전
+  preflight에서 저장소 기본 embedding이 `sglang:BAAI/bge-m3`이고 runtime ref/hash가 비어 있음을
+  확인했으므로 위 환경값을 생략하지 않는다. 계측되는 유료 embedding HTTP 실패는 재전송·분할하지 않는다.
 - embedding·공유 budget 집중 회귀는 `79 passed, 17 subtests`, 전체 pytest는
   `1458 passed, 4 skipped, 362 subtests`, authoritative unittest는 `1217 tests, skipped 2`다. 생성과
   embedding이 다른 thread에서 같은 budget을 갱신해도 charge를 잃지 않고, OpenAI step의 run/budget
