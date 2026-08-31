@@ -10,7 +10,6 @@ from pipeline.models.analysis_context import (
 )
 from pipeline.models.semantic_frame import (
     profile_prompt_json,
-    semantic_fact_wire_bindings,
 )
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
@@ -72,15 +71,14 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
     assert "file" not in projected["target"]
     assert "lines" not in projected["target"]
     assert "evidence" not in projected
-    assert all("file" not in fact for fact in projected["facts"].values())
-    assigned_bindings = semantic_fact_wire_bindings(summary_specs)
-    assert set(projected["facts"]) == set(assigned_bindings.values())
+    assert isinstance(projected["facts"], list)
+    assert all("file" not in fact for fact in projected["facts"])
     assert sum(
         fact["kind"] == "CALL"
-        for fact in projected["facts"].values()
+        for fact in projected["facts"]
     ) == 1
     projected_call = next(
-        fact for fact in projected["facts"].values() if fact["kind"] == "CALL"
+        fact for fact in projected["facts"] if fact["kind"] == "CALL"
     )
     assert projected_call == {
         "kind": "CALL",
@@ -96,9 +94,7 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
     assert "occurrence_id" not in values["structural_profile"]
     assert "call-1" not in values["structural_profile"]
     assert len(values["structural_profile"]) < len(profile_prompt_json(profile))
-    slots = json.loads(values["applicable_slots"])
-    assert all("evidence" not in spec for spec in slots.values())
-    assert all("fact_refs" in spec for spec in slots.values())
+    assert "applicable_slots" not in values
     assert json.loads(values["linked_callee_outcomes"]) == [{
         "callee": "int send(int value)",
         "meaning": "값을 전송하고 성공 여부를 반환한다.",
@@ -107,7 +103,6 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
         "target_id",
         "code_body",
         "structural_profile",
-        "applicable_slots",
         "linked_callee_outcomes",
         "linked_external_sources",
     }

@@ -260,17 +260,10 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
     occurrence_facts = [
         fact for fact in call_facts if fact.attributes.get("occurrence_id")
     ]
-    processing_refs = {
+    summary_refs = {
         ref
         for spec in specs
-        if spec.role == "PROCESSING_EFFECTS"
-        for ref in spec.evidence_refs
-        if ref in profile.evidence and profile.evidence[ref].kind == "CALL"
-    }
-    guard_refs = {
-        ref
-        for spec in specs
-        if spec.role == "GUARDS_AND_BRANCHES"
+        if spec.role == "WHOLE_FUNCTION"
         for ref in spec.evidence_refs
         if ref in profile.evidence and profile.evidence[ref].kind == "CALL"
     }
@@ -280,12 +273,9 @@ def test_semantic_frame_preserves_occurrences_and_assigns_only_effect_call() -> 
     }
     assert {
         profile.evidence[ref].attributes["occurrence_id"]
-        for ref in processing_refs
-    } == {"effect-call"}
-    assert {
-        profile.evidence[ref].attributes["occurrence_id"]
-        for ref in guard_refs
-    } == {"condition-call"}
+        for ref in summary_refs
+    } == {"condition-call", "effect-call"}
+    assert len(summary_refs) == 2
 
 
 def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:

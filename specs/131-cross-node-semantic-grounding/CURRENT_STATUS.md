@@ -2233,3 +2233,37 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   exact-once ID는 모델에 보내지 않고, 순서 결합이 안전하지 않은 지점에만 최소 request-local key를
   허용한다. 그 다음 postprocess/graph/storage/docs를 같은 기준으로 닫는다. 약 5만 LOC 성능은 GPU 복구
   전까지 미검증이다.
+
+## 120. Summary LLM 입출력 정보가치 감사와 ID wire 제거 (2026-08-31)
+
+- 실제 비용/소비: sealed generation `20260831_063541_470a779494a7`의 Summary 17건은 input
+  167,159 tokens, output 25,682 tokens였고 응답에 `W<digest>_*` detail value 627개를 요구했다. 이 detail은
+  slot completeness 진단 외의 publication/search/product 소비자가 없었으며, 실제 최종 의미 소비는 각
+  응답의 `summary|stereotype`뿐이었다. 따라서 미세한 slot별 누락 신호보다 생성·스키마 비용 손실이 훨씬
+  크다고 판정했다.
+- 새 모델 경계: Framework/DBMS Summary 응답은 닫힌 `summary|stereotype` 정확히 두 필드다. target별
+  slot digest가 schema title을 바꾸지 않으며 같은 strategy의 schema는 byte-identical하다. 생산 코드의
+  `semantic_slot_wire_ids`, `semantic_fact_wire_bindings`, `semantic_frame_response_model`,
+  `normalize_semantic_frame_response`, `slot_specs_json`과 옛 공통 prompt 계약을 consumer 0으로 삭제했다.
+- 새 입력: 내부 routine 의무는 `FUNCTION.WHOLE_FUNCTION` 하나다. 모델 구조 입력은 target signature와
+  source-order `facts[]`이며 E/W key, stable/fact/occurrence ID, hash, path, range/offset, grammar reference,
+  `fact_refs`, `ordered_flow`, `applicable_slots`가 없다. 정확한 source 대조에 실제 필요한 line/lines만 남긴다.
+  DATA_OBJECT의 내부 `db:` ID는 모델에서 물리 table 이름으로 투영하고 external source는 key 없는
+  `{kind,matched_key,text}` 배열로 별도 전달한다. callee outcome은 signature가 없으면 ID fallback 없이
+  fail-closed한다.
+- 내부 정확성: canonical evidence/slot ID와 exact-once binding은 internal semantic frame에만 유지한다.
+  cycle-unavailable 진단은 callee ID를 노출하지 않는 고정 의미로 만든다. inactive call occurrence는 내부
+  구조 장부에는 보존하지만 Summary evidence/prompt에서는 제외한다. external evidence와 cycle dependency는
+  whole-summary 의무에 결속되어 누락되지 않는다.
+- 계측: 기록된 17건을 새 wire로 결정론 투영하면 response schema는 62,756→10,727 bytes(-82.9%), parsed
+  response는 54,335→8,018 chars(-85.2%), structural profile+slot 동적 입력은
+  182,634→104,018 chars(-43.0%)다. 새 실제 token 수라고 과장하지 않으며, 이번 slice는 LLM 재호출 없이
+  기록·schema·prompt projection으로 측정했다.
+- 검증: Summary/Step 7 집중 회귀 `221 passed, 74 subtests`, 전체 pytest
+  `1435 passed, 4 skipped, 334 subtests`, authoritative `python -m unittest discover`는
+  `1197 tests, skipped 2`다. 첫 `unittest discover -s tests`는 잘못된 top-level 때문에 수집 실패했고
+  정본 repo-root 명령으로 재검증했다. LLM/API 호출·Neo4j 접근/write·새 DB·SKT 재분석은 0회다.
+- 다음 좌표: 3분할 책임은 그대로다. Summary는 전체 target 흐름만, Rule은 결정론 행의 condition/effect
+  의미만, Table은 직접 R/W와 TABLE/COLUMN 의미만 소유한다. 다음 slice는 Rule/Table 및 나머지 LLM
+  family를 같은 정보가치 기준으로 감사하되, 위치만으로 안전한 곳은 local key까지 제거하고 오결합 반례가
+  실재하는 곳만 최소 key를 유지한다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.

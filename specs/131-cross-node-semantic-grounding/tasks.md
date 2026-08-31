@@ -384,6 +384,20 @@
     회귀 `226 passed, 82 subtests passed`; LLM 호출·SKT 재분석·Neo4j write·새 DB·Strategy A 재실행은
     0회다.
 
+- [x] **B33 Summary detail 627개와 request-local ID wire 제거**
+  - [x] sealed 17개 Summary의 기존 input/output/schema 비용과 실제 downstream 소비를 계측한다.
+  - [x] 모델 응답을 `summary|stereotype` 두 필드로 닫고 per-fact `W<digest>_*` detail map을 제거한다.
+  - [x] 구조 입력을 source-order fact 배열로 바꿔 `E<digest>_*`, `fact_refs`, `ordered_flow`,
+    `applicable_slots`를 제거한다. source와 구조를 맞추는 실제 line 좌표는 유지한다.
+  - [x] 내부 semantic frame은 whole-summary 의무 하나로 결합해 exact-once와 missing-context 상태를
+    유지한다.
+  - [x] Framework/DBMS 같은 계약, no-detail-key schema, 토큰/byte 감소와 전체 회귀를 검증한다.
+  - sealed 기록 17건의 627 detail value는 최종 소비자가 없었다. 기록 기준 schema bytes는
+    62,756→10,727(-82.9%), parsed response chars는 54,335→8,018(-85.2%), 구조 동적 입력은
+    182,634→104,018 chars(-43.0%)로 투영된다. 실제 LLM 재호출 없이 계약·기록으로 계측했다.
+  - 전체 pytest `1435 passed, 4 skipped, 334 subtests`, authoritative unittest `1197 tests,
+    skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

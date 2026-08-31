@@ -19,19 +19,14 @@ from pipeline.models.analysis_context import (
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.semantic_frame import (
     EvidenceFact,
-    SlotSpec,
+    SemanticFrame,
+    SemanticSlot,
     evidence_id,
     mark_semantic_frame_insufficient,
     merge_semantic_frames,
-    normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_fact_wire_bindings,
-    semantic_frame_response_model,
-    semantic_slot_wire_ids,
-    slot_specs_json,
     target_digest,
 )
-from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
     normalize_frame_summary_response,
@@ -204,10 +199,10 @@ class SemanticFramePlannerTest(unittest.TestCase):
         handler_refs = rules[104].attributes["source_refs"]
         self.assertEqual(1, len(handler_refs))
         self.assertEqual("RETURN", profile.evidence[handler_refs[0]].attributes["type"])
-        guarded_rule_refs = [
+        summary_rule_refs = [
             ref
             for spec in _specs
-            if spec.family == "FUNCTION" and spec.role == "GUARDS_AND_BRANCHES"
+            if spec.family == "FUNCTION" and spec.role == "WHOLE_FUNCTION"
             for ref in spec.evidence_refs
             if profile.evidence[ref].kind == "RULE"
         ]
@@ -216,8 +211,8 @@ class SemanticFramePlannerTest(unittest.TestCase):
             if fact.kind == "RULE"
             and fact.attributes["role"] in {"decision", "complement", "handler"}
         }
-        self.assertEqual(expected_guard_refs, set(guarded_rule_refs))
-        self.assertEqual(len(expected_guard_refs), len(guarded_rule_refs))
+        self.assertTrue(expected_guard_refs.issubset(set(summary_rule_refs)))
+        self.assertEqual(len(summary_rule_refs), len(set(summary_rule_refs)))
         self.assertFalse(any(spec.family == "RULE" for spec in _specs))
 
     def test_planner_uses_actual_structure_and_does_not_invent_call_argument_slots(self):
@@ -247,11 +242,7 @@ return rc;
         )
 
         roles = {(spec.family, spec.role) for spec in specs}
-        self.assertNotIn(("FUNCTION", "RESPONSIBILITY"), roles)
-        self.assertNotIn(("FUNCTION", "INPUT_ROLE"), roles)
-        self.assertIn(("FUNCTION", "GUARDS_AND_BRANCHES"), roles)
-        self.assertIn(("FUNCTION", "PROCESSING_EFFECTS"), roles)
-        self.assertIn(("FUNCTION", "RESULT"), roles)
+        self.assertIn(("FUNCTION", "WHOLE_FUNCTION"), roles)
         self.assertNotIn(("FUNCTION", "ORDERED_FLOW"), roles)
         self.assertFalse(any(family == "RULE" for family, _role in roles))
         self.assertFalse(any(
@@ -322,201 +313,41 @@ return rc;
             "unavailable_cycle",
             next(
                 fact["dependency_status"]
-                for fact in prompt_profile["facts"].values()
+                for fact in prompt_profile["facts"]
                 if fact["kind"] == "CALL"
                 and fact.get("dependency_status")
             ),
         )
 
-        model = semantic_frame_response_model(specs)
-        bindings = tuple(model.__semantic_slot_bindings__)
+        model = frame_summary_response_model("framework", dependency_specs)
         output = model.model_validate({
-            "slots": {
-                wire_id: f"{spec.family}.{spec.role} 의미"
-                for wire_id, spec in bindings
-            },
+            "summary": "예약 호출의 결과는 cycle 때문에 확인할 수 없다.",
+            "stereotype": "ApplicationService",
         })
-        frame = normalize_semantic_frame_response(output, profile, specs)
-        dependency_slot = frame.slots[dependency_specs[0].slot_id]
+        summary = normalize_frame_summary_response(output, profile, dependency_specs)
+        dependency_slot = summary.semantic_frame.slots[dependency_specs[0].slot_id]
 
         self.assertEqual("partial", dependency_slot.status)
-        self.assertIn("code:stock.reserve", " ".join(dependency_slot.missing_context))
+        self.assertNotIn("code:stock.reserve", " ".join(dependency_slot.missing_context))
         self.assertIn("call cycle", " ".join(dependency_slot.missing_context))
-
-    def test_wire_requires_every_preassigned_slot_and_binds_metadata_outside_model(self):
-        profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
-        payload = {
-            "slots": {
-                wire_id: f"{spec.family}.{spec.role} 의미"
-                for spec, wire_id in zip(specs, wire_ids, strict=True)
-            },
-        }
-        parsed = model.model_validate(payload)
-        frame = normalize_semantic_frame_response(parsed, profile, specs)
-
-        self.assertEqual("semantic-frame/v1", frame.schema_version)
-        self.assertEqual(set(wire_ids), set(payload["slots"]))
-        self.assertEqual({spec.slot_id for spec in specs}, set(frame.slots))
-        for spec in specs:
-            self.assertEqual(spec.evidence_refs, frame.slots[spec.slot_id].evidence_refs)
-
-        missing = {"slots": dict(payload["slots"])}
-        missing["slots"].pop(wire_ids[0])
-        with self.assertRaises(ValidationError):
-            model.model_validate(missing)
-
-        extra = {"slots": dict(payload["slots"])}
-        extra["slots"]["S999"] = "창작 slot"
-        with self.assertRaises(ValidationError):
-            model.model_validate(extra)
-
-    def test_semantic_leaf_has_no_arbitrary_character_cap(self):
-        profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
-        long_meaning = "근거문장" * 400
-        payload = {"slots": {
-            wire_id: long_meaning if index == 0 else f"{spec.family}.{spec.role}"
-            for index, (spec, wire_id) in enumerate(zip(
-                specs, wire_ids, strict=True,
-            ))
-        }}
-
-        schema_text = json.dumps(model.model_json_schema(), sort_keys=True)
-        self.assertNotIn('"maxLength": 600', schema_text)
-        frame = normalize_semantic_frame_response(
-            model.model_validate(payload), profile, specs,
-        )
-        slot = frame.slots[specs[0].slot_id]
-        self.assertEqual(long_meaning, slot.meaning)
-        self.assertEqual("sufficient", slot.status)
-        self.assertEqual((), slot.missing_context)
 
     def test_projection_and_rejection_preserve_every_distinct_diagnostic(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        model = frame_summary_response_model("framework", summary_specs)
         missing = [f"근거 의무 {index}" for index in range(24)]
-        parsed = model.model_validate({"slots": {
-            wire_id: "" if index == 0 else f"{spec.family}.{spec.role}"
-            for index, (spec, wire_id) in enumerate(zip(
-                specs, wire_ids, strict=True,
-            ))
-        }})
-        frame = normalize_semantic_frame_response(parsed, profile, specs)
-
-        projected = project_summary(
-            frame,
-            summary="확정된 입력 범위의 처리를 수행한다.",
-            stereotype="ApplicationService",
-        )
-        self.assertEqual(
-            [f"assigned {specs[0].family}.{specs[0].role} returned no meaning"],
-            projected.missing_context,
-        )
+        parsed = model.model_validate({
+            "summary": "확정된 입력 범위의 처리를 수행한다.",
+            "stereotype": "ApplicationService",
+        })
+        projected = normalize_frame_summary_response(parsed, profile, summary_specs)
+        frame = projected.semantic_frame
 
         rejected = mark_semantic_frame_insufficient(frame, missing)
         self.assertTrue(all(
             slot.missing_context == tuple(missing)
             for slot in rejected.slots.values()
         ))
-
-    def test_provider_wire_uses_only_compact_local_keys_and_prompt_closes_mapping(self):
-        _profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
-        schema_text = json.dumps(
-            model.model_json_schema(), ensure_ascii=False, sort_keys=True,
-        )
-        assignment = json.loads(slot_specs_json(specs))
-
-        self.assertEqual(list(wire_ids), list(assignment))
-        self.assertEqual(list(wire_ids), list(
-            model.model_fields["slots"].annotation.model_fields
-        ))
-        self.assertTrue(all(spec.slot_id not in schema_text for spec in specs))
-        self.assertTrue(all("slot_id" not in item for item in assignment.values()))
-
-    def test_private_wire_leak_is_quarantined_without_rewriting_business_s0(self):
-        profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
-
-        safe_payload = {"slots": {
-            wire_id: "업무 상태 S0을 유지한다"
-            for wire_id in wire_ids
-        }}
-        safe_frame = normalize_semantic_frame_response(
-            model.model_validate(safe_payload), profile, specs,
-        )
-        self.assertTrue(all(
-            slot.meaning == "업무 상태 S0을 유지한다"
-            and slot.status == "sufficient"
-            for slot in safe_frame.slots.values()
-        ))
-
-        leaked_payload = {"slots": dict(safe_payload["slots"])}
-        leaked_payload["slots"][wire_ids[0]] = f"조건 {wire_ids[-1]}이면 처리한다"
-        leaked_frame = normalize_semantic_frame_response(
-            model.model_validate(leaked_payload), profile, specs,
-        )
-        leaked_slot = leaked_frame.slots[specs[0].slot_id]
-        self.assertEqual("insufficient", leaked_slot.status)
-        self.assertEqual("", leaked_slot.meaning)
-        self.assertEqual(
-            ("model output referenced a request-local private response key",),
-            leaked_slot.missing_context,
-        )
-        self.assertTrue(all(
-            slot.status == "sufficient"
-            for slot_id, slot in leaked_frame.slots.items()
-            if slot_id != specs[0].slot_id
-        ))
-
-        obsolete_diagnostic_payload = {"slots": dict(safe_payload["slots"])}
-        obsolete_diagnostic_payload["slots"][wire_ids[0]] = {
-            "meaning": "확인된 일부 의미",
-            "status": "partial",
-            "missing_context": [f"{wire_ids[0]}의 계약"],
-        }
-        with self.assertRaises(ValidationError):
-            model.model_validate(obsolete_diagnostic_payload)
-
-    def test_compact_wire_is_total_and_unique_across_boundary_sizes(self):
-        for size in (1, 7, 8, 9, 24, 65):
-            with self.subTest(size=size):
-                specs = tuple(
-                    SlotSpec(
-                        slot_id=f"SL:0123456789ab:STATEMENT:DIRECT_ACTION:s{index}",
-                        family="STATEMENT",
-                        role="DIRECT_ACTION",
-                        target_ref="EV:target",
-                        evidence_refs=("EV:target",),
-                    )
-                    for index in range(size)
-                )
-                wire_ids = semantic_slot_wire_ids(specs)
-                model = semantic_frame_response_model(specs)
-                payload = {"slots": {
-                    wire_id: f"meaning {index}"
-                    for index, wire_id in enumerate(wire_ids)
-                }}
-                model.model_validate(payload)
-                self.assertEqual(size, len(set(wire_ids)))
-                namespace = wire_ids[0].rsplit("_", 1)[0]
-                self.assertRegex(namespace, r"^W[0-9a-f]{10}$")
-                self.assertEqual(
-                    tuple(f"{namespace}_{index}" for index in range(size)),
-                    wire_ids,
-                )
-                self.assertEqual(wire_ids, semantic_slot_wire_ids(specs))
-
-                missing = {"slots": dict(payload["slots"])}
-                missing["slots"].pop(wire_ids[size // 2])
-                with self.assertRaises(ValidationError):
-                    model.model_validate(missing)
 
     def test_control_slots_use_absolute_statement_coordinates(self):
         source = """int save(int order_id, int qty) {
@@ -695,15 +526,12 @@ END;"""
         processing_refs = [
             ref
             for spec in summary_specs
-            if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
+            if spec.family == "FUNCTION" and spec.role == "WHOLE_FUNCTION"
             for ref in spec.evidence_refs
             if ref in statement_refs
         ]
 
-        self.assertEqual(
-            set(semantic_fact_wire_bindings(summary_specs).values()),
-            set(projected["facts"]),
-        )
+        self.assertIsInstance(projected["facts"], list)
         self.assertGreater(len(full["evidence"]), 500)
         self.assertEqual(statement_refs, set(processing_refs))
         self.assertEqual(len(statement_refs), len(processing_refs))
@@ -744,12 +572,12 @@ END;"""
         processing_refs = [
             ref
             for spec in summary_specs
-            if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
+            if spec.family == "FUNCTION" and spec.role == "WHOLE_FUNCTION"
             for ref in spec.evidence_refs
             if ref in call_refs
         ]
 
-        self.assertGreater(len(summary_specs), 5)
+        self.assertEqual(1, len(summary_specs))
         self.assertEqual({spec.slot_id for spec in summary_specs}, set(assigned))
         self.assertEqual(len(assigned), len(set(assigned)))
         self.assertEqual(call_refs, set(processing_refs))
@@ -782,7 +610,7 @@ END;"""
         assigned_refs = [
             ref
             for spec in summary_specs
-            if spec.role == "PROCESSING_EFFECTS"
+            if spec.role == "WHOLE_FUNCTION"
             for ref in spec.evidence_refs
             if ref in external_refs
         ]
@@ -796,18 +624,13 @@ END;"""
 
         async def invoke(values, response_model):
             payload = json.loads(values["linked_external_sources"])
-            self.assertTrue(all(key.startswith("E") for key in payload))
-            observed_payloads.extend(payload.values())
-            observed_external_refs.extend(payload)
+            self.assertTrue(all(set(item) == {"kind", "matched_key", "text"} for item in payload))
+            observed_payloads.extend(item["text"] for item in payload)
+            observed_external_refs.extend(item["matched_key"] for item in payload)
             response = {
-                "slots": {
-                    wire_id: "grounded meaning"
-                    for wire_id, _spec in response_model.__semantic_slot_bindings__
-                },
+                "summary": "외부 문맥을 사용해 대상을 처리한다.",
+                "stereotype": "Validator",
             }
-            if "stereotype" in response_model.model_fields:
-                response["summary"] = "외부 문맥을 사용해 대상을 처리한다."
-                response["stereotype"] = "Validator"
             return response_model.model_validate(response)
 
         asyncio.run(_run_frame_summary(
@@ -836,21 +659,11 @@ END;"""
         source_lines = [f"source line {line}" for line in range(10, 17)]
         source_lines[3] = r'''call("\\t", 'quoted');'''
         source = "\n".join(source_lines)
-        observed_ids: list[str] = []
+        observed_profiles: list[dict] = []
 
         async def invoke(values, response_model):
-            bindings = dict(response_model.__semantic_slot_bindings__)
-            assigned_specs = tuple(bindings.values())
-            assigned_refs = {
-                ref
-                for spec in assigned_specs
-                for ref in (spec.target_ref, *spec.evidence_refs)
-            }
             prompt_profile = json.loads(values["structural_profile"])
-            self.assertEqual(
-                set(semantic_fact_wire_bindings(assigned_specs).values()),
-                set(prompt_profile["facts"]),
-            )
+            self.assertIsInstance(prompt_profile["facts"], list)
 
             expected_lines = list(range(10, 17))
             expected_source = "\n".join(
@@ -860,21 +673,16 @@ END;"""
             self.assertEqual(
                 {
                     "target_id",
-                    "code_body", "structural_profile", "applicable_slots",
+                    "code_body", "structural_profile",
                     "linked_callee_outcomes", "linked_external_sources",
                 },
                 set(values),
             )
-            observed_ids.extend(spec.slot_id for spec in assigned_specs)
+            observed_profiles.append(prompt_profile)
             payload = {
-                "slots": {
-                    wire_id: f"meaning for {spec.slot_id}"
-                    for wire_id, spec in bindings.items()
-                },
+                "summary": "입력을 검사하고 처리 결과를 반환한다.",
+                "stereotype": "Validator",
             }
-            if "stereotype" in response_model.model_fields:
-                payload["summary"] = "입력을 검사하고 처리 결과를 반환한다."
-                payload["stereotype"] = "Validator"
             return response_model.model_validate(payload)
 
         result = asyncio.run(_run_frame_summary(
@@ -886,8 +694,7 @@ END;"""
         ))
 
         self.assertTrue(result.summary)
-        self.assertEqual({spec.slot_id for spec in summary_specs}, set(observed_ids))
-        self.assertEqual(len(summary_specs), len(observed_ids))
+        self.assertEqual(1, len(observed_profiles))
 
     def test_routine_summary_roles_follow_actual_structure_and_stay_bounded(self):
         source = "int check(void *ctx) {\nreturn RC_NRM;\n}"
@@ -920,10 +727,7 @@ END;"""
             if spec.family == "FUNCTION"
         ]
 
-        self.assertEqual({"RESULT"}, set(roles))
-        self.assertNotIn("GUARDS_AND_BRANCHES", roles)
-        self.assertNotIn("PROCESSING_EFFECTS", roles)
-        self.assertLessEqual(len(roles), 5)
+        self.assertEqual(["WHOLE_FUNCTION"], roles)
 
     def test_guard_and_processing_roles_are_independently_applicable(self):
         fn = CodeNode(
@@ -953,8 +757,7 @@ END;"""
             fn, guard_context, inventory=guard_inventory,
         )
         guard_roles = {spec.role for spec in guard_specs if spec.family == "FUNCTION"}
-        self.assertIn("GUARDS_AND_BRANCHES", guard_roles)
-        self.assertNotIn("PROCESSING_EFFECTS", guard_roles)
+        self.assertEqual({"WHOLE_FUNCTION"}, guard_roles)
 
         effect_context = AnalysisContext(
             id=fn.id, signature=fn.signature, file_path=fn.file_path,
@@ -971,8 +774,7 @@ END;"""
 
         _profile, effect_specs = build_code_semantic_plan(fn, effect_context)
         effect_roles = {spec.role for spec in effect_specs if spec.family == "FUNCTION"}
-        self.assertNotIn("GUARDS_AND_BRANCHES", effect_roles)
-        self.assertIn("PROCESSING_EFFECTS", effect_roles)
+        self.assertEqual({"WHOLE_FUNCTION"}, effect_roles)
 
     def test_summary_projection_uses_complete_flow_role_order(self):
         source = """int save(int qty) {
@@ -996,22 +798,7 @@ return RC_NRM;
         )
         summary_specs = semantic_concern_slots(specs)["summary"]
         model = frame_summary_response_model("framework", summary_specs)
-        meanings = {
-            "RESPONSIBILITY": "1 책임",
-            "INPUT_ROLE": "2 입력",
-            "GUARDS_AND_BRANCHES": "3 조건",
-            "PROCESSING_EFFECTS": "4 처리",
-            "RESULT": "5 결과",
-        }
         payload = {
-            "slots": {
-                wire_id: meanings[spec.role]
-                for spec, wire_id in zip(
-                    summary_specs,
-                    semantic_slot_wire_ids(summary_specs),
-                    strict=True,
-                )
-            },
             "summary": (
                 "수량이 유효하지 않으면 오류로 종료하고, 유효하면 재고를 예약한 뒤 "
                 "정상 결과를 반환한다."
@@ -1046,24 +833,7 @@ return RC_NRM;
         summary_specs = semantic_concern_slots(specs)["summary"]
         model = frame_summary_response_model("framework", summary_specs)
 
-        def meaning(spec):
-            if spec.role != "PROCESSING_EFFECTS":
-                return f"{spec.role}"
-            line = min(
-                profile.evidence[ref].start_line
-                for ref in spec.evidence_refs
-                if profile.evidence[ref].kind != "TARGET"
-                and profile.evidence[ref].start_line > 0
-            )
-            return f"processing line {line}"
-
         parsed = model.model_validate({
-            "slots": {
-                wire_id: meaning(spec)
-                for spec, wire_id in zip(
-                    summary_specs, semantic_slot_wire_ids(summary_specs), strict=True,
-                )
-            },
             "summary": "첫 번째 값을 정한 뒤 두 번째 값을 계산해 반환한다.",
             "stereotype": "Validator",
         })
@@ -1074,23 +844,17 @@ return RC_NRM;
             projected.summary,
         )
 
-    def test_summary_schema_preserves_every_obligation_without_partition(self):
-        primary = tuple(
-            SlotSpec(
-                slot_id=f"SL:0123456789ab:STATEMENT:DIRECT_ACTION:s{i}",
-                family="STATEMENT",
-                role="DIRECT_ACTION",
-                target_ref="EV:target",
-                evidence_refs=("EV:target",),
-            )
-            for i in range(30)
-        )
-
+    def test_summary_schema_rejects_partitioned_detail_obligations(self):
+        profile, specs = build_code_semantic_plan(_routine(), _context())
+        primary = semantic_concern_slots(specs)["summary"]
         model = frame_summary_response_model("framework", primary)
-        assigned = [
-            spec.slot_id for _wire_id, spec in model.__semantic_slot_bindings__
-        ]
-        self.assertEqual([spec.slot_id for spec in primary], assigned)
+        self.assertEqual({"summary", "stereotype"}, set(model.model_fields))
+        with self.assertRaises(ValidationError):
+            model.model_validate({
+                "summary": "대상을 처리한다.",
+                "stereotype": "Helper",
+                "slots": {"W0": "불필요한 세부"},
+            })
 
     def test_summary_deadline_is_terminal_without_second_meaning_request(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
@@ -1144,21 +908,6 @@ return RC_NRM;
             ))
         self.assertEqual(1, calls)
 
-    def test_provider_wire_exposes_only_one_meaning_string_per_slot(self):
-        _profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = semantic_frame_response_model(specs)
-        wire_ids = semantic_slot_wire_ids(specs)
-        schema = json.dumps(model.model_json_schema(), sort_keys=True)
-        self.assertNotIn('"status"', schema)
-        self.assertNotIn('"meaning"', schema)
-        model.model_validate({"slots": {wire_id: "입증된 의미" for wire_id in wire_ids}})
-        invalid = {"slots": {
-            wire_id: {"meaning": "중복 포장", "status": "sufficient"}
-            for wire_id in wire_ids
-        }}
-        with self.assertRaises(ValidationError):
-            model.model_validate(invalid)
-
     def test_concern_partition_is_total_disjoint_and_merge_requires_exact_population(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
         concerns = semantic_concern_slots(specs)
@@ -1170,13 +919,22 @@ return RC_NRM;
         for group in concerns.values():
             if not group:
                 continue
-            model = semantic_frame_response_model(group)
-            wire_ids = semantic_slot_wire_ids(group)
-            output = model.model_validate({"slots": {
-                wire_id: f"{spec.family}.{spec.role}"
-                for spec, wire_id in zip(group, wire_ids, strict=True)
-            }})
-            fragments.append(normalize_semantic_frame_response(output, profile, group))
+            fragments.append(SemanticFrame(
+                target=profile.target,
+                profile=profile,
+                slots={
+                    spec.slot_id: SemanticSlot(
+                        slot_id=spec.slot_id,
+                        family=spec.family,
+                        role=spec.role,
+                        target_ref=spec.target_ref,
+                        evidence_refs=spec.evidence_refs,
+                        meaning=f"{spec.family}.{spec.role}",
+                        status="sufficient",
+                    )
+                    for spec in group
+                },
+            ))
         merged = merge_semantic_frames(
             *fragments,
             required_slot_ids=(spec.slot_id for spec in specs),
@@ -1185,25 +943,16 @@ return RC_NRM;
 
     def test_whole_summary_is_model_owned_while_gap_metadata_comes_from_frame(self):
         profile, specs = build_code_semantic_plan(_routine(), _context())
-        model = frame_summary_response_model("framework", specs)
-        result_slot = next(
-            spec for spec in specs
-            if spec.family == "FUNCTION" and spec.role == "RESULT"
-        )
+        summary_specs = semantic_concern_slots(specs)["summary"]
+        model = frame_summary_response_model("framework", summary_specs)
         payload = {
-            "slots": {
-                wire_id: "" if spec == result_slot else f"{spec.family}.{spec.role}을 수행한다"
-                for spec, wire_id in zip(
-                    specs, semantic_slot_wire_ids(specs), strict=True,
-                )
-            },
             "summary": "주문을 검증한 뒤 저장 처리를 수행한다.",
             "stereotype": "ApplicationService",
         }
         parsed = model.model_validate(payload)
-        summary = normalize_frame_summary_response(parsed, profile, specs)
+        summary = normalize_frame_summary_response(parsed, profile, summary_specs)
         self.assertIsNotNone(summary.semantic_frame)
-        self.assertEqual("partial", summary.evidence_status)
+        self.assertEqual("sufficient", summary.evidence_status)
         self.assertEqual(payload["summary"], summary.summary)
         self.assertNotIn("FUNCTION.RESPONSIBILITY", summary.summary)
 

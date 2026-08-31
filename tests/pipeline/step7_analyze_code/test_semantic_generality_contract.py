@@ -48,7 +48,6 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 "linked_callee_outcomes": "[]",
                 "code_body": body,
                 "structural_profile": "{}",
-                "applicable_slots": "[]",
             },
         )
 
@@ -60,13 +59,11 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 self.assertIn(body, rendered)
                 self.assertIn(f"response_locale: {locale}", rendered)
                 self.assertIn("structural_profile_json:", rendered)
-                self.assertIn("applicable_slots_json:", rendered)
-                self.assertIn("linked_external_source_json:", rendered)
+                self.assertNotIn("applicable_slots_json:", rendered)
+                self.assertIn("linked_external_sources_json:", rendered)
                 self.assertNotIn("module_intent:", rendered)
                 self.assertNotIn("direct_data_object_usages_json:", rendered)
-                self.assertIn("잘못:", rendered)
-                self.assertIn("좋음:", rendered)
-                self.assertIn("`slots`", rendered)
+                self.assertNotIn("`slots`", rendered)
                 self.assertIn("`stereotype`", rendered)
                 self.assertNotIn("missing_context", rendered)
                 self.assertNotIn("`domain_terms`", rendered)
@@ -83,7 +80,6 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 **rule["static_values"],
                 "response_locale": "fr",
                 "structural_profile": "{}",
-                "applicable_slots": "{}",
                 "linked_callee_outcomes": "[]",
                 "linked_external_sources": "[]",
                 "code_body": body,
@@ -92,10 +88,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         self.assertIn(body, rendered)
         self.assertIn("response_locale: fr", rendered)
         self.assertIn("structural_profile_json:", rendered)
-        self.assertIn("applicable_slots_json:", rendered)
+        self.assertNotIn("applicable_slots_json:", rendered)
         self.assertIn("linked_callee_outcomes_json:", rendered)
-        self.assertIn("잘못:", rendered)
-        self.assertIn("좋음:", rendered)
+        self.assertIn("linked_external_sources_json:", rendered)
         self.assertIn(stereotype_prompt_options("dbms"), rendered)
         self.assertNotIn("`ApplicationService`, `DomainService`", rendered)
 
@@ -140,7 +135,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                     self.assertTrue(template.lstrip().startswith("# [TASK"))
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
                     for contract_marker in (
-                        "[OUTPUT CONTRACT", "[INPUT GUIDE", "[DECISION", "[SELF CHECK]",
+                        "[OUTPUT CONTRACT", "[DECISION", "[SELF CHECK]",
                     ):
                         self.assertIn(contract_marker, expanded)
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
@@ -257,10 +252,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
 
     def test_every_semantic_prompt_pairs_bad_and_good_examples(self) -> None:
         cases = (
-            ("framework", "code_summary"),
             ("framework", "code_table_usage_meanings"),
             ("framework", "table_description"),
-            ("dbms", "code_summary_node"),
             ("dbms", "code_table_usage_meanings_batch"),
             ("dbms", "table_description"),
         )

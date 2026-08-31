@@ -96,19 +96,19 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             "db:public.orders", table_evidence,
         )
         summary_slots = (SlotSpec(
-            slot_id="SL:0123456789ab:FUNCTION:RESPONSIBILITY:root",
+            slot_id="SL:0123456789ab:FUNCTION:WHOLE_FUNCTION:root",
             family="FUNCTION",
-            role="RESPONSIBILITY",
+            role="WHOLE_FUNCTION",
             target_ref="EV:target",
             evidence_refs=("EV:target",),
         ),)
         usage_profile, usage_slots = _table_usage_plan()
         boundaries = (
             (frame_summary_response_model("framework", summary_slots), {
-                "slots", "summary", "stereotype",
+                "summary", "stereotype",
             }),
             (frame_summary_response_model("dbms", summary_slots), {
-                "slots", "summary", "stereotype",
+                "summary", "stereotype",
             }),
             (function_table_usages_response_model(
                 usage_profile, usage_slots, ("db:orders",), (),
@@ -141,6 +141,22 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
+
+    def test_summary_schema_is_target_invariant_and_has_no_binding_keys(self) -> None:
+        first = (SlotSpec(
+            slot_id="SL:0123456789ab:FUNCTION:WHOLE_FUNCTION:first",
+            family="FUNCTION", role="WHOLE_FUNCTION",
+            target_ref="EV:first", evidence_refs=("EV:first",),
+        ),)
+        second = (SlotSpec(
+            slot_id="SL:fedcba987654:FUNCTION:WHOLE_FUNCTION:second",
+            family="FUNCTION", role="WHOLE_FUNCTION",
+            target_ref="EV:second", evidence_refs=("EV:second",),
+        ),)
+        first_schema = frame_summary_response_model("framework", first).model_json_schema()
+        second_schema = frame_summary_response_model("framework", second).model_json_schema()
+        self.assertEqual(first_schema, second_schema)
+        self.assertEqual({"summary", "stereotype"}, set(first_schema["properties"]))
 
     def test_final_rule_is_closed_and_not_a_direct_llm_response(self) -> None:
         valid = {

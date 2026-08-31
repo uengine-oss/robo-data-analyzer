@@ -1,19 +1,17 @@
-"""Canonical bounded semantic-frame contracts.
+"""Canonical internal semantic-frame contracts.
 
-Deterministic code owns target, evidence, slot metadata and evidence sufficiency.
-The model owns only one meaning string for every preassigned slot.  Boundedness comes
-from deterministic evidence-closure partitioning, never from truncating a canonical
-meaning or diagnostic leaf.
+Deterministic code owns target, evidence, obligation metadata and sufficiency.  Model
+boundaries project only the concern-specific natural-language leaves they genuinely need;
+canonical IDs and evidence bindings remain inside this ledger.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 EvidenceStatus = Literal["sufficient", "partial", "insufficient"]
@@ -29,11 +27,8 @@ SlotFamily = Literal[
 
 
 # Whole-function responsibility is owned once by the response's required ``summary``.
-# These are the non-duplicated structural details that can qualify that summary.
 FUNCTION_SUMMARY_ROLES = (
-    "GUARDS_AND_BRANCHES",
-    "PROCESSING_EFFECTS",
-    "RESULT",
+    "WHOLE_FUNCTION",
 )
 
 
@@ -294,184 +289,10 @@ class SemanticFrame(BaseModel):
         return _canonical(self.model_dump(mode="json", by_alias=True))
 
 
-def semantic_slot_wire_ids(slot_specs: Iterable[SlotSpec]) -> tuple[str, ...]:
-    """Return request-local compact keys for an exact ordered slot assignment.
-
-    Canonical ``SL:...`` identifiers belong to the Analyzer frame, graph and MCP
-    boundaries.  Echoing them through every constrained model response wastes decode
-    tokens and made the dynamic frame materially slower than the legacy pipeline.  The
-    provider only needs an unambiguous key inside one request.  A plain ``S0`` namespace
-    collides with real legacy literals and was copied into APAS Rule meanings.  Include
-    the exact assignment digest in every private key so ordinary source values cannot be
-    confused with provider coordinates, then restore canonical identifiers by the model's
-    closed binding.  Missing, duplicate and extra values remain rejected; no response
-    order is trusted.
-    """
-    specs = tuple(slot_specs)
-    if len({spec.slot_id for spec in specs}) != len(specs):
-        raise ValueError("semantic frame slot specs must be unique")
-    if not specs:
-        return ()
-    namespace = stable_digest([spec.slot_id for spec in specs], length=10)
-    return tuple(f"W{namespace}_{index}" for index in range(len(specs)))
-
-
-def semantic_fact_wire_bindings(
-    slot_specs: Iterable[SlotSpec],
-) -> dict[str, str]:
-    """Map irreducible assigned facts to request-local model-input references.
-
-    Canonical evidence IDs remain in the Analyzer ledger and never become model field
-    names.  The model receives only compact request-local fact references so a slot can
-    point at one non-duplicated structural fact without receiving target digests or
-    producer identities. Canonical EXPRESSION facts stay in the Analyzer ledger instead
-    of being sent beside the exact source and the already-normalized control, statement,
-    and Rule facts. That duplicate tree does not add a model-owned decision.
-    """
-    specs = tuple(slot_specs)
-    if not specs:
-        return {}
-    target_refs = {spec.target_ref for spec in specs}
-    if len(target_refs) != 1:
-        raise ValueError("one prompt assignment cannot mix target evidence")
-    refs = tuple(dict.fromkeys(
-        ref
-        for spec in specs
-        for ref in spec.evidence_refs
-        if ref not in target_refs and ":EXPRESSION:" not in ref
-    ))
-    namespace = stable_digest(refs, length=8)
-    return {ref: f"E{namespace}_{index}" for index, ref in enumerate(refs)}
-
-
-def _mentions_private_wire_id(text: str, wire_ids: Iterable[str]) -> bool:
-    value = str(text or "")
-    return any(re.search(
-        rf"(?<![A-Za-z0-9_]){re.escape(wire_id)}(?![A-Za-z0-9_])",
-        value,
-    ) for wire_id in wire_ids)
-
-
-def semantic_frame_response_model(slot_specs: Iterable[SlotSpec]) -> type[BaseModel]:
-    specs = tuple(slot_specs)
-    wire_ids = semantic_slot_wire_ids(specs) if specs else ()
-    fingerprint = stable_digest([spec.model_dump(mode="json") for spec in specs])
-    fields = {wire_id: (str, Field(...)) for wire_id in wire_ids}
-    slots_model = create_model(
-        f"AssignedSemanticSlotMap_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
-        **fields,
-    )
-    model = create_model(
-        f"AssignedSemanticFrameOutput_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
-        slots=(slots_model, Field(...)),
-    )
-    # Runtime-only diagnostics/test metadata.  This is deliberately absent from the
-    # provider schema and therefore cannot increase prompt or decode size.
-    model.__semantic_slot_bindings__ = tuple(zip(wire_ids, specs, strict=True))
-    return model
-
-
-def normalize_semantic_frame_response(
-    output: BaseModel,
-    profile: StructuralProfile,
-    slot_specs: Iterable[SlotSpec],
-) -> SemanticFrame:
-    specs = tuple(slot_specs)
-    wire_ids = semantic_slot_wire_ids(specs) if specs else ()
-    evidence_ids = set(profile.evidence)
-    target_ref = evidence_id(profile.target.id, "TARGET", 0)
-    if target_ref not in evidence_ids:
-        raise ValueError("profile target evidence is missing")
-    slots: dict[str, SemanticSlot] = {}
-    private_wire_ids = (
-        *wire_ids,
-        *(semantic_fact_wire_bindings(specs).values() if specs else ()),
-    )
-    for spec, wire_id in zip(specs, wire_ids, strict=True):
-        if spec.target_ref != target_ref:
-            raise ValueError(f"slot target_ref differs from canonical target: {spec.slot_id}")
-        missing = set(spec.evidence_refs) - evidence_ids
-        if missing:
-            raise ValueError(f"slot spec references unknown evidence: {sorted(missing)}")
-        leaf = getattr(output.slots, wire_id)
-        leaf_texts = (leaf,)
-        unavailable_callees = sorted({
-            str(fact.attributes.get("callee_id") or "")
-            for ref in spec.evidence_refs
-            if (fact := profile.evidence[ref]).kind == "CALL"
-            and fact.attributes.get("dependency_status") == "unavailable_cycle"
-            and str(fact.attributes.get("callee_id") or "")
-        })
-        leaked_private_key = any(
-            _mentions_private_wire_id(text, private_wire_ids) for text in leaf_texts
-        )
-        if leaked_private_key:
-            # The raw provider artifact still owns the exact bad output.  Canonical
-            # meaning must not carry request-local coordinates, and pretending that a
-            # string replacement repaired the meaning would create a quiet success.
-            meaning = ""
-            status = "insufficient"
-            missing_context = (
-                "model output referenced a request-local private response key",
-            )
-        else:
-            meaning = leaf.strip()
-            status = "sufficient" if meaning else "insufficient"
-            missing_context = () if meaning else (
-                f"assigned {spec.family}.{spec.role} returned no meaning",
-            )
-        if unavailable_callees:
-            dependency_reasons = tuple(
-                f"callee semantic dependency unavailable in call cycle: {callee_id}"
-                for callee_id in unavailable_callees
-            )
-            missing_context = tuple(dict.fromkeys((
-                *missing_context, *dependency_reasons,
-            )))
-            status = "partial" if meaning else "insufficient"
-        slots[spec.slot_id] = SemanticSlot(
-            slot_id=spec.slot_id,
-            family=spec.family,
-            role=spec.role,
-            target_ref=spec.target_ref,
-            evidence_refs=spec.evidence_refs,
-            meaning=meaning,
-            status=status,
-            missing_context=missing_context,
-        )
-    return SemanticFrame(
-        target=profile.target,
-        profile=profile,
-        slots=slots,
-    )
-
-
-def slot_specs_json(slot_specs: Iterable[SlotSpec]) -> str:
-    specs = tuple(slot_specs)
-    if not specs:
-        return "{}"
-    wire_ids = semantic_slot_wire_ids(specs)
-    fact_bindings = semantic_fact_wire_bindings(specs)
-    return _canonical({
-        wire_id: {
-            "kind": f"{spec.family}.{spec.role}",
-            "fact_refs": tuple(
-                fact_bindings[ref]
-                for ref in spec.evidence_refs
-                if ref in fact_bindings
-            ),
-        }
-        for spec, wire_id in zip(specs, wire_ids, strict=True)
-    })
-
-
 _PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
     "TARGET": ("signature",),
     "CONTROL": (
-        "type", "role", "condition", "condition_timing", "parent_ref",
-        "complement_of", "implicit_false",
+        "type", "role", "condition", "condition_timing", "implicit_false",
     ),
     "STATEMENT": ("type", "effects"),
     "DATA_OBJECT": ("table_id", "access", "operation"),
@@ -482,8 +303,7 @@ _PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
     "EXTERNAL": ("semantic_kind", "matched_key"),
     "RULE": (
         "type", "role", "condition", "condition_timing",
-        "complement_of", "implicit_false", "nested_control", "fallthrough_to",
-        "at_label", "after_control",
+        "implicit_false", "nested_control", "at_label",
     ),
     "TABLE": (
         "table_id", "db", "schema", "name", "source_description",
@@ -498,8 +318,6 @@ _PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
 
 def _prompt_fact_attributes(
     fact: EvidenceFact,
-    fact_bindings: Mapping[str, str],
-    node_bindings: Mapping[str, str],
 ) -> dict[str, Any]:
     """Keep only attributes that can change the model-owned meaning leaf."""
     source = fact.attributes
@@ -518,19 +336,11 @@ def _prompt_fact_attributes(
         if fact.kind == "COLUMN" and selected.get("usage_evidence"):
             selected["direct_usage_sources"] = selected.pop("usage_evidence")
 
-    def localize(value: Any) -> Any:
-        if isinstance(value, str):
-            return fact_bindings.get(value, node_bindings.get(value, value))
-        if isinstance(value, list):
-            return [localize(item) for item in value]
-        if isinstance(value, tuple):
-            return [localize(item) for item in value]
-        if isinstance(value, dict):
-            return {key: localize(item) for key, item in value.items()}
-        return value
+    if fact.kind == "DATA_OBJECT" and selected.get("table_id"):
+        selected["table"] = str(selected.pop("table_id")).removeprefix("db:")
 
     return {
-        name: localize(value)
+        name: value
         for name, value in selected.items()
         if value is not None and value != "" and value != [] and value != {}
     }
@@ -558,61 +368,56 @@ def profile_prompt_json(
         return _canonical({
             "target": {
                 "kind": profile.target.type,
-                **_prompt_fact_attributes(
-                    profile.evidence[target_ref], {}, {},
-                ),
+                **_prompt_fact_attributes(profile.evidence[target_ref]),
             },
-            "facts": {},
-            "ordered_flow": [],
+            "facts": [],
         })
-    fact_bindings = semantic_fact_wire_bindings(specs)
     target_refs = {spec.target_ref for spec in specs}
     if len(target_refs) != 1:
         raise ValueError("one prompt profile cannot mix targets")
     target_ref = next(iter(target_refs))
     if target_ref not in profile.evidence:
         raise ValueError(f"prompt assignment references unknown target: {target_ref}")
-    missing = set(fact_bindings) - set(profile.evidence)
+    assigned_refs = set(
+        ref for spec in specs for ref in spec.evidence_refs
+    )
+    missing = assigned_refs - set(profile.evidence)
     if missing:
         raise ValueError(f"prompt assignment references unknown evidence: {sorted(missing)}")
-    facts = {
-        ref: profile.evidence[ref] for ref in fact_bindings
-    }
-    node_bindings = {
-        str(fact.attributes["node_id"]): fact_bindings[ref]
-        for ref, fact in facts.items()
-        if fact.attributes.get("node_id")
-    }
-    fact_payload: dict[str, dict[str, Any]] = {}
-    for ref, fact in facts.items():
+    ordered_refs = [
+        ref for ref in profile.ordered_flow if ref in assigned_refs
+    ]
+    ordered_refs.extend(sorted(
+        assigned_refs - set(ordered_refs) - target_refs,
+        key=lambda ref: (
+            profile.evidence[ref].start_line or 2**31,
+            profile.evidence[ref].end_line or 2**31,
+            profile.evidence[ref].kind,
+            ref,
+        ),
+    ))
+    fact_payload: list[dict[str, Any]] = []
+    for ref in ordered_refs:
+        fact = profile.evidence[ref]
+        if fact.kind in {"EXPRESSION", "EXTERNAL", "TARGET"}:
+            continue
         record: dict[str, Any] = {"kind": fact.kind}
         if fact.start_line:
             if fact.start_line == fact.end_line:
                 record["line"] = fact.start_line
             else:
                 record["lines"] = [fact.start_line, fact.end_line]
-        attributes = _prompt_fact_attributes(
-            fact, fact_bindings, node_bindings,
-        )
+        attributes = _prompt_fact_attributes(fact)
         record.update(attributes)
-        fact_payload[fact_bindings[ref]] = record
+        fact_payload.append(record)
 
     payload: dict[str, Any] = {
         "target": {
             "kind": profile.target.type,
-            **_prompt_fact_attributes(
-                profile.evidence[target_ref], fact_bindings, node_bindings,
-            ),
+            **_prompt_fact_attributes(profile.evidence[target_ref]),
         },
         "facts": fact_payload,
-        "ordered_flow": [
-            fact_bindings[ref]
-            for ref in profile.ordered_flow
-            if ref in fact_bindings
-        ],
     }
-    if profile.unsupported:
-        payload["unsupported"] = profile.unsupported
     return _canonical(payload)
 
 

@@ -9,10 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from pipeline.languages import stereotype_values
 from pipeline.models.code_analysis_output import SummaryOutput
 from pipeline.models.semantic_frame import (
+    SemanticFrame,
+    SemanticSlot,
     SlotSpec,
     StructuralProfile,
-    normalize_semantic_frame_response,
-    semantic_frame_response_model,
     stable_digest,
 )
 from pipeline.models.semantic_frame_projection import project_summary
@@ -24,18 +24,14 @@ def frame_summary_response_model(
 ) -> type[BaseModel]:
     """Build the exact schema for the target's single Summary response."""
     specs = tuple(slot_specs)
-    slot_model = semantic_frame_response_model(specs)
-    slots_type = slot_model.model_fields["slots"].annotation
+    if len(specs) != 1:
+        raise ValueError("Summary requires one whole-target semantic obligation")
     stereotype_type = Literal.__getitem__(tuple(stereotype_values(strategy)))
     fingerprint = stable_digest({
         "strategy": strategy,
-        "slots": [spec.model_dump(mode="json") for spec in specs],
         "concern": "frame-summary",
     })
-    # Provider-visible property order is intentional: grounded details are emitted
-    # before the whole-target synthesis that uses them.
     fields = {
-        "slots": (slots_type, Field(...)),
         "summary": (
             str,
             Field(..., description=SummaryOutput.model_fields["summary"].description),
@@ -47,7 +43,6 @@ def frame_summary_response_model(
         __config__=ConfigDict(extra="forbid"),
         **fields,
     )
-    model.__semantic_slot_bindings__ = slot_model.__semantic_slot_bindings__
     return model
 
 
@@ -57,9 +52,47 @@ def normalize_frame_summary_response(
     slot_specs: Iterable[SlotSpec],
 ) -> SummaryOutput:
     """Validate a target-owner response and attach its canonical semantic frame."""
-    frame = normalize_semantic_frame_response(output, profile, slot_specs)
+    specs = tuple(slot_specs)
+    if len(specs) != 1:
+        raise ValueError("Summary requires one whole-target semantic obligation")
+    spec = specs[0]
+    summary = " ".join(str(output.summary).split())
+    unavailable_callees = {
+        ref
+        for ref in spec.evidence_refs
+        if (fact := profile.evidence[ref]).kind == "CALL"
+        and fact.attributes.get("dependency_status") == "unavailable_cycle"
+    }
+    missing_context = (
+        ("callee semantic dependency unavailable in call cycle",)
+        if unavailable_callees else ()
+    )
+    if summary:
+        status = "partial" if missing_context else "sufficient"
+    else:
+        status = "insufficient"
+        missing_context = (
+            *missing_context,
+            "whole-target summary returned no meaning",
+        )
+    frame = SemanticFrame(
+        target=profile.target,
+        profile=profile,
+        slots={
+            spec.slot_id: SemanticSlot(
+                slot_id=spec.slot_id,
+                family=spec.family,
+                role=spec.role,
+                target_ref=spec.target_ref,
+                evidence_refs=spec.evidence_refs,
+                meaning=summary,
+                status=status,
+                missing_context=missing_context,
+            ),
+        },
+    )
     return project_summary(
         frame,
-        summary=str(output.summary),
+        summary=summary,
         stereotype=str(output.stereotype),
     )

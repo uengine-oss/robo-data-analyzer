@@ -38,10 +38,10 @@ class ExternalPromptContractTest(unittest.TestCase):
         rule = _load_rule(PROMPTS_DIR, "code_summary")
         system = rule.get("system", "")
         user = rule.get("user_template", "")
-        contract = rule["static_values"]["function_summary_contract"]
+        contract = rule["static_values"]["summary_grounding_contract"]
         self.assertNotIn("linked_external_sources", system)
-        self.assertIn("linked_external_source_json", user)
-        self.assertIn("request-local fact key", contract)
+        self.assertIn("linked_external_sources_json", user)
+        self.assertIn("request-local 결합 key", contract)
         for removed in ("CALLS_SQL", "USES_CONFIG", "MENTIONS"):
             self.assertNotIn(removed, system + user + contract)
 
@@ -50,14 +50,13 @@ class ExternalPromptContractTest(unittest.TestCase):
         template = rule.get("user_template", "")
         values = {
             "structural_profile": "{}",
-            "applicable_slots": "{}",
             "linked_callee_outcomes": "[]",
             "code_body": "void a() {}",
         }
-        left = _safe_format(template, {**values, "linked_external_sources": '{"E0":"first text"}'})
-        right = _safe_format(template, {**values, "linked_external_sources": '{"E0":"second text"}'})
+        left = _safe_format(template, {**values, "linked_external_sources": '[{"text":"first text"}]'})
+        right = _safe_format(template, {**values, "linked_external_sources": '[{"text":"second text"}]'})
         self.assertNotEqual(left, right)
-        self.assertIn('"E0":"first text"', left)
+        self.assertIn('"text":"first text"', left)
         self.assertNotIn("second text", left)
 
 

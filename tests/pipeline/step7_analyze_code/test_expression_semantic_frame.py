@@ -8,13 +8,7 @@ from pipeline.models.analysis_context import (
     ControlSubtreeNode,
     StatementFact,
 )
-from pipeline.models.semantic_frame import (
-    normalize_semantic_frame_response,
-    profile_prompt_json,
-    semantic_frame_response_model,
-    semantic_slot_wire_ids,
-    slot_specs_json,
-)
+from pipeline.models.semantic_frame import profile_prompt_json
 from pipeline.quality_gates.branch_inventory import build_inventory
 from pipeline.quality_gates.rule_obligations import required_rule_rows
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
@@ -93,7 +87,7 @@ def test_processing_slot_keeps_expression_canonical_without_duplicate_model_inpu
     }
     effect = next(
         spec for spec in specs
-        if spec.family == "FUNCTION" and spec.role == "PROCESSING_EFFECTS"
+        if spec.family == "FUNCTION" and spec.role == "WHOLE_FUNCTION"
     )
     assert set(profile.expression_refs).issubset(effect.evidence_refs)
     assert not any(
@@ -111,29 +105,16 @@ def test_processing_slot_keeps_expression_canonical_without_duplicate_model_inpu
     prompt = json.loads(profile_prompt_json(profile, (effect,)))
     assert "expression_closure" not in prompt
     target_only_prompt = json.loads(profile_prompt_json(profile, ()))
-    assert target_only_prompt["facts"] == {}
-    assert target_only_prompt["ordered_flow"] == []
-    assigned = json.loads(slot_specs_json((effect,)))
-    assigned_slot = next(iter(assigned.values()))
-    assert len(assigned_slot["fact_refs"]) == 1
+    assert target_only_prompt["facts"] == []
     assert not any(
-        fact["kind"] == "EXPRESSION" for fact in prompt["facts"].values()
+        fact["kind"] == "EXPRESSION" for fact in prompt["facts"]
     )
     # Full nested provenance remains canonical and is not overwritten by the prompt view.
     assert profile.evidence[profile.expression_refs[0]].attributes["expression"][
         "source_range"
     ] == {"char_offset": 40, "char_length": 1}
 
-    model = semantic_frame_response_model((effect,))
-    slot_wire_id = semantic_slot_wire_ids((effect,))[0]
-    response = model.model_validate({
-        "slots": {slot_wire_id: f"copy {slot_wire_id}"},
-    })
-    normalized = normalize_semantic_frame_response(
-        response, profile, (effect,),
-    )
-    assert normalized.slots[effect.slot_id].status == "insufficient"
-    assert normalized.slots[effect.slot_id].meaning == ""
+    assert all("source_range" not in fact for fact in prompt["facts"])
 
 
 def test_case_slot_relates_parent_subject_to_case_value_by_structure() -> None:
@@ -231,7 +212,7 @@ def test_case_slot_relates_parent_subject_to_case_value_by_structure() -> None:
     case_guard = next(
         spec for spec in specs
         if spec.family == "FUNCTION"
-        and spec.role == "GUARDS_AND_BRANCHES"
+        and spec.role == "WHOLE_FUNCTION"
         and by_fact_id["case-value"] in spec.evidence_refs
     )
     assert by_fact_id["subject"] in case_guard.evidence_refs

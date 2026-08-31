@@ -55,16 +55,13 @@ from pipeline.models.code_analysis_output import (
 )
 from pipeline.models.summary_response_schema import (
     frame_summary_response_model,
+    normalize_frame_summary_response,
 )
 from pipeline.models.semantic_frame import (
     mark_semantic_frame_insufficient,
     merge_semantic_frames,
-    normalize_semantic_frame_response,
     profile_prompt_json,
-    semantic_fact_wire_bindings,
-    slot_specs_json,
 )
-from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
@@ -115,19 +112,27 @@ def _assigned_external_source_texts(
     profile,
     slot_specs,
     external_by_chunk: dict,
-) -> dict[str, str]:
-    """Map request-local fact keys to their exact external source text."""
+) -> list[dict[str, str]]:
+    """Return self-contained linked external text without exposing fact identities."""
     specs = tuple(slot_specs)
     if not specs:
-        return {}
+        return []
     assigned_refs = {
         ref
         for spec in specs
         for ref in (spec.target_ref, *spec.evidence_refs)
     }
-    fact_bindings = semantic_fact_wire_bindings(specs)
-    source_texts: dict[str, str] = {}
-    for ref in sorted(assigned_refs):
+    source_texts: list[dict[str, str]] = []
+    ordered_refs = sorted(
+        assigned_refs,
+        key=lambda ref: (
+            int(profile.evidence[ref].start_line),
+            int(profile.evidence[ref].end_line),
+            profile.evidence[ref].kind,
+            ref,
+        ),
+    )
+    for ref in ordered_refs:
         fact = profile.evidence[ref]
         if fact.kind != "EXTERNAL":
             continue
@@ -137,7 +142,11 @@ def _assigned_external_source_texts(
             raise ValueError(
                 f"assigned linked external source is missing: {chunk_id or fact.id}"
             )
-        source_texts[fact_bindings[ref]] = str(source_text)
+        source_texts.append({
+            "kind": str(fact.attributes.get("semantic_kind") or ""),
+            "matched_key": str(fact.attributes.get("matched_key") or ""),
+            "text": str(source_text),
+        })
     return source_texts
 
 
@@ -154,8 +163,11 @@ def _direct_callee_outcomes_by_id(
         meaning = (callee.summary or "").strip()
         if not meaning:
             continue
+        signature = (callee.signature or "").strip()
+        if not signature:
+            raise ValueError("linked callee meaning lacks a model-safe signature")
         meanings[callee_id] = {
-            "callee": callee.signature or callee_id,
+            "callee": signature,
             "meaning": meaning,
         }
     return meanings
@@ -164,11 +176,6 @@ def _direct_callee_outcomes_by_id(
 def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
     """Build one model packet from only its assigned facts and exact source lines."""
     specs = tuple(slot_specs)
-    assigned_refs = {
-        ref
-        for spec in specs
-        for ref in (spec.target_ref, *spec.evidence_refs)
-    }
     source_text = str(analysis_inputs.get("raw_source_code") or "")
     external_by_chunk = dict(analysis_inputs.get("external_source_text_by_id") or {})
     # Split only on LF so CR and a trailing empty physical line remain exact payload data.
@@ -195,7 +202,6 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
         "target_id": profile.target.id,
         "code_body": source_packet,
         "structural_profile": profile_prompt_json(profile, specs),
-        "applicable_slots": slot_specs_json(specs),
         "linked_callee_outcomes": _dump(linked_callee_outcomes),
         "linked_external_sources": _dump(external_source_texts),
     }
@@ -235,11 +241,8 @@ async def _run_frame_summary(
         values,
         frame_summary_response_model(strategy_name, specs),
     )
-    frame = normalize_semantic_frame_response(output, profile, specs)
-    return project_summary(
-        frame,
-        summary=str(output.summary),
-        stereotype=str(output.stereotype),
+    return normalize_frame_summary_response(
+        output, profile, specs,
     )
 
 

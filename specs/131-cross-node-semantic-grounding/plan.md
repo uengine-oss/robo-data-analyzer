@@ -42,6 +42,9 @@
   request-local `facts`에 한 번만 두며 출력 칸은 `fact_refs`로 참조하는 정적 계약을 둔다.
 - import occurrence/fact/module ID는 결정적 exact-once ledger 안에만 유지하며 LLM packet과 제품 그래프에
   전달하지 않는다.
+- Summary는 whole-target `summary`와 `stereotype`만 생성한다. 같은 source/fact를 잘게 나눈 detail
+  meaning map, request digest key와 fact-reference map은 입력·출력에서 제거하고 내부에는 whole-summary
+  의무 하나만 유지한다.
 - 모든 이름은 producer→consumer→storage→search에서 같은 개념을 표현하도록 통일한다.
 
 ### P4. LLM 실행 경계

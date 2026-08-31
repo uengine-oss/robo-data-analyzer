@@ -35,12 +35,10 @@ from pipeline.steps.step7_analyze_code.batch_analyze import (
     _is_summary_terminal,
     _partition_keyed_items,
 )
-from pipeline.models.semantic_frame import (
-    normalize_semantic_frame_response,
-    semantic_frame_response_model,
-    semantic_slot_wire_ids,
+from pipeline.models.summary_response_schema import (
+    frame_summary_response_model,
+    normalize_frame_summary_response,
 )
-from pipeline.models.semantic_frame_projection import project_summary
 from pipeline.steps.step7_analyze_code.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
@@ -61,34 +59,15 @@ def _frame_summary(
     status: str = "sufficient",
 ) -> SummaryOutput:
     profile, specs = build_code_semantic_plan(node, context)
-    model = semantic_frame_response_model(specs)
+    summary_specs = semantic_concern_slots(specs)["summary"]
+    model = frame_summary_response_model("dbms", summary_specs)
     parsed = model.model_validate({
-        "slots": {
-            wire_id: summary if status != "insufficient" else ""
-            for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
-        },
+        "summary": summary if status != "insufficient" else "",
+        "stereotype": stereotype or "Helper",
     })
-    frame = normalize_semantic_frame_response(parsed, profile, specs)
-    return project_summary(
-        frame,
-        summary=summary if status != "insufficient" else "",
-        stereotype=stereotype,
+    return normalize_frame_summary_response(
+        parsed, profile, summary_specs,
     )
-
-
-def _semantic_frame(
-    node: CodeNode,
-    context: AnalysisContext,
-    *,
-    meaning: str = "구조 근거에 따른 동작",
-):
-    profile, specs = build_code_semantic_plan(node, context)
-    model = semantic_frame_response_model(specs)
-    parsed = model.model_validate({"slots": {
-        wire_id: meaning
-        for spec, wire_id in zip(specs, semantic_slot_wire_ids(specs), strict=True)
-    }})
-    return normalize_semantic_frame_response(parsed, profile, specs)
 
 
 def _batch_frame_summary(
@@ -114,9 +93,7 @@ def _frame_wire_payload(
     meaning: str,
     stereotype: str,
 ) -> dict:
-    slots_type = response_model.model_fields["slots"].annotation
     return {
-        "slots": {key: meaning for key in slots_type.model_fields},
         "summary": meaning,
         "stereotype": stereotype,
     }
@@ -149,7 +126,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", context.summary)
         self.assertEqual("needs_context", context.extra["summary_status"])
         self.assertEqual(
-            ("whole-function summary returned no meaning",),
+            ("whole-target summary returned no meaning",),
             finding.reasons,
         )
 
@@ -414,13 +391,8 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             if started == 2:
                 both_started.set()
             await asyncio.wait_for(both_started.wait(), timeout=1)
-            bindings = dict(response_model.__semantic_slot_bindings__)
             try:
                 return response_model.model_validate({
-                    "slots": {
-                        wire_id: "해당 원문을 처리한다"
-                        for wire_id in bindings
-                    },
                     "summary": "해당 원문을 처리한다",
                     "stereotype": "Helper",
                 })
@@ -473,12 +445,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("code_summary_node", rule_name)
                 self.assertEqual(f"1 | {source_text}", user_values["code_body"])
                 self.assertNotIn("QUOTED_LITERAL", user_values["code_body"])
-                bindings = dict(response_model.__semantic_slot_bindings__)
                 return response_model.model_validate({
-                    "slots": {
-                        wire_id: "'A\\tB'를 do_work에 전달해 호출한다"
-                        for wire_id in bindings
-                    },
                     "summary": "'A\\tB'를 do_work에 전달해 호출한다",
                     "stereotype": "Helper",
                 })

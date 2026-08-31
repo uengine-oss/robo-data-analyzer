@@ -15,7 +15,6 @@ from pipeline.languages import callsite_labels, control_structure_labels
 from pipeline.models.rule_condition_ir import attach_rule_condition_projection
 from pipeline.models.semantic_frame import (
     EvidenceFact,
-    FUNCTION_SUMMARY_ROLES,
     SlotSpec,
     StructuralProfile,
     StructuralTarget,
@@ -121,16 +120,13 @@ def build_code_semantic_plan(
     ordered: list[str] = []
     child_refs: list[str] = []
     callee_refs: list[str] = []
-    linked_callee_refs: list[str] = []
     unavailable_callee_refs: list[str] = []
     external_refs: list[str] = []
     data_refs: list[str] = []
     symbol_refs: list[str] = []
     expression_refs: list[str] = []
     expression_refs_by_node: dict[str, list[str]] = {}
-    parameter_refs: list[str] = []
     planned_rows: list[dict[str, Any]] = []
-    planned_rule_refs: list[tuple[dict[str, Any], str, tuple[str, ...]]] = []
 
     target_ref = _add_fact(evidence, _fact(
         target_id=fn.id,
@@ -278,7 +274,6 @@ def build_code_semantic_plan(
 
     call_refs_by_line: dict[int, list[str]] = {}
     condition_call_refs_by_fact: dict[str, list[str]] = {}
-    effect_call_refs: list[str] = []
     call_occurrences = tuple(ctx.extra.get("ast_call_occurrences") or ())
     if call_occurrences:
         if not all(isinstance(item, CallOccurrenceFact) for item in call_occurrences):
@@ -316,8 +311,8 @@ def build_code_semantic_plan(
                 attributes=attributes,
             ))
             callee_refs.append(ref)
-            ordered.append(ref)
             if occurrence.presence_status == "active":
+                ordered.append(ref)
                 call_refs_by_line.setdefault(absolute_line, []).append(ref)
             if (
                 occurrence.presence_status == "active"
@@ -326,11 +321,6 @@ def build_code_semantic_plan(
                 condition_call_refs_by_fact.setdefault(
                     str(occurrence.condition_fact_id), [],
                 ).append(ref)
-            if (
-                occurrence.presence_status == "active"
-                and occurrence.structural_role == "effect"
-            ):
-                effect_call_refs.append(ref)
     # Linked callee identities are target-level facts because the current common context
     # does not assign every edge to an exact source occurrence.  Never guess that mapping.
     unavailable_callees = {
@@ -359,7 +349,6 @@ def build_code_semantic_plan(
             },
         ))
         callee_refs.append(ref)
-        linked_callee_refs.append(ref)
         if dependency_status == "unavailable_cycle":
             unavailable_callee_refs.append(ref)
 
@@ -380,8 +369,6 @@ def build_code_semantic_plan(
             },
         ))
         symbol_refs.append(ref)
-        if symbol.kind == "parameter":
-            parameter_refs.append(ref)
 
     for external in ctx.external_evidence:
         external_refs.append(_add_fact(evidence, _fact(
@@ -597,7 +584,6 @@ def build_code_semantic_plan(
                 },
             ))
             ordered.append(ref)
-            planned_rule_refs.append((row, ref, tuple(dict.fromkeys(supporting_refs))))
 
     ordered = sorted(
         dict.fromkeys(ordered),
@@ -611,88 +597,21 @@ def build_code_semantic_plan(
 
     is_routine = fn.label in {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
     if is_routine:
-        for row, rule_ref, supporting_refs in planned_rule_refs:
-            if str(row.get("role") or "") not in {
-                "decision", "complement", "handler",
-            }:
-                continue
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="GUARDS_AND_BRANCHES",
-                anchor={"evidence": rule_ref},
-                target_ref=target_ref,
-                evidence_refs=(target_ref, rule_ref, *supporting_refs),
-            )
-
-        processing_refs: list[str] = []
-        processing_refs.extend(effect_call_refs)
-        if not call_refs_by_line:
-            processing_refs.extend(linked_callee_refs)
-        else:
-            processing_refs.extend(unavailable_callee_refs)
-        processing_refs.extend(data_refs)
-        processing_refs.extend(external_refs)
-        processing_refs.extend(
-            ref
-            for statement, ref, _start, _end in statement_refs
-            if any(
-                str(effect.get("op") or "") in {"set", "commit", "rollback"}
-                for effect in _statement_effects(statement)
-            )
+        summary_evidence = tuple(dict.fromkeys((
+            target_ref,
+            *ordered,
+            *unavailable_callee_refs,
+            *external_refs,
+        )))
+        _add_slot(
+            slots,
+            target_id=fn.id,
+            family="FUNCTION",
+            role="WHOLE_FUNCTION",
+            anchor="TARGET",
+            target_ref=target_ref,
+            evidence_refs=summary_evidence,
         )
-        for ref in dict.fromkeys(processing_refs):
-            node_id = str(evidence[ref].attributes.get("node_id") or "")
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="PROCESSING_EFFECTS",
-                anchor={"evidence": ref},
-                target_ref=target_ref,
-                evidence_refs=(
-                    target_ref, ref, *expression_refs_by_node.get(node_id, ()),
-                ),
-            )
-        return_refs = [
-            ref for statement, ref, _start, _end in statement_refs
-            if statement.label == "RETURN"
-        ]
-        for ref in return_refs:
-            node_id = str(evidence[ref].attributes.get("node_id") or "")
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="RESULT",
-                anchor={"evidence": ref},
-                target_ref=target_ref,
-                evidence_refs=(
-                    target_ref, ref, *expression_refs_by_node.get(node_id, ()),
-                ),
-            )
-        if fn.return_type.strip() and not return_refs:
-            _add_slot(
-                slots,
-                target_id=fn.id,
-                family="FUNCTION",
-                role="RESULT",
-                anchor="INTERFACE",
-                target_ref=target_ref,
-                evidence_refs=(target_ref,),
-            )
-        function_roles = {
-            spec.role for spec in slots.values() if spec.family == "FUNCTION"
-        }
-        if (
-            not function_roles.issubset(FUNCTION_SUMMARY_ROLES)
-            or len(function_roles) > len(FUNCTION_SUMMARY_ROLES)
-        ):
-            raise ValueError(
-                "routine summary exceeded canonical target-owned role boundary: "
-                f"{sorted(function_roles)}"
-            )
     elif fn.label in callsite_labels():
         # Framework FUNCTION_CALL values are occurrences owned by their routine and stay
         # as exact structural evidence above.  DBMS CALL is an actual analysis CodeNode,

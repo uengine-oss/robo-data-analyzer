@@ -382,45 +382,35 @@ output:
 ### 2.2 모델에 보내는 함수 입력
 
 참조를 푼 `ResolvedFunctionMeaningInput`은 내부에서 canonical evidence ID와 원문 좌표를 소유한다.
-Summary 모델에는 그 장부를 그대로 보내지 않고 아래 request-local wire만 보낸다.
+Summary 모델에는 그 장부를 그대로 보내지 않고 아래 최소 packet만 보낸다. 이 packet에는
+request-local 결합 key도 없다.
 
 ```yaml
 response_locale: ko
 structural_profile_json:
   target:
     kind: FUNCTION
-    name: c010
-    params: context_t *ctx
-    return_type: int
     signature: c010(context_t *ctx)
   facts:
-    E<request-digest>_0:
+    -
       kind: CALL
       line: 1138
       callee: c520_mms_psbl_yn_check
-      arguments: [ctx]
       role: effect
-  ordered_flow: [E<request-digest>_0]
-  expression_closure: {}  # 이 요청에 배정된 expression fact가 있을 때만 존재
-applicable_slots_json:
-  W<request-digest>_0:
-    kind: FUNCTION.PROCESSING_EFFECTS
-    fact_refs: [E<request-digest>_0]
 linked_callee_outcomes_json:
   - callee: c520_mms_psbl_yn_check(context_t *ctx)
     meaning: <caller가 관측하는 검증된 직접 결과>
-linked_external_source_json: {}
+linked_external_sources_json: []
 source: |
   1135 | if (ctx->gc_usim_yn != "Y") {
   1138 |   c520_mms_psbl_yn_check(ctx);
   1139 | }
 ```
 
-`facts`는 Parser/Analyzer가 확정한 구조 사실의 모델 전용 최소 투영이다. canonical evidence ID, fact ID,
-occurrence ID와 producer identity를 포함하지 않는다. `E…`와 `W…`는 한 요청 안에서만 쓰는 짧은 결합
-key이며 제품 ID가 아니다. 각 구조 사실은 `facts`에 한 번만 존재하고 slot은 `fact_refs`로 참조하므로
-source나 구조를 slot마다 복제하지 않는다. 모델 응답에는 `W…` key와 의미 문자열만 있으며 `E…` key,
-구조 사실, 좌표는 복창하지 않는다.
+`facts`는 Parser/Analyzer가 확정한 구조 사실의 source-order 최소 배열이다. canonical evidence ID, fact ID,
+occurrence ID, producer identity, request digest key와 fact-reference map을 포함하지 않는다. source와 구조를
+맞추는 line/lines만 실제 결합 좌표로 유지한다. 모델 응답은 whole-target `summary`와 `stereotype`만 가지며
+구조 사실과 좌표를 복창하지 않는다.
 
 다음 값은 내부 결합·검증에는 필요하지만 모델에는 보내지 않는다.
 
@@ -452,20 +442,18 @@ one dynamic user message
 동적 user message의 section 순서는 아래와 같다.
 
 ```text
-1. task target와 output schema
-2. 원래 line number가 붙은 온전한 대상 source
-3. source를 복제하지 않는 작은 structure map
-4. source만으로 알 수 없는 확정 external value / table / callee capsule / project rule
-5. 해당 family가 판정할 required local-key map
+1. 고정 task/output/decision 계약
+2. source를 복제하지 않는 작은 source-order structure array
+3. source만으로 알 수 없는 확정 callee/external capsule
+4. 원래 line number가 붙은 온전한 대상 source
 ```
 
-local key는 한 요청 안에서만 유일하다. Analyzer 내부 required 정본은 stable obligation ID를 사용하며,
+Summary에는 local key가 없다. 다른 keyed family의 local key는 한 요청 안에서만 유일하다. Analyzer 내부 required 정본은 stable obligation ID를 사용하며,
 응답은 `(logical_request_id, local_key)`로 scope를 붙여야 여러 요청의 `F1`·`R1`이 충돌하지 않는다.
 검증 뒤 제품 graph에서는 local key를 버리지만, local→stable 결합 map은 raw response와 함께
 content-addressed run artifact에 보존한다.
 
 ```text
-F: function Summary
 S: source structure item
 FT: function-table-access tuple
 TD: table meaning item
@@ -479,9 +467,9 @@ SC/SCN/AP: scanning occurrence/counterexample/proposal
 EG/ED: external shape/document
 ```
 
-각 response root는 해당 관심사가 실제 소비하는 필드만 가지며 required local key를 정확히 한 번
-포함하고 `additionalProperties:false`다. Summary의 `slots`와 TableDescription의 TABLE/COLUMN
-`slots` 값은 내부 객체가 아닌 의미 문자열 하나다. FunctionTableUsage는 FT key→의미 문자열의
+각 response root는 해당 관심사가 실제 소비하는 필드만 가지고 `additionalProperties:false`다. Summary는
+`summary|stereotype`만 가진다. TableDescription의 TABLE/COLUMN `slots` 값은 내부 객체가 아닌 의미
+문자열 하나다. FunctionTableUsage는 FT key→의미 문자열의
 strict root이고 Rule은 effect/row의 두 exact map이다. 입력의 condition map은 실행 경로를 이해하는
 문맥일 뿐 응답 대상이 아니다. Scanning·external adapter proposal은
 작업보고 HTML §7에 정의된 별도
@@ -504,22 +492,18 @@ schema/grounding/coverage/source-integrity failure     → terminal failure, pub
 
 ### 4.1 일반 함수
 
-Analyzer가 구조 사실마다 배정한 request-local key가 출력 빵틀이다. 모델은 각 key에 내부 객체를
-만들지 않고 입증된 의미 문자열 하나만 쓴다. 의미를 입증할 수 없는 칸도 key를 생략하지 않고 빈
-문자열로 둔다. target 전체를 소유한 한 응답만 `summary`와 `stereotype`을 함께 만든다.
+target 전체를 소유한 한 응답만 `summary`와 `stereotype`을 함께 만든다. 구조 사실별 detail meaning은
+whole summary와 중복되고 downstream 제품 소비가 없으므로 생성하지 않는다.
 
 ```yaml
-slots:
-  W<요청 digest>_0: <첫 배정 사실의 입증된 의미 또는 빈 문자열>
-  W<요청 digest>_1: <둘째 배정 사실의 입증된 의미 또는 빈 문자열>
 summary: <함수 전체 입력→결정→호출·data 접근→상태 변화→결과의 자연스러운 설명 하나>
 stereotype: <허용 ontology 값 하나>
 ```
 
-모델은 충분성 상태나 부족 사유를 출력하지 않는다. Analyzer는 local key→stable slot 결합 장부,
-빈 의미, private key 누출, 실제 `unavailable_cycle` dependency를 사용해 canonical slot의
-`sufficient | partial | insufficient`와 고정 missing-context를 만든다. 따라서 모델의 자기평가가
-제품 상태로 승격되지 않는다.
+모델은 충분성 상태나 부족 사유를 출력하지 않는다. Analyzer는 whole-summary 의무 하나, 빈 summary,
+실제 `unavailable_cycle` dependency와 출력 검증을 사용해
+`sufficient | partial | insufficient`와 고정 missing-context를 만든다. 따라서 모델의 자기평가가 제품
+상태로 승격되지 않는다.
 
 허용 stereotype은 다음과 같다.
 

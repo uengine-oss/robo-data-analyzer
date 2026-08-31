@@ -20,21 +20,21 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             text = text.replace("{" + key + "}", value)
         return text
 
-    def test_summary_strategies_share_one_semantic_frame_contract(self) -> None:
-        shared = (ROOT / "llm/prompts/common/semantic_frame_contract.md").read_text(
+    def test_summary_strategies_share_one_grounding_contract(self) -> None:
+        shared = (ROOT / "llm/prompts/common/summary_grounding_contract.md").read_text(
             encoding="utf-8",
         ).strip()
         for strategy, rule_name in SUMMARY_CASES:
             with self.subTest(strategy=strategy):
                 rule = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)
-                self.assertEqual(shared, rule["static_values"]["semantic_frame_contract"])
-                self.assertEqual(1, rule["user_template"].count("{semantic_frame_contract}"))
+                self.assertEqual(shared, rule["static_values"]["summary_grounding_contract"])
+                self.assertEqual(1, rule["user_template"].count("{summary_grounding_contract}"))
 
-    def test_summary_wire_has_one_detail_map_and_one_whole_summary(self) -> None:
+    def test_summary_wire_has_only_one_whole_summary_and_stereotype(self) -> None:
         for strategy, rule_name in SUMMARY_CASES:
             text = _load_rule(ROOT / "llm/prompts" / strategy, rule_name)["user_template"]
             with self.subTest(strategy=strategy):
-                self.assertIn("`slots`", text)
+                self.assertNotIn("`slots`", text)
                 self.assertIn("`stereotype`", text)
                 self.assertIn("`summary`", text)
                 self.assertNotIn("`questions`", text)
@@ -51,26 +51,26 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(path.exists())
 
-    def test_frame_contract_forbids_internal_identity_and_model_self_status(self) -> None:
-        shared = (ROOT / "llm/prompts/common/semantic_frame_contract.md").read_text(
+    def test_summary_contract_forbids_internal_identity_and_model_self_status(self) -> None:
+        shared = (ROOT / "llm/prompts/common/summary_grounding_contract.md").read_text(
             encoding="utf-8",
         )
         for marker in (
-            "applicable_slots_json", "facts", "fact_refs", "증거 메타데이터",
-            "식별자", "조건 극성", "형제", "소유 범위",
-            "의미 충분성은 모델이 판정하지 않는다",
+            "facts", "fact ID", "occurrence ID", "hash", "path",
+            "grammar reference", "request-local 결합 key", "조건 극성",
+            "소유 범위",
         ):
             self.assertIn(marker, shared)
-        self.assertNotIn("`status`", shared)
+        for retired in ("applicable_slots_json", "fact_refs", "`slots`", "`status`"):
+            self.assertNotIn(retired, shared)
 
     def test_function_summary_contract_closes_noop_and_complete_flow_roles(self) -> None:
         shared = (ROOT / "llm/prompts/common/function_summary_contract.md").read_text(
             encoding="utf-8",
         )
         for marker in (
-            "FUNCTION.GUARDS_AND_BRANCHES",
-            "FUNCTION.PROCESSING_EFFECTS",
-            "다른 FUNCTION role이 소유한 입력·분기·처리·결과 세부를 여기서 다시",
+            "target의 전체 책임을 한 흐름",
+            "선행 검증, 조건별 처리",
             "사용되지 않는 파라미터",
             "output-only",
             "즉시 상수 반환",
@@ -160,11 +160,11 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             ROOT / "llm/prompts/framework", "code_table_usage_meanings",
         ))
         self.assertIn("linked_callee_outcomes_json", summary)
-        self.assertIn("linked_external_source_json", summary)
+        self.assertIn("linked_external_sources_json", summary)
         self.assertIn("table_description", table)
         self.assertNotIn("table_description", summary)
         self.assertNotIn("linked_callee_outcomes_json", table)
-        self.assertNotIn("linked_external_source_json", table)
+        self.assertNotIn("linked_external_sources_json", table)
 
     def test_column_meaning_is_deferred_to_final_table_frame(self) -> None:
         for strategy, name in (
