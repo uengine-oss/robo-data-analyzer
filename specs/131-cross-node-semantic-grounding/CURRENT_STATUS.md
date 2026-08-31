@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-31
-**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 LLM 의미/Agent wire의 ID·중복·tool 설명 감사를 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지한다. 다음 첫 좌표는 production 11종 provider request의 최종 금지값·중복·예상 비용 봉인 감사다. 모든 관련 수정과 비용 확인 뒤에만 OpenAI 소규모 실제 검증을 한 번 수행하고, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
+**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지한다. 다음 첫 좌표는 사용자 비용 확인 뒤 같은 1,503줄을 `gpt-5.4-mini`로 정확히 한 번 실제 검증하는 것이다. 실행 임계는 `$0.50`이며, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2395,3 +2395,37 @@ language-neutral semantic IR로 변환하게 하는 것이다.
 - 다음 좌표는 production 모델 경계 11종의 최종 provider request를 한 inventory로 직렬화해 금지 ID·hash·
   path/range/grammar/candidate/resolution 잔존과 prompt/tool/schema 중복을 다시 반증하고, 실제 소규모 호출
   전에 예상 호출 수·입출력·최대 비용을 봉인하는 것이다. 3분할 책임과 약 5만 LOC GPU 미검증 상태는 유지한다.
+
+## 126. production 11종 provider 직렬화와 유료 실행 전 비용 봉인 (2026-08-31)
+
+- `tests/pipeline/test_llm_provider_request_inventory.py`가 Scan, External, Residual, Framework/DBMS
+  Summary·FunctionTableUsage·Rule, TableDescription, SearchGlossary의 정확히 11개 경계를 production
+  prompt loader, provider schema 정규화, OpenAI-compatible tool serializer로 직렬화한다. unresolved
+  placeholder와 response property의 ID/hash/path/range/offset/grammar/candidate/resolution/confidence/
+  evidence 장부, schema annotation 재유입을 fail-closed한다. 상대 file/path/line selector와 실제
+  `description` 의미 필드는 schema 위치를 구분해 보존한다.
+- B38의 7,870→3,873 및 3,002→2,026 chars는 탐색 tool만 잰 수치였고 마지막 submit tool은 빠져 있었다.
+  실제 전체 catalog를 재구성하자 Scan의 옛 자동 Pydantic submit schema가 title·description·example을
+  중첩 재유입해 약 14.5k chars였다. submit tool이 검증용 Pydantic 모델과 injected call identity는 내부에
+  유지하면서 모델에는 compact schema만 공개하게 고쳐 현재 Scan 전체 tool wire는 7,562 chars다.
+  External 전체는 약 2.46k→2,415 chars다. 내부 `tool_call_id`와 Analyzer exact-once ID는 모델에 없다.
+- 저영양 prompt 문장은 의미 계약별로 판정했다. Scan 5,841→2,054(-64.8%), External
+  3,462→1,397(-59.6%), Summary grounding 935→637(-31.9%), Function Summary
+  976→497(-49.1%), FunctionTableUsage 1,079→656(-39.2%), TableDescription
+  2,244→1,310(-41.6%) chars다. source 전수 접근·page closure·known-SKILL/후보 우선·production
+  verifier·negative/held-out·좋은/나쁜 반례·조건 극성·callee observable outcome·write/output-only와
+  no-op·TABLE/COLUMN 의미 소유권은 유지했다. Rule 원문/effect 결합은 판단 손실이 커서 줄이지 않았다.
+- 대표 최소 fixture의 선택 4 family wire는 152,720→136,568 chars(-10.6%)다. 이는 실제 source token
+  절감으로 과장하지 않는 serializer char 비교다. 봉인 1,503줄 call graph는 Summary 17,
+  FunctionTableUsage 4, Rule 17, TableDescription 2의 정확히 40 logical calls이고 Scan/External/Residual/
+  Search/DBMS family 호출은 0이다.
+- 기존 immutable usage ledger는 input 266,402, output 35,635 tokens다. 2026-08-31 공식
+  `gpt-5.4-mini` 단가 input $0.75/M, cached input $0.075/M, output $4.50/M으로 계산한 실제 비용은
+  $0.360159이며 25% 여유는 $0.450199다. 다음 한 번의 실행은 `ROBO_BUDGET_RUN_USD=0.50`으로 제한한다.
+  이 회로는 호출 뒤 누적 비용을 차단하므로 provider 절대 상한이라고 주장하지 않는다. 이번 slice의 실제
+  LLM/API 호출은 0회다.
+- focused 회귀 `117 passed, 140 subtests`, 전체 pytest `1451 passed, 4 skipped, 362 subtests`,
+  authoritative unittest `1213 tests, skipped 2`다. Neo4j 접근/write·새 DB·SKT 재분석은 0회이며 보호
+  Catalog WIP와 금지 script는 읽기·수정·실행·stage하지 않았다. 다음 좌표는 이 비용을 사용자에게 먼저
+  확인받은 뒤 같은 1,503줄에서 유료 실제 검증을 정확히 한 번 수행하는 것이다. 3분할과 GPU 복구 전
+  약 5만 LOC 미검증 상태는 유지한다.

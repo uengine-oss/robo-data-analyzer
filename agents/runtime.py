@@ -16,15 +16,15 @@
 """
 from __future__ import annotations
 
-import inspect
+import copy
 from pathlib import Path
 from typing import Annotated, Callable, Optional, TypeVar
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import InjectedToolCallId, tool
+from langchain_core.tools import InjectedToolCallId, StructuredTool
 from langgraph.types import Command
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, create_model
 
 from agents.tools.messages import TOOL_MESSAGES
 from llm.usage.cost_budget import CostBudget
@@ -39,6 +39,20 @@ _T = TypeVar("_T", bound=BaseModel)
 
 # Agent state 에 최종 인스턴스를 적재할 표준 키 — 호출자가 result[_STATE_KEY] 로 받음.
 _STATE_KEY = "structured_response"
+
+
+class _CompactSubmitTool(StructuredTool):
+    """Expose the compact response schema while retaining injected call identity."""
+
+    @property
+    def tool_call_schema(self) -> dict:
+        schema = copy.deepcopy(self.get_input_schema().model_json_schema())
+        properties = schema.get("properties") or {}
+        properties.pop("tool_call_id", None)
+        required = schema.get("required") or []
+        schema["required"] = [name for name in required if name != "tool_call_id"]
+        return schema
+
 
 class AgentModelOutputError(RuntimeError):
     """Agent 모델이 usable submit 후보를 만들지 못함; 실행 배선 실패와 구분한다."""
@@ -58,15 +72,6 @@ class StructuredResponseValidationError(AgentModelOutputError):
 
 class StructuredResponseStateError(RuntimeError):
     """유효한 submit 호출 뒤 구조화 state가 사라진 내부 배선 오류."""
-
-
-def _field_default(field) -> object:
-    """Pydantic 필드의 실제 생략 계약을 동적 tool signature에 보존한다."""
-    if field.is_required():
-        return inspect.Parameter.empty
-    if field.default_factory is not None:
-        return field.default_factory()
-    return field.default
 
 
 def _wrap_pydantic_as_submit_tool(
@@ -93,6 +98,23 @@ def _wrap_pydantic_as_submit_tool(
         LangChain ``@tool`` 적용된 함수 — agent ``tools`` 마지막에 추가.
     """
 
+    field_definitions = {}
+    for name, field in response_format.model_fields.items():
+        default = (
+            ...
+            if field.is_required()
+            else field.default_factory()
+            if field.default_factory is not None
+            else field.default
+        )
+        field_definitions[name] = (field.rebuild_annotation(), default)
+    submit_args = create_model(
+        f"{response_format.__name__}SubmitArgs",
+        __base__=response_format,
+        **field_definitions,
+        tool_call_id=(Annotated[str, InjectedToolCallId], ...),
+    )
+
     def submit(**kwargs) -> Command:
         """탐색 끝 — 결과 양식 한 번 호출. agent loop 명시 종료."""
         tool_call_id = kwargs.pop("tool_call_id")
@@ -105,37 +127,14 @@ def _wrap_pydantic_as_submit_tool(
             goto="__end__",
         )
 
-    # 동적 시그니처 — Pydantic 모델의 모든 필드를 keyword-only 인자로 노출 +
-    # InjectedToolCallId 명시. LangChain ``@tool`` 가 시그니처에서 args_schema 를
-    # 자동 추출 (pydantic ``validate_arguments`` 가 ``__annotations__`` 도 읽으므로
-    # ``__signature__`` 와 ``__annotations__`` 둘 다 설정).
-    annotations: dict = {}
-    params = []
-    for name, field in response_format.model_fields.items():
-        params.append(
-            inspect.Parameter(
-                name,
-                inspect.Parameter.KEYWORD_ONLY,
-                annotation=field.annotation,
-                default=_field_default(field),
-            )
-        )
-        annotations[name] = field.annotation
-    params.append(
-        inspect.Parameter(
-            "tool_call_id",
-            inspect.Parameter.KEYWORD_ONLY,
-            annotation=Annotated[str, InjectedToolCallId],
-        )
-    )
-    annotations["tool_call_id"] = Annotated[str, InjectedToolCallId]
-    annotations["return"] = Command
-
-    submit.__signature__ = inspect.Signature(params)
-    submit.__annotations__ = annotations
     submit.__name__ = tool_name
 
-    return tool(tool_name, return_direct=True)(submit)
+    return _CompactSubmitTool.from_function(
+        func=submit,
+        name=tool_name,
+        args_schema=submit_args,
+        return_direct=True,
+    )
 
 
 async def run_structured_agent(

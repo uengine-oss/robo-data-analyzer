@@ -70,6 +70,15 @@
   purpose·보안/선택 범위·page closure·production verify 의미로 줄이고, system workflow의 단계·예시·
   운영 팁과 schema가 이미 소유한 default/signature 복창을 제거한다. numbered source와 match text는
   후보 판정 근거이므로 절감량보다 판단 손실이 크면 유지한다.
+- production 11종은 prompt renderer, provider response schema, Agent tool serializer의 실제 결과를
+  하나의 fail-closed inventory로 닫는다. contract key/section만 금지값을 검사하고 원문 값과 상대
+  path/file/line selector는 분리한다. 유료 검증 전에는 봉인된 동일 source의 기존 usage ledger와 현재
+  call graph로 호출 수·토큰·공식 단가·보수적 비용 상한을 확정하고 실행별 budget을 별도로 낮춘다.
+- 봉인 1,503줄의 유료 재검증은 Framework Summary 17, TableUsage 4, Rule 17, TableDescription 2의
+  40호출만 허용한다. 2026-08-31 공식 `gpt-5.4-mini` 단가(input $0.75/M, cached input $0.075/M,
+  output $4.50/M)와 기존 실제 $0.360159를 기준으로 25% 변동 여유는 $0.450199다. 실행 시
+  `ROBO_BUDGET_RUN_USD=0.50`을 사용하되 post-charge 누적 차단을 provider의 절대 청구 상한으로
+  표현하지 않는다. 비용 확인 전 유료 호출은 0회다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

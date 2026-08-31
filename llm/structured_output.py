@@ -65,15 +65,22 @@ def _inline_local_refs(schema: dict) -> dict:
     return result
 
 
-def bind_structured_output(llm: Any, schema: dict, *, method: str) -> Any:
-    """Bind one canonical schema without allowing adapter in-place mutation."""
+def provider_structured_output_schema(schema: dict, *, method: str) -> dict:
+    """Return the exact schema copy handed to the selected provider adapter."""
     if method not in STRUCTURED_OUTPUT_METHODS:
         raise ValueError(f"unsupported structured output method: {method!r}")
     provider_schema = copy.deepcopy(schema)
+    if method == "function_calling":
+        provider_schema = _inline_local_refs(provider_schema)
+    return provider_schema
+
+
+def bind_structured_output(llm: Any, schema: dict, *, method: str) -> Any:
+    """Bind one canonical schema without allowing adapter in-place mutation."""
+    provider_schema = provider_structured_output_schema(schema, method=method)
     if method == "provider_default":
         return llm.with_structured_output(provider_schema, include_raw=True)
     if method == "function_calling":
-        provider_schema = _inline_local_refs(provider_schema)
         return llm.with_structured_output(
             provider_schema,
             method=method,

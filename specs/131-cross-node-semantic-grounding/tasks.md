@@ -476,6 +476,20 @@
     `1447 passed, 4 skipped, 340 subtests`, authoritative unittest `1209 tests, skipped 2`; 실제
     LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B39 production 11종 최종 provider request·비용 봉인**
+  - [x] Scan/External system prompt의 사고 설명·중복 경고·예시를 제거하되 source 전수 접근,
+    pagination, known-SKILL 우선, production verifier, negative/held-out, 정확히 한 번 submit 계약은
+    유지한다.
+  - [x] 11종 경계를 실제 prompt renderer·provider response schema·OpenAI-compatible Agent tool
+    serializer로 한 inventory에 직렬화하고, 모델 계약 key/section에 stable ID·hash·절대 path·range/
+    offset·grammar/candidate/resolution 장부가 없음을 fail-closed로 고정한다. 원문 안의 동명 문자열과
+    tool의 의미 selector인 상대 path/file/line은 오탐하지 않는다.
+  - [x] 봉인 SKT 1,503줄에서 실제 필요한 family와 logical invocation 수를 기존 immutable usage ledger와
+    현재 call graph로 대조한다. 현재 공식 단가, 입력·출력 예상치, 보수적 상한과 실행별 budget 설정을
+    실제 호출 전에 기록하며 이 task에서는 유료 호출하지 않는다.
+  - [x] focused→확대→전체 pytest→authoritative unittest, diff/status/보호 WIP 감사를 통과한 뒤
+    SDD·최종 HTML·핸드오프와 commit/push를 동기화한다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**
