@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.export_semantic_review_packets import _selected_targets
+from tools.verify.export_semantic_review_packets import _selected_targets
 
 
 class SemanticReviewTargetSelectionTest(unittest.TestCase):

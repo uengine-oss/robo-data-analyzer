@@ -23,16 +23,16 @@
 사용::
 
     # source/ 안 모든 프로젝트 일괄
-    python scripts/analyze_data_dir.py
+    python cli/analyze_data_dir.py
 
     # 1 프로젝트만 (sub 디렉토리 이름)
-    python scripts/analyze_data_dir.py apascrt00010t02_20260406
+    python cli/analyze_data_dir.py apascrt00010t02_20260406
 
     # strategy 강제 override
-    python scripts/analyze_data_dir.py apascrt00010t02_20260406 --strategy framework
+    python cli/analyze_data_dir.py apascrt00010t02_20260406 --strategy framework
 
     # 코퍼스 루트를 명령에서 직접 지정 (.env 수정 없이 임의 코퍼스 실행)
-    python scripts/analyze_data_dir.py --data-dir D:\\corpora\\my_project --strategy framework
+    python cli/analyze_data_dir.py --data-dir D:\\corpora\\my_project --strategy framework
 
 NDJSON 스트림 실시간 출력 + 종료 후 ``usage_summary.json`` 요약.
 

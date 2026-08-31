@@ -78,7 +78,9 @@ LLM에는 내부 fact ID, 원문 byte offset, resolution ledger 같은 결합용
 | `graph/` | Neo4j schema, writer, generation publication |
 | `search/` | 공개된 검색 segment 조회와 ranking |
 | `llm/prompts/` | 공통 prefix와 concern별 입력·출력 계약 |
-| `scripts/` | 운영·검증용 명시적 CLI |
+| `cli/` | 운영자용 공식 분석 CLI |
+| `tools/verify/` | 봉인 run의 read-only 검증 도구 |
+| `tools/admin/` | 명시적 안전 gate가 필요한 관리 도구 |
 | `specs/131-cross-node-semantic-grounding/` | 유일한 현행 SDD와 계약 |
 | `tests/` | 결정론 계약, 오류 주입, 통합 검증 |
 
@@ -101,11 +103,11 @@ cd D:\work\robo\project\robo-data-analyzer
 공식 CLI로 명시된 data directory를 분석할 때:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\analyze_data_dir.py --data-dir D:\path\to\data --database test
+.\.venv\Scripts\python.exe cli\analyze_data_dir.py --data-dir D:\path\to\data --database test
 ```
 
 CLI는 `source/`, `analysis/`, 선택적인 `ddl/` 구조를 사용합니다. 전체 옵션은
-`scripts\analyze_data_dir.py --help`에서 확인합니다.
+`cli\analyze_data_dir.py --help`에서 확인합니다.
 
 ## API
 
@@ -134,4 +136,5 @@ Neo4j integration은 기존 test database에서 격리된 scope를 사용하고 
 검증만 자동 회귀에 포함합니다. 실제 SKT 전체 재분석과 성능 측정은 입력·설정·정답지를 봉인한
 마지막 검증에서 한 번만 수행합니다.
 
-운영·검증 CLI의 현재 목록과 용도는 [`scripts/README.md`](scripts/README.md)를 따릅니다.
+제품 CLI는 [`cli/README.md`](cli/README.md), 검증·관리 도구는
+[`tools/README.md`](tools/README.md)를 따릅니다.

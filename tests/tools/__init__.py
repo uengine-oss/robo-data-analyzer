@@ -1,0 +1,1 @@
+"""Analyzer tool contract tests."""

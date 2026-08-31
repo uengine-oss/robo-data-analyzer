@@ -1,6 +1,6 @@
 """커버리지 잔차 감사 집계 (골키퍼 그물2) — run 산출물 `coverage/*.json` 전수 요약.
 
-사용: .venv\\Scripts\\python.exe scripts\\audit_coverage.py [run_dir=최신 run]
+사용: .venv\\Scripts\\python.exe tools\\verify\\audit_coverage.py [run_dir=최신 run]
 
 인자를 생략하면 `logs/` 아래 최신 run 폴더(run_id 이름)를 자동 선택한다.
 

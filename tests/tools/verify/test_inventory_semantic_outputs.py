@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from scripts.inventory_semantic_outputs import (
+from tools.verify.inventory_semantic_outputs import (
     _prompt_inventory,
     _rule_evidence,
     _run_identity,

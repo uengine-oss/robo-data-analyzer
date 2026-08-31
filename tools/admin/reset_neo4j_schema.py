@@ -1,59 +1,163 @@
-"""Neo4j 스키마 1회 리셋 — 기존 제약/인덱스 전부 제거 후 현 스펙으로 재생성.
+"""Explicitly rebuild only Analyzer-owned Neo4j schema objects.
 
-DB 가 옛 버전·타 프로젝트 스키마로 오염됐을 때 **1회** 실행하는 운영 도구.
-평상시 run 의 ``ensure_schema`` 는 ``IF NOT EXISTS`` 로 드롭을 안 하므로 (스키마는
-안정적 — 매 run drop-recreate X), 오염 정리는 이 스크립트로 분리한다.
-
-동작:
-1. 기존 제약 전부 DROP (backing 인덱스 함께 사라짐).
-2. 남은 인덱스 DROP — 단 내장 토큰 ``LOOKUP`` 인덱스는 보존.
-3. ``ensure_schema`` 로 현 스펙(``schema_constraints.CONSTRAINTS + INDEXES``) 재생성.
-
-사용::
-
-    python scripts/reset_neo4j_schema.py
+This maintenance command is deliberately fail-closed. It requires an allowed
+target database, an exact per-database confirmation token, and a successful
+inventory/online-state gate before creating a target client. Foreign schema is
+never dropped.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
+import re
 import sys
 from pathlib import Path
+from typing import Sequence
 
-_ROOT = Path(__file__).resolve().parent.parent
+
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from neo4j import AsyncGraphDatabase
+
+from graph.connection_context import Neo4jOverride, get_override, set_override
 from graph.neo4j_client import Neo4jClient
-from graph.schema.constraints import ensure_schema
+from graph.publication_schema import SEARCH_SEGMENT_VECTOR_INDEX_NAME
+from graph.schema.constraints import CONSTRAINTS, ensure_schema
+from shared.config.settings import SETTINGS
 
 
-async def main() -> None:
-    neo = Neo4jClient()
+EXPECTED_DATABASES = frozenset({"dbms", "framework", "neo4j", "system", "test"})
+WRITABLE_DATABASES = EXPECTED_DATABASES - {"system"}
+_CONSTRAINT_NAME = re.compile(r"^CREATE CONSTRAINT\s+([^\s]+)", re.IGNORECASE)
+ANALYZER_CONSTRAINT_NAMES = tuple(
+    match.group(1)
+    for statement in CONSTRAINTS
+    if (match := _CONSTRAINT_NAME.match(statement)) is not None
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--database",
+        required=True,
+        choices=sorted(WRITABLE_DATABASES),
+        help="existing writable database to repair",
+    )
+    parser.add_argument(
+        "--confirm",
+        required=True,
+        help="must exactly equal RESET-ANALYZER-SCHEMA:<database>",
+    )
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    args = build_parser().parse_args(argv)
+    expected = f"RESET-ANALYZER-SCHEMA:{args.database}"
+    if args.confirm != expected:
+        raise SystemExit(f"confirmation mismatch; expected {expected}")
+    return args
+
+
+async def inspect_databases() -> list[dict]:
+    """Read the DBMS inventory through the system database without mutations."""
+    settings = SETTINGS.graph_database
+    driver = AsyncGraphDatabase.driver(
+        settings.uri,
+        auth=(settings.user, settings.password),
+    )
     try:
-        # 1. 제약 전부 제거 (제약 먼저 — 제약 backing 인덱스가 함께 사라짐).
-        constraints = await neo.run_read_query("SHOW CONSTRAINTS YIELD name")
-        for row in constraints:
-            await neo.run_query(f"DROP CONSTRAINT `{row['name']}` IF EXISTS")
-        print(f"dropped {len(constraints)} constraints")
-
-        # 2. 잔여 인덱스 제거 (LOOKUP = Neo4j 내장 토큰 인덱스라 보존).
-        indexes = await neo.run_read_query("SHOW INDEXES YIELD name, type")
-        dropped = 0
-        for row in indexes:
-            if row.get("type") == "LOOKUP":
-                continue
-            await neo.run_query(f"DROP INDEX `{row['name']}` IF EXISTS")
-            dropped += 1
-        print(f"dropped {dropped} indexes ({len(indexes) - dropped} LOOKUP kept)")
-
-        # 3. 현 스펙대로 재생성.
-        await ensure_schema(neo)
-        cons = await neo.run_read_query("SHOW CONSTRAINTS YIELD name")
-        idxs = await neo.run_read_query("SHOW INDEXES YIELD name")
-        print(f"recreated per current spec: {len(cons)} constraints, {len(idxs)} indexes")
+        async with driver.session(database="system") as session:
+            result = await session.run(
+                "SHOW DATABASES YIELD name, currentStatus "
+                "RETURN name, currentStatus ORDER BY name"
+            )
+            return await result.data()
     finally:
-        await neo.close()
+        await driver.close()
+
+
+def require_safe_inventory(rows: list[dict], *, target: str) -> None:
+    statuses = {
+        str(row.get("name")): str(row.get("currentStatus", "")).lower()
+        for row in rows
+    }
+    if set(statuses) != EXPECTED_DATABASES:
+        raise RuntimeError(
+            "database inventory gate failed: expected only "
+            f"{sorted(EXPECTED_DATABASES)}, got {sorted(statuses)}"
+        )
+    offline = sorted(name for name, status in statuses.items() if status != "online")
+    if offline:
+        raise RuntimeError(f"database online-state gate failed: {offline}")
+    if target not in WRITABLE_DATABASES:
+        raise RuntimeError(f"database is not an allowed maintenance target: {target}")
+
+
+async def reset_analyzer_schema(*, database: str) -> tuple[int, int]:
+    """Drop exact Analyzer-owned names and then declare the current schema."""
+    require_safe_inventory(await inspect_databases(), target=database)
+
+    settings = SETTINGS.graph_database
+    previous_override = get_override()
+    set_override(Neo4jOverride(
+        settings.uri,
+        settings.user,
+        settings.password,
+        database,
+    ))
+    client: Neo4jClient | None = None
+    try:
+        client = Neo4jClient()
+        existing_constraints = {
+            str(row["name"])
+            for row in await client.run_read_query("SHOW CONSTRAINTS YIELD name")
+        }
+        existing_indexes = {
+            str(row["name"])
+            for row in await client.run_read_query("SHOW INDEXES YIELD name")
+        }
+
+        dropped_constraints = 0
+        for name in ANALYZER_CONSTRAINT_NAMES:
+            if name in existing_constraints:
+                await client.run_query(f"DROP CONSTRAINT `{name}` IF EXISTS")
+                dropped_constraints += 1
+
+        dropped_indexes = 0
+        if SEARCH_SEGMENT_VECTOR_INDEX_NAME in existing_indexes:
+            await client.run_query(
+                f"DROP INDEX `{SEARCH_SEGMENT_VECTOR_INDEX_NAME}` IF EXISTS"
+            )
+            dropped_indexes = 1
+
+        await ensure_schema(client)
+        return dropped_constraints, dropped_indexes
+    finally:
+        if client is not None:
+            await client.close()
+        set_override(previous_override)
+
+
+async def async_main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    dropped_constraints, dropped_indexes = await reset_analyzer_schema(
+        database=args.database,
+    )
+    print(
+        f"rebuilt Analyzer schema in {args.database}: "
+        f"dropped {dropped_constraints} owned constraints and "
+        f"{dropped_indexes} owned indexes"
+    )
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return asyncio.run(async_main(argv))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(main())

@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from scripts.judge_run import judge
+from tools.verify.judge_run import judge
 
 
 def _write_json(path: Path, value: object) -> None:

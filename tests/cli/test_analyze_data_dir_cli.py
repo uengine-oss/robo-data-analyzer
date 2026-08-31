@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from scripts import analyze_data_dir as subject
+from cli import analyze_data_dir as subject
 
 
 class AnalyzeDataDirCliTest(unittest.IsolatedAsyncioTestCase):

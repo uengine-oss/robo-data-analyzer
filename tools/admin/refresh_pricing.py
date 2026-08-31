@@ -2,7 +2,7 @@
 
 사용::
 
-    python scripts/refresh_pricing.py
+    python tools/admin/refresh_pricing.py
 
 이 스크립트는 자동 갱신은 하지 않는다 (가격 페이지 HTML 구조 변경·자동 추출 오류
 위험 회피 — 운영자가 페이지를 직접 보고 yaml 수동 편집이 안전).
@@ -27,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

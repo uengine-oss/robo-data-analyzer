@@ -5,20 +5,21 @@
 사용::
 
     # 최초 baseline 기록
-    python scripts/check_byte_identical.py --update
+    python tools/verify/check_byte_identical.py --update
 
     # CI 에서 검증
-    python scripts/check_byte_identical.py
+    python tools/verify/check_byte_identical.py
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parents[2]
 PROMPTS_DIR = _ROOT / "llm" / "prompts"
 AGENT_PROMPTS_DIR = _ROOT / "agents" / "prompts"
 HASHES_PATH = PROMPTS_DIR / "prompt_hashes.json"
@@ -45,13 +46,20 @@ def compute_hashes() -> dict[str, str]:
 def main(update: bool = False) -> int:
     current = compute_hashes()
 
-    if update or not HASHES_PATH.exists():
+    if update:
         HASHES_PATH.write_text(
             json.dumps(current, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         print(f"Wrote baseline {len(current)} hashes to {HASHES_PATH}")
         return 0
+
+    if not HASHES_PATH.exists():
+        print(
+            f"BYTE-IDENTICAL CHECK NOT CONFIGURED: {HASHES_PATH} is missing.\n"
+            "Run with --update only when intentionally creating the baseline."
+        )
+        return 2
 
     expected = json.loads(HASHES_PATH.read_text(encoding="utf-8"))
     failed: list[str] = []
@@ -77,5 +85,7 @@ def main(update: bool = False) -> int:
 
 
 if __name__ == "__main__":
-    update = "--update" in sys.argv
-    sys.exit(main(update=update))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update", action="store_true")
+    args = parser.parse_args()
+    sys.exit(main(update=args.update))

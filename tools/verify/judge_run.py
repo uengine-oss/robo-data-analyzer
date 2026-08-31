@@ -15,12 +15,12 @@ from pathlib import Path
 import sys
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
-from scripts.inventory_semantic_outputs import (
+from tools.verify.inventory_semantic_outputs import (
     _graph_inventory,
     _prompt_inventory,
     _rule_evidence,

@@ -9,13 +9,14 @@ REPO = Path(__file__).resolve().parents[2]
 CURRENT_RUNTIME_DIRECTORIES = {
     "agents",
     "api",
+    "cli",
     "graph",
     "integrations",
     "llm",
     "pipeline",
     "search",
     "shared",
-    "scripts",
+    "tools",
 }
 
 CURRENT_SPEC_FILES = {
@@ -40,6 +41,14 @@ REMOVED_IMPLEMENTATIONS = {
     "pipeline/steps/step8_post_processing/health_metrics_step.py",
     "scripts/reembed_graph.py",
     "scripts/run_strategy_a_progressive.py",
+    "scripts/analyze_data_dir.py",
+    "scripts/audit_coverage.py",
+    "scripts/check_byte_identical.py",
+    "scripts/export_semantic_review_packets.py",
+    "scripts/inventory_semantic_outputs.py",
+    "scripts/judge_run.py",
+    "scripts/refresh_pricing.py",
+    "scripts/reset_neo4j_schema.py",
 }
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
 from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
-from scripts.inventory_semantic_outputs import _records, _run_identity
+from tools.verify.inventory_semantic_outputs import _records, _run_identity
 from search.corpus.generation import completed_generation_session
 
 
