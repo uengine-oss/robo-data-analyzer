@@ -31,7 +31,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-_PRICING_YAML = _ROOT / "llm" / "client" / "usage" / "llm_pricing.yaml"
+_PRICING_YAML = _ROOT / "llm" / "usage" / "llm_pricing.yaml"
 
 
 def main() -> None:
