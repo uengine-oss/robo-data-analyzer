@@ -13,15 +13,15 @@ Framework and DBMS analysis paths.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.analysis_context import ReferencedSymbolContext
+from pipeline.models.llm_wire_schema import CompactLlmResponse
 from pipeline.models.rule_materialization import validate_structural_effect
 
 
@@ -42,28 +42,24 @@ def rule_meaning_response_model(
     conditions = _validated_keys(condition_keys, "C", "condition")
     effects = _validated_keys(effect_keys, "E", "effect")
     rows = _validated_keys(row_keys, "R", "row")
+    _require_consecutive_wire_keys(conditions, "C", "condition")
+    _require_consecutive_wire_keys(effects, "E", "effect")
+    _require_consecutive_wire_keys(rows, "R", "row")
     if not conditions and not effects:
         raise ValueError("Rule meaning requires at least one condition or effect atom")
-    digest = hashlib.sha256(
-        (
-            "\0".join(conditions)
-            + "\1" + "\0".join(effects)
-            + "\2" + "\0".join(rows)
-        ).encode("utf-8")
-    ).hexdigest()[:12]
     effect_model = create_model(
-        f"ExactRuleEffectMeanings_{digest}",
-        __config__=ConfigDict(extra="forbid"),
+        f"RuleEffectMeanings_{len(effects)}",
+        __base__=CompactLlmResponse,
         **{key: (str, Field(...)) for key in effects},
     )
     row_model = create_model(
-        f"ExactRuleRowDispositions_{digest}",
-        __config__=ConfigDict(extra="forbid"),
+        f"RuleRowDispositions_{len(rows)}",
+        __base__=CompactLlmResponse,
         **{key: (RuleRowDispositionValue, Field(...)) for key in rows},
     )
     model = create_model(
-        f"RuleMeaningResponse_{digest}",
-        __config__=ConfigDict(extra="forbid"),
+        f"RuleMeaningResponse_{len(effects)}_{len(rows)}",
+        __base__=CompactLlmResponse,
         effects=(effect_model, Field(...)),
         rows=(row_model, Field(...)),
     )
@@ -78,28 +74,30 @@ def batch_rule_meaning_response_model(
     """Build one exact DBMS batch schema without echo/list identity fields."""
     if not assignments:
         raise ValueError("Rule meaning batch assignments must be non-empty")
+    expected_node_keys = tuple(
+        f"N{index}" for index in range(1, len(assignments) + 1)
+    )
+    if tuple(assignments) != expected_node_keys:
+        raise ValueError("Rule meaning batch node keys must be consecutive ordinals")
     node_models: dict[str, tuple[type[BaseModel], Field]] = {}
     for node_key, evidence in assignments.items():
         if not str(node_key):
             raise ValueError("Rule meaning batch node key must be non-empty")
-        conditions, effects, _rows = _evidence_maps(evidence)
+        conditions, effects, rows = rule_meaning_wire_keys(evidence)
         node_models[str(node_key)] = (
-            rule_meaning_response_model(conditions, effects, _rows),
+            rule_meaning_response_model(conditions, effects, rows),
             Field(...),
         )
     if len(node_models) != len(assignments):
         raise ValueError("Rule meaning batch node keys must be unique")
-    digest = hashlib.sha256(
-        "\0".join(node_models).encode("utf-8")
-    ).hexdigest()[:12]
     nodes_model = create_model(
-        f"ExactRuleMeaningNodes_{digest}",
-        __config__=ConfigDict(extra="forbid"),
+        f"RuleMeaningNodes_{len(node_models)}",
+        __base__=CompactLlmResponse,
         **node_models,
     )
     return create_model(
-        f"BatchRuleMeaningResponse_{digest}",
-        __config__=ConfigDict(extra="forbid"),
+        "BatchRuleMeaningResponse",
+        __base__=CompactLlmResponse,
         nodes=(nodes_model, Field(...)),
     )
 
@@ -129,6 +127,35 @@ def _validated_keys(values: Iterable[str], prefix: str, name: str) -> tuple[str,
     return keys
 
 
+def _require_consecutive_wire_keys(
+    keys: tuple[str, ...], prefix: str, name: str,
+) -> None:
+    expected = tuple(f"{prefix}{index}" for index in range(1, len(keys) + 1))
+    if keys != expected:
+        raise ValueError(
+            f"Rule {name} wire keys must be consecutive request ordinals: {keys!r}"
+        )
+
+
+def _wire_key_map(keys: Iterable[str], prefix: str) -> dict[str, str]:
+    return {
+        key: f"{prefix}{index}"
+        for index, key in enumerate(keys, start=1)
+    }
+
+
+def rule_meaning_wire_keys(
+    evidence: Mapping[str, object],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Return compact request-local keys without exposing internal row coordinates."""
+    conditions, effects, rows = _evidence_maps(evidence)
+    return (
+        tuple(_wire_key_map(conditions, "C").values()),
+        tuple(_wire_key_map(effects, "E").values()),
+        tuple(_wire_key_map(rows, "R").values()),
+    )
+
+
 def build_rule_meaning_packet(
     evidence: Mapping[str, object],
     *,
@@ -146,11 +173,14 @@ def build_rule_meaning_packet(
     the model never joins private IDs or searches an unrelated context list.
     """
     conditions, effects, rows = _evidence_maps(evidence)
+    condition_keys = _wire_key_map(conditions, "C")
+    effect_keys = _wire_key_map(effects, "E")
+    row_keys = _wire_key_map(rows, "R")
     callee_outcomes = callee_outcomes_by_id or {}
     tables = table_descriptions or {}
     contracts = _api_contracts_by_name(api_contracts)
     compact_effects = {
-        ref: _project_effect(
+        effect_keys[ref]: _project_effect(
             payload,
             callee_outcomes=callee_outcomes,
             table_descriptions=tables,
@@ -159,20 +189,31 @@ def build_rule_meaning_packet(
         for ref, payload in effects.items()
     }
     compact_rows = {
-        key: _project_row(row)
+        row_keys[key]: _project_row(
+            row,
+            condition_keys=condition_keys,
+            effect_keys=effect_keys,
+        )
         for key, row in rows.items()
     }
-    return {
+    packet: dict[str, object] = {
         "source": numbered_source,
-        "used_symbols": [
-            projected
-            for symbol in referenced_symbols
-            if (projected := _project_symbol(symbol)) is not None
-        ],
-        "conditions": dict(conditions),
         "effects": compact_effects,
         "rows": compact_rows,
     }
+    projected_symbols = [
+        projected
+        for symbol in referenced_symbols
+        if (projected := _project_symbol(symbol)) is not None
+    ]
+    if projected_symbols:
+        packet["used_symbols"] = projected_symbols
+    if conditions:
+        packet["conditions"] = {
+            condition_keys[key]: value
+            for key, value in conditions.items()
+        }
+    return packet
 
 
 def _evidence_maps(
@@ -273,26 +314,37 @@ def _project_effect(
     return result
 
 
-def _project_row(row: Mapping[str, object]) -> dict[str, object]:
+def _project_row(
+    row: Mapping[str, object],
+    *,
+    condition_keys: Mapping[str, str],
+    effect_keys: Mapping[str, str],
+) -> dict[str, object]:
+    when = []
+    for raw_value in row.get("when") or ():
+        value = str(raw_value)
+        negated = value.startswith("!")
+        internal_key = value[1:] if negated else value
+        wire_key = condition_keys[internal_key]
+        when.append(f"!{wire_key}" if negated else wire_key)
     result: dict[str, object] = {
         "kind": str(row.get("role") or ""),
-        "when": [str(value) for value in row.get("when") or ()],
-        "effects": [str(value) for value in row.get("direct") or ()],
+        "when": when,
+        "effects": [effect_keys[str(value)] for value in row.get("direct") or ()],
     }
-    for source_key, output_key in (
-        ("after_control", "after_control"),
-        ("at_label", "at_label"),
-        ("post_condition", "post_condition"),
-    ):
-        value = row.get(source_key)
-        if value is not None and str(value).strip():
-            result[output_key] = str(value)
+    if str(row.get("after_control") or "").strip():
+        result["after_control"] = True
+    if str(row.get("at_label") or "").strip():
+        result["at_label"] = True
+    post_condition = row.get("post_condition")
+    if post_condition is not None and str(post_condition).strip():
+        result["post_condition"] = str(post_condition)
     children = row.get("nested_children") or ()
     if children:
         result["nested_controls"] = [
             {
                 key: child[key]
-                for key in ("type", "start_line", "end_line", "condition", "condition_timing")
+                for key in ("type", "condition", "condition_timing")
                 if isinstance(child, Mapping) and child.get(key) not in (None, "")
             }
             for child in children
@@ -422,18 +474,22 @@ def project_rule_meanings(
 ) -> tuple[RuleMeaningProjection, ...]:
     """Combine model-owned atom text with Analyzer-owned structure exactly once."""
     condition_sources, effect_sources, rows = _evidence_maps(evidence)
+    effect_keys = _wire_key_map(effect_sources, "E")
+    row_keys = _wire_key_map(rows, "R")
+    wire_effects = output.effects.model_dump()
+    wire_dispositions = output.rows.model_dump()
+    if tuple(wire_effects) != tuple(effect_keys.values()):
+        raise ValueError("Rule effect meaning coverage mismatch")
+    if tuple(wire_dispositions) != tuple(row_keys.values()):
+        raise ValueError("Rule row disposition coverage mismatch")
     effects = {
-        key: str(value).strip()
-        for key, value in output.effects.model_dump().items()
+        internal_key: str(wire_effects[wire_key]).strip()
+        for internal_key, wire_key in effect_keys.items()
     }
     dispositions = {
-        key: str(value)
-        for key, value in output.rows.model_dump().items()
+        internal_key: str(wire_dispositions[wire_key])
+        for internal_key, wire_key in row_keys.items()
     }
-    if tuple(effects) != tuple(effect_sources):
-        raise ValueError("Rule effect meaning coverage mismatch")
-    if tuple(dispositions) != tuple(rows):
-        raise ValueError("Rule row disposition coverage mismatch")
 
     projected: list[RuleMeaningProjection] = []
     for row_key, row in rows.items():

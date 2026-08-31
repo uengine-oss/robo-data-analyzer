@@ -18,7 +18,7 @@ from pipeline.models.table_description_frame import (
     table_description_frame_response_model,
 )
 from pipeline.steps.step8_post_processing.enrich_table_description_step import (
-    _collect_usage_candidates,
+    _collect_column_candidates,
     _direct_operations_by_table,
     _focus_column_candidates,
     _replace_by_id,
@@ -74,7 +74,7 @@ def _evidence() -> dict:
 
 def _wire(evidence: dict, *, unknown_column: bool = False) -> tuple[object, object, dict]:
     table_plan, column_plans = build_table_description_plans("db:public.orders", evidence)
-    model = table_description_frame_response_model(evidence, table_plan, column_plans)
+    model = table_description_frame_response_model(column_plans)
 
     payload = {
         "logical_name": "주문",
@@ -205,13 +205,10 @@ class TableSemanticGroundingTest(unittest.TestCase):
             fact for fact in column_plans["status_cd"][0].evidence.values()
             if fact.kind == "COLUMN"
         )
+        self.assertNotIn("usage_meanings", table_fact.attributes)
         self.assertEqual(
-            [{"access": "read", "meaning": "주문 상태를 조회한다."}],
-            table_fact.attributes["usage_meanings"],
-        )
-        self.assertEqual(
-            [{"line": 43, "text": "WHERE status_cd = 'P'"}],
-            status_fact.attributes["usage_evidence"][0]["source"],
+            ["WHERE status_cd = 'P'"],
+            status_fact.attributes["usage_evidence"],
         )
         self.assertNotIn("order_id", str(status_fact.model_dump()))
 
@@ -229,7 +226,7 @@ class TableSemanticGroundingTest(unittest.TestCase):
         self.assertEqual({"table", "columns"}, set(packet))
         self.assertEqual({"order_id", "status_cd"}, set(packet["columns"]))
         serialized = values["table_and_column_meaning_inputs"]
-        self.assertEqual(1, serialized.count("주문 상태를 조회한다."))
+        self.assertNotIn("주문 상태를 조회한다.", serialized)
         self.assertNotIn("code:orders.load", serialized)
         self.assertNotIn("evidence_file", serialized)
         self.assertNotIn('"evidence"', serialized)
@@ -256,17 +253,14 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 }},},
             },
         })()
-        tables, columns = _collect_usage_candidates([node])
+        columns = _collect_column_candidates([node])
         candidate = columns["db:orders"]["STATUS"][0]
         self.assertEqual(
             "code:orders.sql:SELECT@4", candidate["source_function_id"],
         )
         self.assertEqual([4], candidate["evidence_lines"])
         self.assertNotIn("usage_summary", candidate)
-        self.assertEqual(
-            "orders 상태를 조회한다.",
-            tables["db:orders"][0]["usage_summary"],
-        )
+        self.assertNotIn("function_table_usage_summary", str(columns))
 
     def test_column_evidence_survives_without_table_usage_llm_output(self):
         node = type("Node", (), {
@@ -285,9 +279,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
             },
         })()
 
-        tables, columns = _collect_usage_candidates([node])
+        columns = _collect_column_candidates([node])
 
-        self.assertEqual({}, tables)
         self.assertEqual(
             "WHERE STATUS = 'P'",
             columns["db:orders"]["STATUS"][0]["source_lines"][0]["text"],

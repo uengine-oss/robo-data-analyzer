@@ -77,12 +77,11 @@ class FunctionTableUsageResponseSchemaTest(unittest.TestCase):
             self.assertEqual(
                 {
                     "FT1": {
-                        "physical_table_id": "db:orders",
+                        "table": "orders",
                         "access_mode": "write",
                         "occurrences": [{
-                            "source_line": 1,
+                            "line": 1,
                             "operation": "UPDATE",
-                            "qualified_columns": [],
                         }],
                     },
                 },
@@ -157,13 +156,13 @@ class FunctionTableUsageResponseSchemaTest(unittest.TestCase):
             source.write_text("UPDATE orders SET status = 1;\n", encoding="utf-8")
             _node, _context, profile, specs = _write_plan(source)
             assignments = {
-                "1-1": {
+                "N1": {
                     "profile": profile,
                     "slot_specs": specs,
                     "reads": (),
                     "writes": ("db:orders",),
                 },
-                "2-2": {
+                "N2": {
                     "profile": profile,
                     "slot_specs": specs,
                     "reads": (),
@@ -172,12 +171,12 @@ class FunctionTableUsageResponseSchemaTest(unittest.TestCase):
             }
             model = batch_function_table_usages_response_model(assignments)
             item_model = model.model_fields["nodes"].annotation.model_fields[
-                "1-1"
+                "N1"
             ].annotation
             item = _result_payload(item_model)
-            model.model_validate({"nodes": {"1-1": item, "2-2": item}})
+            model.model_validate({"nodes": {"N1": item, "N2": item}})
             with self.assertRaises(ValidationError):
-                model.model_validate({"nodes": {"1-1": item}})
+                model.model_validate({"nodes": {"N1": item}})
 
 
 class DbmsFunctionTableUsageWiringTest(unittest.IsolatedAsyncioTestCase):
@@ -191,11 +190,11 @@ class DbmsFunctionTableUsageWiringTest(unittest.IsolatedAsyncioTestCase):
             async def fake_rule(*, response_model, **_kwargs):
                 self.assertEqual(0, slots.free)
                 item_type = response_model.model_fields["nodes"].annotation.model_fields[
-                    "1-1"
+                    "N1"
                 ].annotation
                 return response_model.model_validate({
                     "nodes": {
-                        "1-1": _result_payload(item_type),
+                        "N1": _result_payload(item_type),
                     }
                 })
 

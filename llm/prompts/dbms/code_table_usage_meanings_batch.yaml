@@ -11,7 +11,7 @@ user_template_specific: |
 
   ## [OUTPUT CONTRACT]
 
-  응답 최상위 `nodes`는 response_format이 지정한 exact node key map이다. 각 node의 값은 그 node에 배정된 FT key exact required map이다. 모든 node와 `FT` key를 정확히 한 번 채우고 다른 key를 만들지 않는다. 각 `FT` 값은 업무 목적 문자열 하나이며, 입증할 수 없으면 빈 문자열이다.
+  입력 `table_usage_packets`와 출력 `nodes`는 같은 request-local `N` key map이다. 각 node의 값은 그 node에 배정된 FT key exact required map이다. 모든 node와 `FT` key를 정확히 한 번 채우고 다른 key를 만들지 않는다. 각 `FT` 값은 업무 목적 문자열 하나이며, 입증할 수 없으면 빈 문자열이다.
 
   {function_table_usage_contract}
 

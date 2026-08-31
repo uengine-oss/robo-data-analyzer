@@ -593,7 +593,7 @@ async def analyze_code_three_split(
                     rule_name="code_rule_meanings",
                     user_values=values,
                     response_model=rule_meaning_response_model(
-                        conditions, effects, rows,
+                        packet.get("conditions", {}), packet["effects"], packet["rows"],
                     ),
                     budget=cost_budget,
                 ),

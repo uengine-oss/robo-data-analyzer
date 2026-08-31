@@ -842,7 +842,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 if rule_name == "code_rule_meanings":
                     return response_model.model_validate({
                         "effects": {"E1": "작업 결과를 호출자에게 반환한다"},
-                        "rows": {"R2": "business_rule"},
+                        "rows": {"R1": "business_rule"},
                     })
                 raise AssertionError(f"unexpected provider concern: {rule_name}")
 

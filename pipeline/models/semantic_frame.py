@@ -72,7 +72,7 @@ _ALLOWED_EVIDENCE_ATTRIBUTES: dict[str, frozenset[str]] = {
     }),
     "TABLE": frozenset({
         "table_id", "db", "schema", "name", "source_description",
-        "observed_operations", "usage_meanings",
+        "observed_operations",
     }),
     "COLUMN": frozenset({
         "table_id", "name", "source_description", "usage_evidence",
@@ -307,7 +307,7 @@ _PROMPT_FACT_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "TABLE": (
         "table_id", "db", "schema", "name", "source_description",
-        "observed_operations", "usage_meanings",
+        "observed_operations",
     ),
     "COLUMN": (
         "table_id", "name", "source_description", "usage_evidence",

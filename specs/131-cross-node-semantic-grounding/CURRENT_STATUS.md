@@ -2267,3 +2267,38 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   의미만, Table은 직접 R/W와 TABLE/COLUMN 의미만 소유한다. 다음 slice는 Rule/Table 및 나머지 LLM
   family를 같은 정보가치 기준으로 감사하되, 위치만으로 안전한 곳은 local key까지 제거하고 오결합 반례가
   실재하는 곳만 최소 key를 유지한다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.
+
+## 121. Rule/Table 의미 wire의 좌표·해시·중복 제거 (2026-08-31)
+
+- 결합 판정: Rule의 condition/effect/row, FunctionTableUsage의 table/access, DBMS batch node는 여러 의미값이
+  한 응답에 있어 배열 길이와 순서만으로 값 교환을 탐지할 수 없다. 따라서 local key 자체를 없애지 않고
+  `C1/E1/R1/FT1/N1` 연속 순번만 유지했다. 내부 `C415/R423`, node stable ID와 source range는 모델 wire에
+  없고 Analyzer map이 응답을 canonical row/node에 다시 결합한다. DBMS의 동일 range hash fallback도 삭제했다.
+- schema: Summary·Rule·FunctionTableUsage·TableDescription의 provider JSON schema에서 의미 제약이 아닌
+  `title` annotation과 동적 12자리 fingerprint class name을 제거했다. required/properties/
+  `additionalProperties:false`와 exact local key는 그대로라 누락·extra·swap 반례를 계속 거부한다.
+- FT 입력: `physical_table_id: db:...`를 `table: ...`로 바꾸고 occurrence의 `source_line`은 `line`으로
+  축약했다. 빈 `qualified_columns`, access mode와 같은 operation은 key 자체를 보내지 않는다. 봉인 4호출의
+  5 occurrence는 모두 이 두 중복 조건에 해당했다.
+- 3분할 복구: TableDescription은 더 이상 FunctionTableUsage LLM의 `usage_summary`를 다시 입력으로
+  소비하지 않는다. TABLE은 자기 DDL/source 설명과 결정론 직접 READ/WRITE/DML, COLUMN은 자기 source
+  설명과 해당 컬럼으로 focus한 원문 text만 받는다. candidate ownership, source function ID와 line은 내부
+  감사 장부에 남고 모델 packet에는 없다. 물리 column 이름은 의미 대상이자 exact response binding이라
+  유지한다.
+- 정보가치 판정: Rule의 full source와 effect `source`는 겉보기 중복이지만 같은 callee를 서로 다른 인자로
+  여러 번 호출할 때 E atom의 의미를 정확히 구분한다. 봉인 Rule 420 effect에서 이 결합을 잃는 손해가
+  22,492 chars 절감보다 크므로 유지했다. 반대로 nested control range, `IF@line/PFM_CATCH@line` 좌표는
+  type/condition/kind와 numbered source에서 복원되어 boolean 관계로 축약했다. 빈 used-symbol/condition
+  section은 보내지 않는다.
+- 봉인 projection: dynamic packet은 Rule 153,461→149,765 chars(-2.4%), FT 648→343(-47.1%),
+  TableDescription 2,345→1,975(-15.8%)다. response schema는 각각 46,541→34,304(-26.3%),
+  704→416(-40.9%), 3,182→2,390(-24.9%)다. parsed response는 Rule local key 축약으로
+  19,947→19,647 chars(-1.5%)이며 FT/Table 의미 문자열은 바뀌지 않는다. 새 실제 token 수로 과장하지 않는다.
+- 검증: 집중 회귀 `290 passed, 104 subtests`, Step7/8 확대 `245 passed, 87 subtests`, 전체 pytest
+  `1436 passed, 4 skipped, 334 subtests`, authoritative unittest `1198 tests, skipped 2`다. 실제 LLM/API,
+  Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호된 Catalog WIP와 금지 script는 수정·읽기·실행·
+  stage하지 않았다.
+- 다음 좌표: semantic 3분할 wire 감사는 닫혔다. unknown-project Scan과 residual proposal에는 아직
+  모델이 작성하는 pattern `id`와 confirmed-pattern ID가 남아 있다. 다음 slice에서 proposal body와 내부
+  stable rule identity를 분리해 Analyzer가 순번 identity를 부여하고, external-format Agent의 rule `name`이
+  실제 지속·검증 의미인지 같은 기준으로 판정한다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.

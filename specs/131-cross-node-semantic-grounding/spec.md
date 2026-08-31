@@ -85,9 +85,12 @@ section에 복제하지 않는다. 모델에 전달 가능한 동적 문맥은 �
 6. 확정된 사용자 callee가 caller에 전달하는 반환·외부 상태·table 효과
 7. 검증된 프로젝트·framework 계약 중 현재 코드가 실제로 소비하는 부분
 
-graph ID, hash, file path, occurrence ID, source range 숫자, resolution 진단, confidence, question,
-evidence 복창은 모델 입력·출력에서 제외한다. 모델에는 구조 사실을 `facts`로 한 번만 보내고 필요한
-출력 칸이 `fact_refs`로 참조한다. 결합과 감사에 필요한 canonical evidence와 좌표는 Analyzer 내부에만 둔다.
+graph ID, hash, file path, occurrence ID, 불필요한 source range 숫자, resolution 진단, confidence,
+question, evidence 복창은 모델 입력·출력에서 제외한다. Summary에는 구조 사실을 source-order `facts`
+배열로 한 번만 보내며 출력은 fact별 칸 없이 whole-target 의미만 가진다. 여러 의미값을 정확한 대상에
+다시 결합해야 하는 Rule·FunctionTableUsage·DBMS batch에만 `C1/E1/R1/FT1/N1` 형식의 짧은
+request-local 순번 key를 허용한다. 이 key에는 stable ID·hash·line/range를 인코딩하지 않는다. 결합과
+감사에 필요한 canonical evidence와 좌표는 Analyzer 내부에만 둔다.
 
 ## 6. LLM 호출 계약
 
@@ -122,7 +125,11 @@ item과 의미 obligation은 정확히 한 partition에 속해야 하며, 모든
 
 Analyzer가 확정한 직접 `(function, table, access_mode)`만 설명한다. callee의 table 사용을 caller에
 복사하지 않는다. DDL의 전체 table/column 제품 key를 먼저 닫고 실제 사용 문맥이 있는 key만 모델에
-보낸다. 문맥 없는 key는 모델을 호출하지 않고 명시적 `missing_usage_context`로 회계한다.
+보낸다. FunctionTableUsage가 생성한 자연어를 TableDescription 입력으로 다시 보내지 않는다. TABLE은
+자기 DDL/source 설명과 결정론적 직접 READ/WRITE/DML만, COLUMN은 자기 DDL/source 설명과 해당 컬럼에
+초점을 맞춘 직접 원문만 소비한다. 모델 wire의 table 값에는 내부 `db:` ID 접두사를 넣지 않고, 빈
+column 목록과 access mode에서 완전히 복원되는 operation은 보내지 않는다. 문맥 없는 key는 모델을
+호출하지 않고 명시적 `missing_usage_context`로 회계한다.
 
 ### 7.3 Rule과 Example
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.code_analysis_output import (
     BatchFunctionTableUsagesItem,
@@ -20,12 +20,12 @@ from pipeline.models.function_table_usage import (
     group_function_table_usage_slots,
     project_function_table_usages,
 )
+from pipeline.models.llm_wire_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     SemanticFrame,
     SemanticSlot,
     SlotSpec,
     StructuralProfile,
-    stable_digest,
 )
 
 
@@ -57,17 +57,25 @@ def function_table_usage_prompt_assignments(
     for ordinal, group in enumerate(
         _usage_groups(profile, specs, reads, writes), start=1,
     ):
+        table = group.physical_table_id.removeprefix("db:")
+        if not table:
+            raise ValueError("function-table usage requires a physical table name")
+        occurrences = []
+        for fact in group.facts:
+            operation = str(fact.attributes.get("operation") or "")
+            occurrence: dict[str, object] = {
+                "line": fact.start_line,
+            }
+            if operation and operation.lower() != group.access_mode.lower():
+                occurrence["operation"] = operation
+            qualified_columns = fact.attributes.get("qualified_columns") or []
+            if qualified_columns:
+                occurrence["qualified_columns"] = qualified_columns
+            occurrences.append(occurrence)
         assignment: dict[str, object] = {
-            "physical_table_id": group.physical_table_id,
+            "table": table,
             "access_mode": group.access_mode,
-            "occurrences": [
-                {
-                    "source_line": fact.start_line,
-                    "operation": fact.attributes.get("operation"),
-                    "qualified_columns": fact.attributes.get("qualified_columns") or [],
-                }
-                for fact in group.facts
-            ],
+            "occurrences": occurrences,
         }
         table_description = str(
             descriptions.get(group.physical_table_id, {}).get("description") or ""
@@ -88,10 +96,9 @@ def function_table_usages_response_model(
     assignments = function_table_usage_prompt_assignments(
         profile, tuple(slot_specs), reads, writes,
     )
-    fingerprint = stable_digest(assignments)
     return create_model(
-        f"AssignedFunctionTableUsageMeanings_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        f"FunctionTableUsageMeanings_{len(assignments)}",
+        __base__=CompactLlmResponse,
         **{
             local_key: (str, Field(...))
             for local_key in assignments
@@ -164,15 +171,11 @@ def batch_function_table_usages_response_model(
     """Require every assigned DBMS node and every FT branch exactly once."""
     if not assignments:
         raise ValueError("function-table usage assignments must not be empty")
-    fingerprint = stable_digest({
-        key: function_table_usage_prompt_assignments(
-            assignment["profile"],
-            assignment["slot_specs"],
-            assignment.get("reads", ()),
-            assignment.get("writes", ()),
-        )
-        for key, assignment in assignments.items()
-    })
+    expected_node_keys = tuple(
+        f"N{index}" for index in range(1, len(assignments) + 1)
+    )
+    if tuple(assignments) != expected_node_keys:
+        raise ValueError("function-table usage node keys must be consecutive ordinals")
     node_fields = {}
     for node_key, assignment in assignments.items():
         node_key = str(node_key)
@@ -186,13 +189,13 @@ def batch_function_table_usages_response_model(
         )
         node_fields[node_key] = (item_model, Field(...))
     nodes_model = create_model(
-        f"AssignedBatchFunctionTableUsageMap_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        f"BatchFunctionTableUsageMap_{len(node_fields)}",
+        __base__=CompactLlmResponse,
         **node_fields,
     )
     return create_model(
-        f"AssignedBatchFunctionTableUsages_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        "BatchFunctionTableUsages",
+        __base__=CompactLlmResponse,
         nodes=(nodes_model, Field(...)),
     )
 

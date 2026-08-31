@@ -112,7 +112,7 @@ class DbmsDeterministicWiringTest(unittest.TestCase):
 
         self.assertEqual({"a"}, set(result.items))
         self.assertEqual({}, result.findings)
-        self.assertEqual("1-3", result.items["a"].node_key)
+        self.assertEqual("N1", result.items["a"].node_key)
         self.assertEqual([1], [rule.anchor_line for rule in result.items["a"].rules])
         self.assertEqual(
             ['call("act", None, [])'], result.items["a"].rules[0].structural_effects,
@@ -165,14 +165,13 @@ class DbmsRuleMeaningWiringTest(unittest.IsolatedAsyncioTestCase):
                 evidence = materialized.evidence["a"]
                 return response_model.model_validate({
                     "nodes": {
-                        "1-3": {
+                        "N1": {
                             "effects": {
                                 key: "업무 처리를 호출한다"
                                 for key in evidence["effects"]
                             },
                             "rows": {
-                                key: "business_rule"
-                                for key in evidence["rows"]
+                                "R1": "business_rule"
                             },
                         }
                     }

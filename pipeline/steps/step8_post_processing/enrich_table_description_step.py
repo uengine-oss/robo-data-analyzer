@@ -1,9 +1,8 @@
 """enrich_table_description_step — 테이블 description 통합 LLM 호출.
 
 흐름:
-1. ``step7_analyze_code``의 access별 ``function_table_usages``와 결정론
-   ``direct_column_usage_evidence_by_table``을 읽는다.
-2. ``table_fqn``별로 접근 의미와 컬럼 원문 근거를 모은다.
+1. 결정론 ``READS/WRITES``와 ``direct_column_usage_evidence_by_table``을 읽는다.
+2. ``table_fqn``별로 직접 operation과 컬럼 원문 근거를 모은다.
 3. ``llm/prompts/<strategy>/table_description.yaml`` LLM 호출 → 통합 description.
 4. Table/Column 최종 상태 반환 — 제품 저장은 최종 공개 경로만 수행.
 
@@ -82,23 +81,16 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         return {}
     started = time.monotonic()
 
-    table_candidates, column_candidates = _collect_usage_candidates(code_nodes)
+    column_candidates = _collect_column_candidates(code_nodes)
 
     source_columns_by_id = {column.id: column for column in state.get("columns", [])}
     source_columns_by_table = _source_columns_by_table(state, source_columns_by_id)
     direct_operations = _direct_operations_by_table(state)
     source_tables_by_id = {table.id: table for table in source_tables}
     table_fqns = _table_target_ids(source_tables, direct_operations)
-    candidate_only = set(table_candidates) - set(direct_operations)
-    if candidate_only:
-        raise ValueError(
-            "table insight has no deterministic READS/WRITES owner: "
-            f"{sorted(candidate_only)!r}"
-        )
     allowed_column_names: dict[str, set[str]] = {}
     prompt_evidence: dict[str, dict] = {}
     for table in table_fqns:
-        usages = table_candidates.get(table, [])
         # DDL HAS_COLUMN이 최종 컬럼 집합의 단일 진실이다. step7 LLM 후보가 컬럼을
         # 누락하거나 추가해도 최종 prompt의 컬럼 소유권을 바꾸지 않는다.
         source_columns = source_columns_by_table.get(table, [])
@@ -125,7 +117,6 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
             })
         prompt_evidence[table] = {
             "table": _source_table_evidence(source_tables_by_id[table]),
-            "table_usages": usages,
             "direct_operations": direct_operations.get(table, []),
             "columns": columns,
         }
@@ -133,9 +124,6 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     log_info(
         _STEP, "start",
         tables=len(table_fqns),
-        function_table_usage_meanings=sum(
-            len(v) for v in table_candidates.values()
-        ),
         column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
     prompts_dir = Path(strategy.prompts_dir)
@@ -147,9 +135,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
     ) -> TableDescription | ModelOutputError:
         """테이블 의미를 한 번 요청한다. transport 재시도는 runner만 소유한다."""
         table_plan, column_plans = build_table_description_plans(table_fqn, evidence)
-        response_model = table_description_frame_response_model(
-            evidence, table_plan, column_plans,
-        )
+        response_model = table_description_frame_response_model(column_plans)
 
         async def _call() -> TableDescription:
             async with track_processing("Table", table_fqn):
@@ -430,29 +416,15 @@ def _source_table_evidence(table: object) -> dict[str, str]:
     }
 
 
-def _collect_usage_candidates(
+def _collect_column_candidates(
     code_nodes: list[object],
-) -> tuple[dict[str, list[dict]], dict[str, dict[str, list[dict[str, object]]]]]:
-    """Aggregate table and column usage without dropping identity or source coordinates."""
-    table_candidates: dict[str, list[dict]] = defaultdict(list)
+) -> dict[str, dict[str, list[dict[str, object]]]]:
+    """Aggregate direct column source while keeping audit identity internal."""
     column_candidates: dict[str, dict[str, list[dict[str, object]]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for fn in code_nodes:
         extra = getattr(fn, "extra", {}) or {}
-        for usage in extra.get("function_table_usages", []) or []:
-            table = usage.get("physical_table_id") or ""
-            if not table:
-                continue
-            summary = (
-                usage.get("function_table_usage_summary") or ""
-            ).strip()
-            if summary:
-                table_candidates[table].append({
-                    "source_function_id": getattr(fn, "id", ""),
-                    "access_mode": usage.get("access_mode", ""),
-                    "usage_summary": summary,
-                })
         for table, columns in (
             extra.get("direct_column_usage_evidence_by_table", {}) or {}
         ).items():
@@ -467,7 +439,7 @@ def _collect_usage_candidates(
                 }
                 if candidate not in column_candidates[table][name]:
                     column_candidates[table][name].append(candidate)
-    return dict(table_candidates), {
+    return {
         table: dict(columns) for table, columns in column_candidates.items()
     }
 

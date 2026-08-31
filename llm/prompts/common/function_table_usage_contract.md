@@ -1,14 +1,14 @@
 ## Table usage meaning contract
 
-Analyzer가 현재 코드의 직접 테이블 접근을 `(physical_table_id, access_mode)`별 `FT` 항목으로 이미 확정했다. 모델은 구조를 다시 찾거나 고치지 않고, 각 항목이 수행하는 업무 목적만 한 문장으로 쓴다.
+Analyzer가 현재 코드의 직접 테이블 접근을 `(table, access_mode)`별 `FT` 항목으로 이미 확정했다. 모델은 구조를 다시 찾거나 고치지 않고, 각 항목이 수행하는 업무 목적만 한 문장으로 쓴다.
 
 ## [INPUT GUIDE]
 
 각 `FT` 항목은 다음 정보만 가진다.
 
-- `physical_table_id`: Analyzer가 연결한 실제 테이블. 번역하거나 다른 테이블로 바꾸지 않는다.
+- `table`: Analyzer가 연결한 실제 물리 테이블 이름. 번역하거나 다른 테이블로 바꾸지 않는다.
 - `access_mode`: 확정된 READ 또는 WRITE 방향.
-- `occurrences`: 원문에서 이 접근이 발생한 줄, 연산, 실제 사용 컬럼. 여러 발생은 하나의 접근 목적을 함께 입증한다.
+- `occurrences`: 원문에서 이 접근이 발생한 `line`과, access mode와 다를 때의 연산 및 비어 있지 않은 실제 사용 컬럼. 여러 발생은 하나의 접근 목적을 함께 입증한다.
 - `table_description`: 이미 확정된 테이블 설명이 있을 때만 포함된다. 이름만 보고 의미를 추측하는 대신 원문 해석을 보조한다.
 - 번호가 붙은 원문: 조건, 계산, 결과 사용을 확인하는 현재 분석 단위의 정확한 코드다.
 

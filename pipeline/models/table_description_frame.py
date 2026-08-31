@@ -1,13 +1,13 @@
 """Dynamic semantic-frame boundary for final TABLE and COLUMN meanings."""
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.code_analysis_output import GroundedColumnDescription, TableDescription
+from pipeline.models.llm_wire_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SemanticFrame,
@@ -39,14 +39,6 @@ def build_table_description_plans(
             "name": str(table.get("name") or ""),
             "source_description": _source_description(table),
             "observed_operations": _observed_operations(evidence),
-            "usage_meanings": [
-                {
-                    "access": str(item.get("access_mode") or ""),
-                    "meaning": str(item.get("usage_summary") or "").strip(),
-                }
-                for item in evidence.get("table_usages") or ()
-                if str(item.get("usage_summary") or "").strip()
-            ],
         },
     )
     column_plans = {}
@@ -80,23 +72,13 @@ def _observed_operations(evidence: dict) -> list[dict[str, str]]:
     return operations
 
 
-def _column_usage_evidence(candidates: list[dict]) -> list[dict]:
-    usages: list[dict] = []
+def _column_usage_evidence(candidates: list[dict]) -> list[str]:
+    usages: list[str] = []
     for candidate in candidates:
-        item = {
-            "ownership": str(candidate.get("ownership") or ""),
-            "source": [
-                {
-                    "line": int(source.get("line") or 0),
-                    "text": str(
-                        source.get("focus_text") or source.get("text") or ""
-                    ),
-                }
-                for source in candidate.get("source_lines") or ()
-            ],
-        }
-        if item not in usages:
-            usages.append(item)
+        for source in candidate.get("source_lines") or ():
+            text = str(source.get("focus_text") or source.get("text") or "").strip()
+            if text and text not in usages:
+                usages.append(text)
     return usages
 
 
@@ -136,7 +118,7 @@ def _meaning_input(profile: StructuralProfile) -> dict[str, object]:
         raise ValueError("table meaning input requires exactly one entity fact")
     attributes = facts[0].attributes
     allowed = (
-        ("source_description", "observed_operations", "usage_meanings")
+        ("source_description", "observed_operations")
         if facts[0].kind == "TABLE"
         else ("source_description", "usage_evidence")
     )
@@ -200,16 +182,11 @@ def _entity_plan(
 
 
 def table_description_frame_response_model(
-    evidence: dict,
-    table_plan: tuple[StructuralProfile, tuple[SlotSpec, ...]],
     column_plans: dict[str, tuple[StructuralProfile, tuple[SlotSpec, ...]]],
 ) -> type[BaseModel]:
-    fingerprint = hashlib.sha256(
-        json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:12]
     entity_model = create_model(
-        f"TableMeaningFields_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        "TableMeaningFields",
+        __base__=CompactLlmResponse,
         logical_name=(str, Field(...)),
         description=(str, Field(...)),
     )
@@ -221,13 +198,13 @@ def table_description_frame_response_model(
             Field(..., alias=name),
         )
     columns_wire = create_model(
-        f"AssignedColumnFrameMap_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        f"ColumnFrameMap_{len(column_fields)}",
+        __base__=CompactLlmResponse,
         **column_fields,
     )
     model = create_model(
-        f"TableFrameWire_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        "TableFrameWire",
+        __base__=CompactLlmResponse,
         logical_name=(str, Field(...)),
         description=(str, Field(...)),
         columns=(columns_wire, Field(...)),

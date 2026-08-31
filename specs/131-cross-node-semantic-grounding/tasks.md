@@ -398,6 +398,26 @@
   - 전체 pytest `1435 passed, 4 skipped, 334 subtests`, authoritative unittest `1197 tests,
     skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B34 Rule/Table 및 남은 의미 wire의 ID·중복 제거**
+  - [x] sealed Rule/FunctionTableUsage/TableDescription의 입력·schema·출력 비용과 downstream 소비를
+    필드별로 계측한다.
+  - [x] Rule의 line 기반 C/R key와 DBMS range/hash node key를 짧은 연속 순번 key로 바꾸고 내부
+    canonical row/condition identity와 결정론적으로 재결합한다.
+  - [x] dynamic response schema title의 fingerprint와 의미 없는 title annotation을 제거한다.
+  - [x] FunctionTableUsage 입력에서 내부 `db:` 접두사, 빈 `qualified_columns`, access mode와 같은
+    operation을 제거하되 exact table/access 결합은 FT key로 유지한다.
+  - [x] TableDescription이 FunctionTableUsage LLM prose를 다시 소비하는 경로를 제거하고 DDL/source,
+    직접 R/W/DML, 컬럼 집중 원문만 소비하게 한다. 컬럼 원문의 candidate ownership·line은 모델에
+    보내지 않는다.
+  - [x] positional swap·누락·extra·빈 optional·batch key 충돌 반례와 전체 회귀를 검증하고 실제
+    LLM/API·Neo4j·새 DB·SKT 재분석 없이 절감량을 기록한다.
+  - sealed projection의 packet은 Rule 153,461→149,765 chars(-2.4%), FT 648→343(-47.1%),
+    TableDescription 2,345→1,975(-15.8%)다. schema는 각각 46,541→34,304(-26.3%),
+    704→416(-40.9%), 3,182→2,390(-24.9%)다. Rule effect source는 동일 callee의 서로 다른 인자를
+    atom에 결합하는 의미 정보라 유지했다.
+  - 전체 pytest `1436 passed, 4 skipped, 334 subtests`, authoritative unittest `1198 tests,
+    skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

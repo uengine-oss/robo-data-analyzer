@@ -448,21 +448,20 @@ one dynamic user message
 4. 원래 line number가 붙은 온전한 대상 source
 ```
 
-Summary에는 local key가 없다. 다른 keyed family의 local key는 한 요청 안에서만 유일하다. Analyzer 내부 required 정본은 stable obligation ID를 사용하며,
-응답은 `(logical_request_id, local_key)`로 scope를 붙여야 여러 요청의 `F1`·`R1`이 충돌하지 않는다.
+Summary에는 local key가 없다. 다른 keyed family의 local key는 한 요청 안에서만 유일한 연속 순번이며
+stable ID·hash·line/range를 인코딩하지 않는다. Analyzer 내부 required 정본은 stable obligation ID를 사용하며,
+응답은 `(logical_request_id, local_key)`로 scope를 붙여야 여러 요청의 `FT1`·`R1`이 충돌하지 않는다.
 검증 뒤 제품 graph에서는 local key를 버리지만, local→stable 결합 map은 raw response와 함께
 content-addressed run artifact에 보존한다.
 
 ```text
-S: source structure item
 FT: function-table-access tuple
-TD: table meaning item
-C: column meaning item
+C: Rule condition atom
+E: Rule effect atom
 R: Rule candidate row
-K: verified internal callee
+N: DBMS batch node
 SP: hard-limit Summary source partition
 SO: non-overlapping Summary obligation
-DU: verified direct data usage
 SC/SCN/AP: scanning occurrence/counterexample/proposal
 EG/ED: external shape/document
 ```
@@ -575,14 +574,12 @@ Analyzer가 exact direct DATA_OBJECT 사실에서 만든다. 전체 structural p
 ```yaml
 assigned_table_usages:
   FT1:
-    physical_table_id: <확정 table stable ID>
+    table: <확정 physical table 이름; 내부 db: ID 접두사 없음>
     access_mode: read | write
     occurrences:
-      - source_line: <절대 원문 줄>
-        operation: <Parser/Analyzer가 확정한 연산>
-        qualified_columns: [<이 occurrence에서 직접 한정된 column>]
-linked_table_context:
-  <table stable ID>: <이미 검증된 table 설명 또는 빈 문자열>
+      - line: <numbered source와 결합하는 원문 줄>
+        operation: <access_mode와 다를 때만 Parser/Analyzer가 확정한 연산>
+        qualified_columns: [<비어 있지 않을 때만 직접 한정된 column>]
 numbered_source: <줄 번호가 붙은 현재 함수 원문>
 ```
 
@@ -609,6 +606,9 @@ missing_context_count: <0 또는 양수>
 missing_context_artifact_hash: <부족 문맥이 있을 때만 SHA-256>
 ```
 
+`table`·`line`·`operation`·`qualified_columns`는 응답에서 복창하지 않는다. `FT1..FTn`은 요청 안에서
+연속하며 순서만으로 응답 값 교환을 탐지할 수 없기 때문에 유지하는 최소 결합 key다.
+
 `sufficient`이면 summary가 있고 count/hash가 없다. `insufficient`이면 summary가 없고 Analyzer가 만든
 부족 문맥 artifact의 count/hash가 있다. 한 FT 안에서 일부 occurrence만 mapped인 혼합 결과는 제품에
 부분 의미로 공개하지 않고 계약 위반으로 실패한다.
@@ -625,20 +625,13 @@ model_required_keys ∩ deterministic_insufficient_keys = ∅
 model_required_keys ∪ deterministic_insufficient_keys = all_product_meaning_keys
 ```
 
-모델 required key마다:
-
-```yaml
-results:
-  TD1:
-    mapped:
-      logical_name: <검증 가능한 논리명>
-      description: <검증 가능한 table 의미>
-  C7:
-    insufficient:
-      disposition_reason_code: unresolved_domain_abbreviation | configuration_dependent | unsupported_semantics
-```
-
 `missing_usage_context`는 모델 enum이 아니다. DDL-only 미사용 table은 모델 호출 대상이 아니다. 입력은 assigned table/column DDL metadata와 LLM prose가 아닌 verified direct usage뿐이며, FunctionTableUsage 문장을 재사용하지 않는다. 모델 결과와 결정론 결과의 disjoint union이 table+전체 column key와 exact equality여야 한다.
+
+모델 응답은 TABLE의 `logical_name|description`과 `columns` map뿐이다. `columns`의 key는 내부 graph ID가
+아니라 실제 의미 대상인 물리 column 이름이며 입력·schema·응답의 exact binding을 위해 유지한다. 각 column
+값도 `logical_name|description` 두 문자열뿐이다. candidate ownership, function/occurrence ID, file, line,
+hash와 missing reason은 모델 wire에 없다. TABLE 입력은 자기 source 설명과 결정론적 직접 READ/WRITE/DML,
+COLUMN 입력은 자기 source 설명과 해당 column에 초점을 맞춘 원문 text만 가진다.
 
 Analyzer가 만드는 table과 column 결과는 물리 정체성 이름을 섞지 않는다.
 

@@ -177,15 +177,17 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
             cache=SourceFileCache(),
         )
         packets = json.loads(usage_values["table_usage_packets"])
-        assert len(packets) == 1
-        assert set(packets[0]) == {
-            "node_key",
+        assert set(packets) == {"N1"}
+        assert set(packets["N1"]) == {
             "assigned_table_usages",
             "numbered_source",
         }
-        assert "table_description" not in packets[0]["assigned_table_usages"]["FT1"]
+        assignment = packets["N1"]["assigned_table_usages"]["FT1"]
+        assert "table_description" not in assignment
+        assert assignment["table"] == "RWIS.RDD01DD_TB"
         assert set(usage_values) == {"target_id", "table_usage_packets"}
         serialized_packet = usage_values["table_usage_packets"]
+        assert "node_key" not in serialized_packet
         assert "column_usage_candidates" not in serialized_packet
         assert "referenced_symbol" not in serialized_packet
         assert "external_context" not in serialized_packet

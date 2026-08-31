@@ -45,7 +45,7 @@ _EVIDENCE = {
 
 class RuleMeaningFrameTest(unittest.TestCase):
     def test_provider_schema_requires_every_exact_atom_once(self) -> None:
-        model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
+        model = rule_meaning_response_model(("C1",), ("E1",), ("R1",))
         self.assertEqual(["effects", "rows"], list(model.model_fields))
         self.assertEqual(
             ["effects", "rows"],
@@ -53,11 +53,11 @@ class RuleMeaningFrameTest(unittest.TestCase):
         )
         valid = {
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
-            "rows": {"R17": "business_rule"},
+            "rows": {"R1": "business_rule"},
         }
         model.model_validate(valid)
         with self.assertRaises(ValidationError):
-            model.model_validate({**valid, "conditions": {"C17": "복창"}})
+            model.model_validate({**valid, "conditions": {"C1": "복창"}})
         with self.assertRaises(ValidationError):
             model.model_validate({
                 **valid,
@@ -125,8 +125,8 @@ class RuleMeaningFrameTest(unittest.TestCase):
         )
         self.assertEqual({"return_role": "가능 여부"}, effect["api_contract"])
         self.assertEqual(
-            {"kind": "decision", "when": ["C17"], "effects": ["E1"]},
-            packet["rows"]["R17"],
+            {"kind": "decision", "when": ["C1"], "effects": ["E1"]},
+            packet["rows"]["R1"],
         )
 
     def test_rule_table_effect_gets_only_the_existing_table_meaning(self) -> None:
@@ -187,10 +187,10 @@ class RuleMeaningFrameTest(unittest.TestCase):
             )
 
     def test_rule_and_example_are_one_deterministic_python_projection(self) -> None:
-        model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
+        model = rule_meaning_response_model(("C1",), ("E1",), ("R1",))
         output = model.model_validate({
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
-            "rows": {"R17": "business_rule"},
+            "rows": {"R1": "business_rule"},
         })
         [row] = project_rule_meanings(output, _EVIDENCE)
         self.assertEqual("R17", row.row_key)
@@ -201,20 +201,20 @@ class RuleMeaningFrameTest(unittest.TestCase):
             ast.parse(effect, mode="eval")
 
     def test_insufficient_atom_never_becomes_an_accepted_example(self) -> None:
-        model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
+        model = rule_meaning_response_model(("C1",), ("E1",), ("R1",))
         output = model.model_validate({
             "effects": {"E1": ""},
-            "rows": {"R17": "business_rule"},
+            "rows": {"R1": "business_rule"},
         })
         [row] = project_rule_meanings(output, _EVIDENCE)
         self.assertEqual("insufficient", row.status)
         self.assertEqual((), row.effects)
 
     def test_implementation_detail_is_classified_without_projecting_python(self) -> None:
-        model = rule_meaning_response_model(("C17",), ("E1",), ("R17",))
+        model = rule_meaning_response_model(("C1",), ("E1",), ("R1",))
         output = model.model_validate({
             "effects": {"E1": "진단 로그를 남긴다"},
-            "rows": {"R17": "implementation_detail"},
+            "rows": {"R1": "implementation_detail"},
         })
         [row] = project_rule_meanings(output, _EVIDENCE)
         self.assertEqual("implementation_detail", row.disposition)
@@ -251,23 +251,40 @@ class RuleMeaningFrameTest(unittest.TestCase):
 
     def test_dbms_batch_uses_exact_node_maps_without_echo_fields(self) -> None:
         assignments = {
-            "1135-1139": _EVIDENCE,
-            "1200-1205#stable": _EVIDENCE,
+            "N1": _EVIDENCE,
+            "N2": _EVIDENCE,
         }
         model = batch_rule_meaning_response_model(assignments)
         node = {
             "effects": {"E1": "MMS 가능 여부를 확인한다"},
-            "rows": {"R17": "business_rule"},
+            "rows": {"R1": "business_rule"},
         }
         output = model.model_validate({"nodes": {
-            "1135-1139": node,
-            "1200-1205#stable": node,
+            "N1": node,
+            "N2": node,
         }})
         projected = project_batch_rule_meanings(output, assignments)
         self.assertEqual(tuple(assignments), tuple(projected))
         self.assertTrue(all(rows[0].status == "sufficient" for rows in projected.values()))
         with self.assertRaises(ValidationError):
-            model.model_validate({"nodes": {"1135-1139": node}})
+            model.model_validate({"nodes": {"N1": node}})
+
+    def test_wire_keys_and_schema_do_not_expose_internal_coordinates_or_hashes(self) -> None:
+        packet = build_rule_meaning_packet(
+            _EVIDENCE,
+            numbered_source="17 | c520_mms_psbl_yn_check(ctx);",
+        )
+        rendered = str(packet)
+        self.assertNotIn("C17", rendered)
+        self.assertNotIn("R17", rendered)
+        model = rule_meaning_response_model(
+            packet["conditions"], packet["effects"], packet["rows"],
+        )
+        schema = model.model_json_schema()
+        self.assertNotIn("title", str(schema))
+        self.assertNotRegex(str(schema), r"[0-9a-f]{12}")
+        with self.assertRaises(ValueError):
+            rule_meaning_response_model(("C17",), ("E1",), ("R17",))
 
 
 if __name__ == "__main__":

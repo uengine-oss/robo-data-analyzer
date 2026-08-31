@@ -46,6 +46,16 @@ def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) 
         case.assertFalse(variant.get("additionalProperties", True))
 
 
+def _assert_no_schema_titles(case: unittest.TestCase, value) -> None:
+    if isinstance(value, dict):
+        case.assertNotIn("title", value)
+        for item in value.values():
+            _assert_no_schema_titles(case, item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_schema_titles(case, item)
+
+
 def _table_usage_plan():
     node = CodeNode(
         id="code:orders", name="select_orders", signature="select_orders",
@@ -114,7 +124,7 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 usage_profile, usage_slots, ("db:orders",), (),
             ), {"FT1"}),
             (batch_function_table_usages_response_model({
-                "1-2": {
+                "N1": {
                     "profile": usage_profile,
                     "slot_specs": usage_slots,
                     "reads": ("db:orders",),
@@ -122,13 +132,13 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 },
             }), {"nodes"}),
             (table_description_frame_response_model(
-                table_evidence, table_plan, column_plans,
+                column_plans,
             ), {"logical_name", "description", "columns"}),
             (rule_meaning_response_model(("C1",), ("E1",), ("R1",)), {
                 "effects", "rows",
             }),
             (batch_rule_meaning_response_model({
-                "1-2": {
+                "N1": {
                     "conditions": {"C1": "ready"},
                     "effects": {"E1": {
                         "op": "ret", "target": None, "value": "OK",
@@ -141,6 +151,9 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
                 _assert_closed_required(self, model, required)
+                schema = model.model_json_schema()
+                _assert_no_schema_titles(self, schema)
+                self.assertNotRegex(str(schema), r"_[0-9a-f]{12}")
 
     def test_summary_schema_is_target_invariant_and_has_no_binding_keys(self) -> None:
         first = (SlotSpec(

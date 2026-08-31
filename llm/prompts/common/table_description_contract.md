@@ -11,11 +11,10 @@
 - `table.source_description`: DDL·Catalog가 제공한 `source_logical_name`,
   `source_description`, `source_comment`를 출처 이름과 함께 보존한 값이다.
 - `table.observed_operations`: Analyzer가 실제 코드에서 확정한 직접 READ/WRITE/DML 조합이다.
-- `table.usage_meanings`: 함수별 TABLE 사용 의미 중 이 TABLE에 직접 귀속된 값이다.
 - `columns`의 key: 출력에서도 정확히 한 번 보존해야 하는 허용 물리 COLUMN 이름이다.
 - `columns.<name>.source_description`: 그 COLUMN 자체가 소유한 source 의미다.
 - `columns.<name>.usage_evidence`: Analyzer가 그 COLUMN에 직접 귀속한 원문이다.
-  `ownership`은 귀속 방식, `source`는 절대 줄과 해당 줄의 활성 원문이다.
+  각 값은 해당 COLUMN에 초점을 맞춘 활성 원문 문자열이다.
 - 없는 종류의 근거는 key 자체가 없다. 다른 대상의 값으로 보충하지 않는다.
 
 ## [OUTPUT CONTRACT]

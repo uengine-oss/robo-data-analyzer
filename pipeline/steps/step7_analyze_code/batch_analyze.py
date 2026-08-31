@@ -3,7 +3,7 @@
 ``analyze_code_step`` 의 DBMS 분기 (Framework 는 ``three_split_llm_fanout`` per-node 유지).
 Summary는 정확한 노드 원문마다 한 번 호출하고, Rule atom meaning과 table-usage meaning은 같은
 유효부모 형제를 관심사별 batch로 묶는다. Rule 구조와 좌표는 routine branch inventory에서
-결정론으로 만들고 ``node_key``(줄범위)에 분배하며, 모델은 배정된 atom 의미만 채운다.
+결정론으로 만들고 request-local ``N`` key에 분배하며, 모델은 배정된 atom 의미만 채운다.
 Example은 검증 Rule에서 투영한다.
 
 - skip 노드(괄호 DECLARE/TRY/TRIGGER_BLOCK)는 분석 제외 + 컨텍스트 투명(E).
@@ -784,7 +784,7 @@ async def _collect_keyed_concern(
 
 
 def _expected_keys(node_ids, contexts) -> dict[str, str]:
-    return batch_node_keys(node_ids, contexts)
+    return batch_node_keys(node_ids)
 
 
 def _materialize_dbms_rules(
@@ -853,14 +853,14 @@ async def _collect_dbms_rule_meanings(
     node_ids = list(materialization.items)
     if not node_ids:
         return materialization
-    key_to_id = batch_node_keys(node_ids, contexts)
+    key_to_id = batch_node_keys(node_ids)
     assignments = {
         node_key: prepare_rule_meaning_assignment(
             materialization.evidence[node_id]
         )
         for node_key, node_id in key_to_id.items()
     }
-    packets = []
+    packets = {}
     active_assignments: dict[str, dict[str, object]] = {}
     unavailable_keys: set[str] = set()
     for node_key, node_id in key_to_id.items():
@@ -876,9 +876,7 @@ async def _collect_dbms_rule_meanings(
             continue
         context = contexts[node_id]
         active_assignments[node_key] = evidence
-        packets.append({
-            "node_key": node_key,
-            "packet": build_rule_meaning_packet(
+        packets[node_key] = build_rule_meaning_packet(
                 evidence,
                 numbered_source=source_cache.excerpt(
                     context.file_path, context.start_line, context.end_line,
@@ -889,8 +887,7 @@ async def _collect_dbms_rule_meanings(
                 ),
                 table_descriptions=table_descriptions,
                 api_contracts=tuple(context.extra.get("api_contracts") or ()),
-            ),
-        })
+            )
 
     projected_by_key = {}
     model_error: ModelOutputError | None = None

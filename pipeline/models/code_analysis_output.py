@@ -251,7 +251,7 @@ class BatchRulesItem(BaseModel):
     """One DBMS node's deterministically assigned routine Rule rows."""
     model_config = ConfigDict(extra="forbid")
 
-    node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
+    node_key: str = Field(..., description="Analyzer가 배정한 request-local N 순번")
     rules: list[RuleItem] = Field(default_factory=list)
 
 
@@ -260,7 +260,7 @@ class BatchFunctionTableUsagesItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    node_key: str = Field(..., description="입력 줄범위 '<start>-<end>' 그대로 echo")
+    node_key: str = Field(..., description="Analyzer가 배정한 request-local N 순번")
     function_table_usages: list[FunctionTableUsage] = Field(default_factory=list)
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 

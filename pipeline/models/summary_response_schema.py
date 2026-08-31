@@ -4,16 +4,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, Field, create_model
 
 from pipeline.languages import stereotype_values
 from pipeline.models.code_analysis_output import SummaryOutput
+from pipeline.models.llm_wire_schema import CompactLlmResponse
 from pipeline.models.semantic_frame import (
     SemanticFrame,
     SemanticSlot,
     SlotSpec,
     StructuralProfile,
-    stable_digest,
 )
 from pipeline.models.semantic_frame_projection import project_summary
 
@@ -27,10 +27,6 @@ def frame_summary_response_model(
     if len(specs) != 1:
         raise ValueError("Summary requires one whole-target semantic obligation")
     stereotype_type = Literal.__getitem__(tuple(stereotype_values(strategy)))
-    fingerprint = stable_digest({
-        "strategy": strategy,
-        "concern": "frame-summary",
-    })
     fields = {
         "summary": (
             str,
@@ -39,8 +35,8 @@ def frame_summary_response_model(
         "stereotype": (stereotype_type, Field(...)),
     }
     model = create_model(
-        f"AssignedFrameSummary_{fingerprint}",
-        __config__=ConfigDict(extra="forbid"),
+        "AssignedFrameSummary",
+        __base__=CompactLlmResponse,
         **fields,
     )
     return model
