@@ -48,6 +48,7 @@ from pipeline.models.human_glossary import HumanGlossary, load_human_glossary
 from shared.config.settings import SETTINGS
 
 from llm import response_cache
+from llm.embedder import validate_runtime_configuration as validate_embedding_runtime
 from llm.model_runtime_capabilities import load_model_runtime_capabilities
 from llm.usage.cost_budget import CostBudget
 from shared.events.runtime_logger import (
@@ -438,6 +439,10 @@ async def execute_run(
             SETTINGS.analysis_llm.model_runtime_capabilities_ref,
             SETTINGS.analysis_llm.model_runtime_capabilities_sha256,
         )
+        # Embedding is a required downstream paid/runtime boundary.  Reject an
+        # impossible provider/model/endpoint tuple before spending generation
+        # tokens; otherwise a run can finish all meanings and die at Step 8.
+        validate_embedding_runtime()
         project_input_inventory = inventory_project(
             codebase.root,
             source_cache,

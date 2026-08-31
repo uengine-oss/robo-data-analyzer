@@ -39,6 +39,10 @@ _CACHE_KEY_CONTRACT = "sealed-runtime-request-v2"
 _UNSEALED_WARNING_EMITTED = False
 
 
+class RequiredResponseCacheMiss(RuntimeError):
+    """A fail-closed replay request had no exact recorded response."""
+
+
 def is_enabled() -> bool:
     """운영자가 요청했고 content-addressed 실행환경 정본이 맞을 때만 허용한다."""
     global _UNSEALED_WARNING_EMITTED
@@ -103,13 +107,51 @@ def make_key(
     response_model: Optional[type[BaseModel]],
 ) -> str:
     """봉인 runtime과 실제 요청을 담은 해시 — 하나라도 다르면 다른 키가 된다."""
-    if re.fullmatch(r"[0-9a-f]{64}", runtime_sha256) is None:
-        raise ValueError("runtime_sha256 must be a lowercase SHA-256 hex digest")
     schema = (
         response_model.model_json_schema()
         if response_model is not None
         else None
     )
+    return make_key_from_schema(
+        rule_name=rule_name,
+        system_prompt=system_prompt,
+        user_content=user_content,
+        runtime_sha256=runtime_sha256,
+        provider=provider,
+        api_base=api_base,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        reasoning_effort=reasoning_effort,
+        extra_body=extra_body,
+        repetition_guard=repetition_guard,
+        structured_output_method=structured_output_method,
+        response_schema=schema,
+    )
+
+
+def make_key_from_schema(
+    *,
+    rule_name: str,
+    system_prompt: str,
+    user_content: str,
+    runtime_sha256: str,
+    provider: str,
+    api_base: str,
+    model: str,
+    max_tokens: Any,
+    temperature: float,
+    top_p: float,
+    reasoning_effort: str,
+    extra_body: dict[str, Any],
+    repetition_guard: bool,
+    structured_output_method: str,
+    response_schema: dict[str, Any] | None,
+) -> str:
+    """Build the same key from an already recorded exact response schema."""
+    if re.fullmatch(r"[0-9a-f]{64}", runtime_sha256) is None:
+        raise ValueError("runtime_sha256 must be a lowercase SHA-256 hex digest")
     payload = json.dumps(
         {
             "cache_key_contract": _CACHE_KEY_CONTRACT,
@@ -127,7 +169,7 @@ def make_key(
             "extra_body": extra_body,
             "repetition_guard": repetition_guard,
             "structured_output_method": structured_output_method,
-            "schema": schema,
+            "schema": response_schema,
         },
         ensure_ascii=False,
         sort_keys=True,

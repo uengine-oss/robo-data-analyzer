@@ -107,6 +107,13 @@ class AnalysisLlmSettings:
     response_cache: bool = field(
         default_factory=lambda: _getenv_bool("ROBO_LLM_RESPONSE_CACHE", False)
     )
+    # 복구 replay는 cache miss 한 건도 provider 호출로 넘어가면 안 된다. 일반 실행은
+    # 기존 miss->provider 동작을 유지하고, 명시한 복구 실행만 fail closed 한다.
+    response_cache_require_hit: bool = field(
+        default_factory=lambda: _getenv_bool(
+            "ROBO_LLM_RESPONSE_CACHE_REQUIRE_HIT", False,
+        )
+    )
     # 모델 weights/revision·tokenizer·quantization·serving runtime·provider hard limit을
     # 함께 봉인한 외부 capability 문서의 SHA-256. 모델 이름이나 endpoint만으로 대체 금지.
     model_runtime_capabilities_sha256: str = field(
@@ -127,6 +134,11 @@ class AnalysisLlmSettings:
     )
 
     def __post_init__(self) -> None:
+        if self.response_cache_require_hit and not self.response_cache:
+            raise ValueError(
+                "ROBO_LLM_RESPONSE_CACHE_REQUIRE_HIT requires "
+                "ROBO_LLM_RESPONSE_CACHE=true"
+            )
         if (
             self.model_runtime_capabilities_sha256
             and re.fullmatch(r"[0-9a-f]{64}", self.model_runtime_capabilities_sha256) is None

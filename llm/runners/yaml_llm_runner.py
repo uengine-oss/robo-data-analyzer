@@ -160,6 +160,13 @@ async def run_yaml_rule(
             response_model=response_model,
         )
         cached = response_cache.load(cache_key, response_model)
+        if (
+            cached is None
+            and SETTINGS.analysis_llm.response_cache_require_hit
+        ):
+            raise response_cache.RequiredResponseCacheMiss(
+                f"required response cache miss for rule {rule_name!r}"
+            )
     if cached is not None:
         lookup_ms = int((time.monotonic() - cache_start) * 1000)
         # 적중도 LLM 호출이다 — 적재를 건너뛰면 "모든 LLM 호출을 usage.jsonl 에 적재"

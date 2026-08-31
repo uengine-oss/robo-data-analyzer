@@ -16,6 +16,7 @@ import asyncio
 from pathlib import Path
 import time
 from typing import Callable, List, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -35,6 +36,30 @@ _STEP = "llm.embedder"
 
 class EmbeddingError(RuntimeError):
     """임베딩 생성 실패 — 노드 유실을 막기 위해 반드시 상위로 전파된다."""
+
+
+def validate_runtime_configuration() -> None:
+    """Reject a provider/model/endpoint mismatch before generation LLM calls."""
+    if SETTINGS.embedding.provider == "local":
+        return
+    endpoint, api_key = _resolve_endpoint()
+    host = (urlparse(endpoint).hostname or "").lower()
+    if not api_key.strip():
+        raise EmbeddingError("embedding API key is missing")
+    if (
+        SETTINGS.embedding.provider == "sglang"
+        and host == "api.openai.com"
+    ):
+        raise EmbeddingError(
+            "sglang embedding provider cannot use the OpenAI API endpoint"
+        )
+    if (
+        SETTINGS.embedding.provider == "openai"
+        and not SETTINGS.embedding.model.startswith("text-embedding-")
+    ):
+        raise EmbeddingError(
+            "OpenAI embedding provider requires a text-embedding-* model"
+        )
 
 
 def fingerprint() -> str:
