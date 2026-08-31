@@ -2,6 +2,57 @@
 
 **Updated**: 2026-09-01
 
+## 130. Post-refactor 1,503-line acceptance and lossless recovery (2026-09-01)
+
+- The user authorized at most ten reanalysis attempts. Attempts 1-3 and 5 and 9 stopped
+  before a provider request. Attempts 4, 6, 7, and 8 produced diagnostic generations;
+  attempt 10 produced all 40 final generation responses. No attempt used retry, provider
+  fallback, a reduced population, or a merged Summary/Table/Rule response.
+- Attempt 10 run `20260831_181056_1ab5c3623d46` completed Summary 17, Rule 17,
+  FunctionTableUsage 4, and TableDescription 2 with input 199,367, output 14,786,
+  cached 48,896 tokens and generation cost `$0.17939025`. Its deterministic accounting was
+  already complete, but the run failed after generation because the repository default
+  `sglang/BAAI-bge-m3` was sent to an OpenAI endpoint. Retention later pruned that failed
+  run directory after its parsed responses had been content-addressed into `.llm-cache`;
+  the captured usage totals remain recorded here, while the final replay owns the current
+  prompt/parsed/product evidence.
+- Recovery is a byte-identity replay, not an eleventh reanalysis. The cache key now uses one
+  exact dynamic schema instance, recorded schema envelopes are hash/length verified and
+  unwrapped, cache miss evidence is written before fail-closed termination, and
+  `ROBO_LLM_RESPONSE_CACHE_REQUIRE_HIT=true` forbids provider fallback. Failed runs with a
+  real non-cache provider response are now exempt from ordinary retention so this audit
+  source cannot be lost again.
+- Final run `20260831_184122_8e811c336ba9` hit all 40 generation responses in cache and made
+  no generation provider call. OpenAI `text-embedding-3-small` made 15 requests for 7,051
+  input tokens, costing `$0.00014102`; total wall time was 9.906 seconds. It published all
+  14 stages, 1,429 product operations, and 1,099 product records atomically to the existing
+  `framework` database. No database was created.
+- `tools.verify.judge_run` reports `acceptance_ready=true` and every sealed-input, product,
+  occurrence, Rule, Example, and active-generation check true. Inventory reports Summary
+  17, Rule obligations 164 = published 70 + excluded implementation detail 94, Example 64,
+  missing response rows 0, duplicate target calls 0, empty meaning fields 0, CALL 383 and
+  import 25 with unresolved 0, including 194 partial-upload external calls.
+- Direct packet review found no non-Korean script in parsed meaning. The prior `R-404`
+  framework catch row is `implementation_detail`; lines 86 and 94 retain the full opaque
+  `mpfm_isnull(...) == RC_NRM` predicates and each publish three direct error effects.
+  Every published Example reuses its Rule business-effect array byte-identically
+  (`70 Rules`, `64 Examples`, mismatch `0`). Summary, Table Usage, and Rule remain three
+  separately owned model records and separately applied product fields.
+- Baseline population is stable: CALL 383, import 25, CodeNode 298, Table 7, Column 73, and
+  SearchSegment 17. The old baseline's Rule 145/Example 100 became Rule 70/Example 64 because
+  94 structural rows are now explicitly excluded as implementation detail, not because the
+  input population was truncated. Quality improved from `completed_with_findings` to
+  `completed` with blocking findings 0.
+- Final regression after recovery and retention fixes: pytest `1482 passed, 5 skipped`;
+  authoritative unittest `1249 tests, skipped 2`. Analyzer `main` and `origin/main` are
+  synchronized through `962c9815`. The protected `integrations/catalog.py` documentation
+  WIP and untracked `scripts/recompute_strategy_a_notation.py` remain unstaged and untouched.
+- B40 is complete. C05 remains the only unchecked spec-131 task: Catalog's protected WIP
+  still exposes a one-shot `max_tables/truncated` response and has no snapshot/cursor/page
+  closure. Analyzer correctly refuses `truncated > 0`; implementing the server contract and
+  its multi-page consumer requires explicit authority to modify and stage that existing
+  Catalog WIP.
+
 ## 129. Approved physical tree and product-external resources (2026-09-01)
 
 - The implementation now uses `pipeline/analysis_ir/{parser_facts,language_adapters,resolution}`.
@@ -31,7 +82,7 @@
   exact Analyzer-owned names. Foreign constraints and indexes are never dropped.
 - Still open: C05 Catalog snapshot/cursor pagination. Required server files are protected
   pre-existing WIP and remain deliberately unmodified and unstaged.
-**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계, runtime wrapper 12건, import 25건과 production LLM 11종의 ID·중복·provider wire·비용 봉인을 검증 완료했다. 승인된 1,503줄 실행은 provider 호출 전 LangChain schema binding에서 중단되어 비용은 0원이며, adapter-only 고정 이름 수정과 전체 회귀를 통과했다. 기존 `framework` DB의 active generation은 그대로 유지한다. 재실행은 새 사용자 확인 전 보류하고, GPU 복구 전 약 5만 LOC 최종 성능·전수 회계는 미검증으로 유지한다.
+**Status**: Analyzer 코드·구조·리소스 개편과 post-refactor 1,503줄 B40 검증은 완료했다. 최종 active generation은 `20260831_184122_8e811c336ba9`, judge는 `acceptance_ready=true`, blocking finding과 CALL/import 미해결은 0이다. GPU 및 약 5만 LOC 성능은 사용자 지시로 이번 목표에서 제외했다. 남은 spec-131 목표는 보호된 Catalog WIP에 snapshot/cursor pagination을 구현하고 Analyzer가 전 page를 exact-once 병합하는 C05 하나다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나

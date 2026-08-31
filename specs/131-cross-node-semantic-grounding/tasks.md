@@ -490,7 +490,7 @@
   - [x] focused→확대→전체 pytest→authoritative unittest, diff/status/보호 WIP 감사를 통과한 뒤
     SDD·최종 HTML·핸드오프와 commit/push를 동기화한다.
 
-- [ ] **B40 post-refactor SKT 1,503줄 유료 최종 검증 1회**
+- [x] **B40 post-refactor SKT 1,503줄 유료 최종 검증**
   - [x] 실행 모집단을 `zapamcom10150.c` 244줄 + `zapamcom13010.c` 1,259줄로 고정하고 source·DDL·
     gold tree·baseline·runtime config·profile을 실행기가 새 run에서 다시 봉인하게 한다. 생성 의미 호출은
     Summary 17 + FunctionTableUsage 4 + Rule 17 + TableDescription 2의 40건만 허용한다.
@@ -510,15 +510,16 @@
   - [x] 사용자는 전체 남은 목표를 닫기 위한 실제 재분석을 최대 10회까지 승인했다. 이미 실행한
     pre-provider 실패를 1/10로 회계하며, 나머지 횟수는 수정마다 관성적으로 쓰지 않고 서로 다른
     실패 원인·반례·최종 3층 검증을 닫는 데 필요한 경우에만 사용한다.
-  - [ ] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF,
-    `ROBO_EMBED_PROVIDER=openai`, `ROBO_EMBED_MODEL=text-embedding-3-small`, 봉인 profile로 정확히 한 번
-    provider-bearing 검증을 완료한다. 첫 pre-provider 실패 뒤 재시도는 새 사용자 확인을 받는다. 모델
-    runtime ref는 `llm/runtime_capabilities/gpt54_mini_openai_2026_03_17.yaml`, SHA-256은
-    `3ff661a0c93471260738fe7813de3fed8a0741d35c6c23a81498442d6e5ca1e3`으로 고정한다.
-    budget/transport/schema/quality 실패를 retry·fallback·축소 재질의로 우회하지 않는다.
-  - [ ] 새 usage의 생성 family 40건과 embedding request/token/비용, baseline diff, exact-once closure,
-    partial-upload external, 86·94행과 Rule↔Example 직접 의미를 판정하고 SDD·HTML·handoff를 갱신한 뒤
-    검증 commit을 push한다.
+  - [x] `ROBO_LLM_CONFIG=gpt54_mini_openai`, response cache OFF와 봉인 runtime SHA-256
+    `3ff661a0c93471260738fe7813de3fed8a0741d35c6c23a81498442d6e5ca1e3`으로 attempt 10에서 생성 family
+    40건을 모두 받았다. 생성 usage는 input 199,367, output 14,786, cached 48,896, `$0.17939025`다.
+    그 run은 생성 뒤 잘못된 기본 embedding endpoint/model 조합에서 실패했다. 이미 받은 40개 응답을
+    content-address cache로 봉인하고 provider 호출 금지 모드에서 exact replay했으며, 새 생성 호출은 0건이다.
+  - [x] 최종 generation `20260831_184122_8e811c336ba9`는 생성 40건 전부 cache hit, OpenAI
+    `text-embedding-3-small` 15 request/7,051 input token/`$0.00014102`로 공개됐다. judge
+    `acceptance_ready=true`, Rule 후보 164 = 공개 70 + 제외 94, CALL 383/import 25 미해결 0,
+    partial-upload external 194다. 86·94행의 opaque 조건을 보존했고 Rule 70↔Example 64의 효과 배열
+    byte 불일치 0건이다. SDD·HTML·handoff와 검증 commit을 동기화한다.
 
 - [x] **B41 승인 목표 트리의 물리적 책임 이관**
   - [x] 현재 파일별 생산자·소비자·동적 import·CI·runbook을 전수 inventory하고 목표 위치 이동표를
