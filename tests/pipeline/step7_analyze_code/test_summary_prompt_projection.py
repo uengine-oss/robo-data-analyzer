@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 
 from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import AnalysisContext, CallOccurrenceFact
+from pipeline.models.analysis_context import (
+    AnalysisContext,
+    CallArgumentFact,
+    CallOccurrenceFact,
+)
 from pipeline.models.semantic_frame import (
     profile_prompt_json,
     semantic_fact_wire_bindings,
@@ -41,7 +45,7 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
         line=1,
         callee="send",
         call_source="send(value)",
-        argument_sources=("value",),
+        arguments=(CallArgumentFact("value", (5, 5), "expression"),),
         source_range=(0, 11),
         callee_source="send",
         structural_role="effect",

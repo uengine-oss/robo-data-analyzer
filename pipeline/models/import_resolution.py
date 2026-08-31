@@ -15,8 +15,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 ImportOutcome = Literal["resolved", "excluded", "unresolved"]
-ImportEvidenceVersion = Literal["1.0.0", "1.1.0", "1.2.0", "2.0.0"]
-_STRUCTURED_IMPORT_EVIDENCE_VERSIONS = frozenset({"1.1.0", "1.2.0", "2.0.0"})
+ImportEvidenceVersion = Literal[
+    "1.0.0", "1.1.0", "1.2.0", "2.0.0", "2.1.0",
+]
+_STRUCTURED_IMPORT_EVIDENCE_VERSIONS = frozenset({
+    "1.1.0", "1.2.0", "2.0.0", "2.1.0",
+})
 
 
 class ImportEvidenceRange(BaseModel):

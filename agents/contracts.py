@@ -226,8 +226,9 @@ class CallWrapper(StrictAgentOutput):
     drop 으로 빠짐) — 모듈 간 의존관계 손실 사고. 대부분 빈 배열이 정답이지만
     (JPA/MyBatis/OFBiz 등은 wrapper 없음), ProFrame 류는 반드시 옮겨야 함.
 
-    ``call_classifier`` 가 wrapper 호출을 만나면 그 라인의 본문에서 인자를 추출해
-    실제 호출 대상으로 분류한다 (code_nodes 안에 있으면 internal, 없으면 external).
+    ``call_classifier`` 는 Parser common evidence가 보존한 grammar-owned 첫 인자 구조만 소비해
+    실제 호출 대상으로 분류한다 (code_nodes 안에 있으면 internal, 없으면 external). 원문 라인을
+    정규식·문자열 분할로 다시 파싱하지 않는다.
     """
     wrapper: str = Field(
         ...,

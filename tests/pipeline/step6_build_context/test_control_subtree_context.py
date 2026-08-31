@@ -119,8 +119,7 @@ class ControlSubtreeWiringTest(unittest.IsolatedAsyncioTestCase):
             "callee_range": {"charOffset": 40, "charLength": 4},
             "call_source": "work()",
             "callee_source": "work",
-            "argument_ranges": [],
-            "argument_sources": [],
+            "arguments": [],
             "receiver_source": None,
             "receiver_range": None,
             "scope_path": [{

@@ -165,8 +165,12 @@ calleeRange: {charOffset: 40, charLength: 3}
 receiverRange: null
 calleeKind: named
 terminalName: run
-argumentRanges:
-  - {charOffset: 44, charLength: 3}
+arguments:
+  - range: {charOffset: 44, charLength: 3}
+    syntaxKind: string_literal
+    literalKind: string
+    literalValue: worker_name
+    identifier: null
 scopePath:
   - {kind: translation_unit, range: <전체 파일 Range>}
 calleePathRanges:
@@ -179,13 +183,19 @@ databaseLinkRange: null
 - `receiverRange`는 member call receiver이며 named call이면 null이다.
 - `calleeKind`는 `named|constructor|expression` 중 grammar가 고른 값이다.
 - `terminalName`은 named/constructor의 grammar terminal text이며 expression이면 null이다.
-- `argumentRanges` 순서는 grammar 인자 순서다.
+- current common evidence `2.1.0`의 `arguments` 순서는 grammar 인자 순서다. 각 원소는 정확한 `range`와
+  `syntaxKind=string_literal|identifier|expression`을 가진다. direct string은
+  `literalKind=string`, decoded `literalValue`, `identifier=null`; direct identifier는 literal 필드 null과
+  nonblank `identifier`; expression은 세 value 필드가 모두 null이다.
+- sealed common evidence `2.0.0`의 `argumentRanges`는 range 배열로만 소비한다. `2.0.0`에 구조 값을
+  덧붙이거나 두 필드를 동시에 허용하지 않는다.
 - `scopePath`는 `translation_unit|package|class|function|lambda|comprehension|block|function_prototype`의
   source-backed lexical 경로다.
 - Oracle처럼 qualified callable 구조가 의미 연결에 필요한 frontend는 `calleePathRanges`를 component
   source order로 생산하고 `databaseLinkRange`를 항상 함께 둔다. DB link가 없으면 null이다. 마지막
   `calleePathRanges` 원문은 `terminalName`과 정확히 같아야 한다.
-- callee/receiver/argument text를 wire에 복제하지 않는다.
+- callee/receiver text를 wire에 복제하지 않는다. argument 원문은 `range`로 복원하며, grammar가 직접
+  확인한 literal decoded value 또는 identifier만 구조 값으로 보존한다.
 - `PFM_TRY(inner(ctx))`는 바깥 call과 안쪽 call을 서로 다른 AST node·occurrence·range로 보존한다.
 
 ### 7.2 `callable`

@@ -1,4 +1,4 @@
-"""Language adapter boundary for IR 2.0 structural call evidence."""
+"""Language adapter boundary for IR 2.x structural call evidence."""
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -299,6 +299,74 @@ def test_ir2_decodes_structural_evidence_without_parser_semantics() -> None:
     assert expression.syntax.root.children[0].direct_tokens[0].text == "("
 
 
+def test_ir21_decodes_exact_grammar_owned_call_argument_structure() -> None:
+    source, raw = _artifact()
+    raw["evidence"]["version"] = "2.1.0"
+    call_payload = next(
+        fact["payload"] for fact in raw["evidence"]["facts"]
+        if fact["kind"] == "call"
+    )
+    argument_range = call_payload.pop("argumentRanges")[0]
+    call_payload["arguments"] = [{
+        "range": argument_range,
+        "syntaxKind": "string_literal",
+        "literalKind": "string",
+        "literalValue": "worker",
+        "identifier": None,
+    }]
+
+    evidence = _validate(raw, source)
+
+    argument = evidence.call_facts[0].arguments[0]
+    assert argument.range.as_dict() == argument_range
+    assert argument.syntax_kind == "string_literal"
+    assert argument.literal_kind == "string"
+    assert argument.literal_value == "worker"
+    assert argument.identifier is None
+
+
+def test_ir20_argument_ranges_cannot_hide_unversioned_structure() -> None:
+    source, raw = _artifact()
+    call_payload = next(
+        fact["payload"] for fact in raw["evidence"]["facts"]
+        if fact["kind"] == "call"
+    )
+    call_payload["argumentRanges"][0]["syntaxKind"] = "string_literal"
+
+    with pytest.raises(CommonEvidenceContractError, match="exact fields required"):
+        _validate(raw, source)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda argument: argument.update(syntaxKind="identifier"),
+        lambda argument: argument.update(unexpected=True),
+        lambda argument: argument.pop("range"),
+    ),
+)
+def test_ir21_rejects_mismatched_or_open_call_argument_structure(mutate) -> None:
+    source, raw = _artifact()
+    raw["evidence"]["version"] = "2.1.0"
+    call_payload = next(
+        fact["payload"] for fact in raw["evidence"]["facts"]
+        if fact["kind"] == "call"
+    )
+    argument_range = call_payload.pop("argumentRanges")[0]
+    argument = {
+        "range": argument_range,
+        "syntaxKind": "string_literal",
+        "literalKind": "string",
+        "literalValue": "worker",
+        "identifier": None,
+    }
+    call_payload["arguments"] = [argument]
+    mutate(argument)
+
+    with pytest.raises(CommonEvidenceContractError, match="call.payload.arguments"):
+        _validate(raw, source)
+
+
 def test_ir2_accepts_language_class_scope_from_java_and_python_frontends() -> None:
     source, raw = _artifact()
     evidence = raw["evidence"]

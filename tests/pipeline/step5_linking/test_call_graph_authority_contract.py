@@ -82,7 +82,7 @@ class CallGraphAuthorityContractTest(unittest.TestCase):
                 "line": index + 1,
                 "range": {"char_offset": index * 10, "char_length": 8},
                 "callee_range": {"char_offset": index * 10, "char_length": 4},
-                "argument_ranges": [],
+                "arguments": [],
                 "grammar_rule": "postfixExpression",
             }
             for index, name in enumerate(

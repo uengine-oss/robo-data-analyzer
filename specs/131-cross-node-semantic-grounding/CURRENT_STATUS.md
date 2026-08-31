@@ -1,7 +1,7 @@
 # Analyzer 의미 무손실 작업 현재상태
 
 **Updated**: 2026-08-31
-**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 중복 의미 칸, parent-only nested Rule의 모델 경계, failure·finding·inventory 회계를 닫은 첫 책임 slice는 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 다음 첫 좌표는 runtime wrapper 12건과 import 25건이다. 이후 LLM 경계·후처리·graph·저장소/SDD를 순서대로 감사하고, 모든 관련 수정 뒤에만 OpenAI 소규모 실제 검증과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계를 수행한다.
+**Status**: Analyzer 전면 리팩터링을 진행 중이다. Summary 책임 경계와 runtime wrapper 12건의 Parser→Analyzer binding은 검증 완료했다. 기존 `framework` DB의 1,503줄 generation은 그대로 유지하며, 다음 첫 좌표는 import 25건이다. 이후 LLM 입출력을 실제 의미 기여도와 오결합 위험 대비 토큰 비용으로 필드별 감사해 불필요한 ID·경로·좌표·해시를 제거하고, 후처리·graph·저장소/SDD를 순서대로 닫는다. 모든 관련 수정 뒤에만 OpenAI 소규모 실제 검증과 GPU 복구 후 약 5만 LOC 최종 성능·전수 회계를 수행한다.
 **Role**: 현재 HEAD·환경·보존 WIP·미해결·바로 다음 행동의 유일한 정본
 
 이 파일의 번호 절은 원인과 검증의 시간순 기록이다. 과거 절의 당시 계획·수치·미검증 표시는 삭제하거나
@@ -2171,3 +2171,33 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   grammar-owned literal/identifier 구조와 Analyzer adapter 소비를 연결하되 현재 Parser working tree의
   출처가 다른 WIP는 먼저 별도 보호한다. 그 다음 import 25건을 binding environment와 언어별 구조 사실로
   닫는다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.
+
+## 118. runtime wrapper 12건의 Parser→Analyzer binding 폐쇄 (2026-08-31)
+
+- 원인과 계약: 기존 Parser WIP는 `2.0.0 argumentRanges` 객체 안에 구조 필드를 추가하려 해 sealed wire를
+  버전 변경 없이 바꾸는 상태였다. sealed `2.0.0`은 range-only로 고정하고 current structural frontend를
+  `2.1.0`으로 올렸다. 새 call payload는 `arguments` 하나만 사용하며 각 원소는
+  `range/syntaxKind/literalKind/literalValue/identifier` exact 5필드다. 두 버전 alias와 열린 객체는 거부한다.
+- Parser: 모든 frontend가 ordered argument structure를 생산한다. C는 grammar-owned direct string literal과
+  identifier만 값으로 공개하고, grouped·복합식은 `expression`으로 닫는다. 인접 C 문자열과 escape를
+  결정론적으로 decode한다. Oracle/PostgreSQL은 아직 직접 값 판정 없이 정확한 range의 `expression`만
+  생산한다. Parser는 wrapper 의미나 최종 binding을 결정하지 않는다.
+- Analyzer: decoder→projection→context가 구조 인자를 단일 truth로 전달한다. wrapper 계약의
+  `wrapper + callee_from`을 exact-once 검증하고 첫 인자의 grammar-owned 값이 계약과 맞을 때만 기존 언어
+  semantic adapter로 보낸다. 누락·구조 불일치·종류 불일치·blank target은 각각 명시
+  `runtime_wrapper_*` dynamic/unresolved로 종결한다. workspace routine과 충돌하는 wrapper 계약도
+  fail-closed한다. 유효 target은 기존 internal edge 또는 partial-upload external identity 경로를 그대로 쓴다.
+- 실제 재현: `zapamcom10150.c` 43 calls 중 wrapper 2건, `zapamcom13010.c` 340 calls 중 wrapper 10건을
+  current Parser로 다시 생성해 Analyzer strict decoder와 classifier에 직접 연결했다. 12건은
+  `zngmmcap50000` 3, `zordms0100301` 8, `zordms0100303` 1로 결정됐고 모두 external/preserved,
+  `wrapper_unresolved=0`, unique external identity 3이다. wrapper 자체 framework 제외보다 target 변환이 먼저
+  적용됨을 함께 검증했다.
+- 회귀: Parser 전체는 58 suites, `247 tests`, failures/errors 0, skipped 12다. Analyzer 확대 pytest는
+  `373 passed, 2 skipped, 10 subtests passed`, authoritative unittest 전체는 `1195 tests`, skipped 2로
+  통과했다. `git diff --check` 오류는 0이다. LLM/API 호출·Neo4j write·새 DB·SKT 재분석은 0회이며,
+  Catalog WIP와 출처 미확정 script는 수정·stage하지 않았다.
+- 다음 좌표는 import 25건의 binding environment다. 그 다음 LLM 입출력에서 stable/call/source/candidate/
+  resolution ID, hash, path, offset/range, grammar reference를 모델 의미 판단에 실제 필요하지 않으면 제거한다.
+  exact-once·저장·결과 결합용 ID는 내부에 유지하고, 응답 재결합에 위치만으로 오결합 위험이 실재하는
+  구간에만 최소 local key 하나를 허용하며 그 근거와 토큰 비용을 기록한다. 사소한 의미 이득보다 토큰
+  손실이 큰 필드도 제거 대상으로 본다. 약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.

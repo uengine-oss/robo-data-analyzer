@@ -1,4 +1,4 @@
-"""IR 2.0 call classification through semantic adapters and one common core."""
+"""IR 2.x call classification through semantic adapters and one common core."""
 from __future__ import annotations
 
 from collections import Counter
@@ -66,11 +66,7 @@ def classify_call_sites(
     framework_patterns = _validated_framework_patterns(
         framework_names, code_nodes,
     )
-    wrapper_names = frozenset(
-        str(item.get("wrapper") if isinstance(item, dict) else getattr(item, "wrapper", ""))
-        for item in wrappers
-        if (item.get("wrapper") if isinstance(item, dict) else getattr(item, "wrapper", ""))
-    )
+    wrapper_contracts = _validated_wrapper_contracts(wrappers, code_nodes)
     sites = [dict(item) for item in call_sites]
     _mark_preprocessing_affected_calls(sites, preprocessing_contexts)
     _mark_macro_affected_calls(sites, macro_facts)
@@ -85,7 +81,7 @@ def classify_call_sites(
             code_nodes,
             evidence_sources=evidence_sources,
             evidence_completeness=evidence_completeness,
-            wrapper_names=wrapper_names,
+            wrapper_contracts=wrapper_contracts,
             framework_function_patterns=framework_patterns,
         )
         ledger = build_call_resolution_ledger(sites, resolved.outcomes)
@@ -114,11 +110,54 @@ def classify_call_sites(
         ),
         unresolved_macro=reasons["insufficient_macro_expansion_state"]
         + reasons["insufficient_conditional_macro_definition"],
-        wrapper_unresolved=reasons["runtime_wrapper_target"],
+        wrapper_unresolved=sum(
+            count for reason, count in reasons.items()
+            if reason.startswith("runtime_wrapper_")
+        ),
     )
     if result.accounted != len(call_sites):
         raise CallClassificationInvariantError(
             "call occurrence result ledger must preserve every canonical ID exactly once"
+        )
+    return result
+
+
+def _validated_wrapper_contracts(
+    wrappers: Iterable[dict], code_nodes: Iterable[CodeNode],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in wrappers:
+        wrapper = str(
+            item.get("wrapper") if isinstance(item, dict)
+            else getattr(item, "wrapper", "")
+        ).strip()
+        callee_from = str(
+            item.get("callee_from") if isinstance(item, dict)
+            else getattr(item, "callee_from", "")
+        ).strip()
+        if (
+            not wrapper
+            or callee_from not in {"first_arg_string", "first_arg_identifier"}
+        ):
+            raise CallClassificationInvariantError(
+                "runtime wrapper contract requires nonblank wrapper and supported callee_from"
+            )
+        if wrapper in result:
+            raise CallClassificationInvariantError(
+                f"duplicate runtime wrapper contract: {wrapper!r}"
+            )
+        result[wrapper] = callee_from
+    routine_names = {
+        str(getattr(node, "name", "") or "").strip()
+        for node in code_nodes
+        if str(getattr(node, "label", "") or "")
+        in {"FUNCTION", "METHOD", "PROCEDURE", "CONSTRUCTOR"}
+    }
+    conflict = next((name for name in result if name in routine_names), None)
+    if conflict is not None:
+        raise CallClassificationInvariantError(
+            "runtime wrapper contract conflicts with workspace routine: "
+            f"{conflict!r}"
         )
     return result
 

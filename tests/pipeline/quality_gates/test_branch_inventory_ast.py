@@ -7,6 +7,7 @@ multiline return 이 AST 경로에서 보존되는 반증을 포함한다.
 import unittest
 
 from pipeline.models.analysis_context import (
+    CallArgumentFact,
     CallOccurrenceFact,
     ControlSubtreeNode,
     StatementFact,
@@ -136,13 +137,22 @@ class BranchInventoryAstContractTest(unittest.TestCase):
         ))
         occurrences = (
             CallOccurrenceFact(
-                "call-1", 2, "copy", "copy(dst0, src0)", ("dst0", "src0"),
+                "call-1", 2, "copy", "copy(dst0, src0)", (
+                    CallArgumentFact("dst0", (0, 4), "identifier", identifier="dst0"),
+                    CallArgumentFact("src0", (6, 10), "identifier", identifier="src0"),
+                ),
             ),
             CallOccurrenceFact(
-                "call-2", 4, "copy", "copy(dst1, src1)", ("dst1", "src1"),
+                "call-2", 4, "copy", "copy(dst1, src1)", (
+                    CallArgumentFact("dst1", (0, 4), "identifier", identifier="dst1"),
+                    CallArgumentFact("src1", (6, 10), "identifier", identifier="src1"),
+                ),
             ),
             CallOccurrenceFact(
-                "call-3", 5, "copy", "copy(dst2, src2)", ("dst2", "src2"),
+                "call-3", 5, "copy", "copy(dst2, src2)", (
+                    CallArgumentFact("dst2", (0, 4), "identifier", identifier="dst2"),
+                    CallArgumentFact("src2", (6, 10), "identifier", identifier="src2"),
+                ),
             ),
         )
         inventory = build_inventory(

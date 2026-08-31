@@ -70,10 +70,11 @@ def link_external(
             raise ExternalLinkContractError(
                 f"external resolver call lacks exact source coordinates: {call_id}"
             )
-        raw_arguments = site.get("argument_sources")
+        raw_arguments = site.get("arguments")
         arguments = (
-            tuple(str(value) for value in raw_arguments)
+            tuple(str(value.get("source") or "") for value in raw_arguments)
             if isinstance(raw_arguments, (list, tuple))
+            and all(isinstance(value, Mapping) for value in raw_arguments)
             else ()
         )
         presence = str(site.get("presence_status") or "active")

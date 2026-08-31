@@ -50,7 +50,17 @@ def _call(
         "call_id": call_id,
         "caller_id": owner,
         "call_text": resolver,
-        "argument_sources": list(arguments),
+        "arguments": [
+            {
+                "source": value,
+                "range": {"charOffset": index, "charLength": len(value)},
+                "syntax_kind": "expression",
+                "literal_kind": None,
+                "literal_value": None,
+                "identifier": None,
+            }
+            for index, value in enumerate(arguments)
+        ],
         "file": "Service.java",
         "line": 17,
         "presence_status": presence,

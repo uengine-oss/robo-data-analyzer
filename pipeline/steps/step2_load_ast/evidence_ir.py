@@ -11,7 +11,10 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 
-_SUPPORTED_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "2.0.0"})
+_SUPPORTED_VERSIONS = frozenset({
+    "1.0.0", "1.1.0", "1.2.0", "2.0.0", "2.1.0",
+})
+_STRUCTURAL_VERSIONS = frozenset({"2.0.0", "2.1.0"})
 _ID_DOMAIN = "robo-evidence-v1"
 _LEGACY_KINDS = (
     "call", "import", "symbol", "literal", "assignment", "parameter",
@@ -165,12 +168,30 @@ class CallEvidenceFact:
     callee_kind: str
     terminal_name: str | None
     receiver_range: EvidenceRange | None
-    argument_ranges: tuple[EvidenceRange, ...]
+    arguments: tuple["CallArgumentEvidence", ...]
     scope_path: tuple[ScopeEvidence, ...]
     callee_path_ranges: tuple[EvidenceRange, ...]
     database_link_range: EvidenceRange | None
     grammar_rule: str
     presence: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class CallArgumentEvidence:
+    range: EvidenceRange
+    syntax_kind: str
+    literal_kind: str | None
+    literal_value: str | None
+    identifier: str | None
+
+    def as_record(self) -> dict[str, Any]:
+        return {
+            "range": self.range.as_dict(),
+            "syntax_kind": self.syntax_kind,
+            "literal_kind": self.literal_kind,
+            "literal_value": self.literal_value,
+            "identifier": self.identifier,
+        }
 
 
 @dataclass(frozen=True)
@@ -769,10 +790,11 @@ def _validate_call(
     payload = fact.get("payload")
     if not isinstance(payload, dict):
         raise _fail("call.payload", "object required")
-    if version == "2.0.0":
+    if version in _STRUCTURAL_VERSIONS:
         required_fields = {
             "calleeRange", "calleeKind", "terminalName", "receiverRange",
-            "argumentRanges", "scopePath",
+            ("arguments" if version == "2.1.0" else "argumentRanges"),
+            "scopePath",
         }
         optional_fields = {"calleePathRanges", "databaseLinkRange"}
         actual_fields = set(payload)
@@ -814,27 +836,78 @@ def _validate_call(
             "call.payload.terminalName",
             "grammar terminal is not bound by the exact callee range",
         )
-    argument_values = payload.get("argumentRanges")
+    argument_field = "arguments" if version == "2.1.0" else "argumentRanges"
+    argument_values = payload.get(argument_field)
     if not isinstance(argument_values, list):
-        raise _fail("call.payload.argumentRanges", "array required")
-    arguments: list[EvidenceRange] = []
+        raise _fail(f"call.payload.{argument_field}", "array required")
+    arguments: list[CallArgumentEvidence] = []
     previous_end = fact_range.char_offset
     for index, value in enumerate(argument_values):
-        argument = _range(
-            value, field=f"call.payload.argumentRanges[{index}]",
+        field = f"call.payload.{argument_field}[{index}]"
+        if version == "2.1.0":
+            if not isinstance(value, dict):
+                raise _fail(field, "object required")
+            _require_exact_fields(value, {
+                "range", "syntaxKind", "literalKind", "literalValue", "identifier",
+            }, field=field)
+            argument_range_value = value.get("range")
+            syntax_kind = value.get("syntaxKind")
+            literal_kind = value.get("literalKind")
+            literal_value = value.get("literalValue")
+            identifier = value.get("identifier")
+            if syntax_kind == "string_literal":
+                valid_structure = (
+                    literal_kind == "string"
+                    and isinstance(literal_value, str)
+                    and identifier is None
+                )
+            elif syntax_kind == "identifier":
+                valid_structure = (
+                    literal_kind is None
+                    and literal_value is None
+                    and isinstance(identifier, str)
+                    and bool(identifier.strip())
+                )
+            elif syntax_kind == "expression":
+                valid_structure = (
+                    literal_kind is None and literal_value is None and identifier is None
+                )
+            else:
+                valid_structure = False
+            if not valid_structure:
+                raise _fail(field, "invalid grammar-owned argument structure")
+        else:
+            if not isinstance(value, dict):
+                raise _fail(field, "range object required")
+            _require_exact_fields(
+                value, {"charOffset", "charLength"}, field=field,
+            )
+            argument_range_value = value
+            syntax_kind = "expression"
+            literal_kind = None
+            literal_value = None
+            identifier = None
+        argument_range = _range(
+            argument_range_value, field=f"{field}.range" if version == "2.1.0" else field,
             source_length=len(source),
         )
         if (
-            argument.char_offset < fact_range.char_offset
-            or argument.end > fact_range.end
-            or argument.char_offset < previous_end
+            argument_range.char_offset < fact_range.char_offset
+            or argument_range.end > fact_range.end
+            or argument_range.char_offset < previous_end
         ):
             raise _fail(
-                f"call.payload.argumentRanges[{index}]",
+                field,
                 "ordered non-overlapping call subrange required",
             )
-        previous_end = argument.end
-        arguments.append(argument)
+        previous_end = argument_range.end
+        arguments.append(CallArgumentEvidence(
+            range=argument_range,
+            syntax_kind=str(syntax_kind),
+            literal_kind=literal_kind,
+            literal_value=literal_value,
+            identifier=identifier,
+        ))
     if "binding" in payload:
         raise _fail(
             "call.payload.binding", "Parser final binding is forbidden",
@@ -906,7 +979,7 @@ def _validate_call(
             payload.get("scopePath"), field="call.payload.scopePath",
             source_length=len(source), occurrence_range=fact_range,
         )
-        if version == "2.0.0" else ()
+        if version in _STRUCTURAL_VERSIONS else ()
     )
     return CallEvidenceFact(
         fact_id=str(fact.get("factId") or ""),
@@ -915,7 +988,7 @@ def _validate_call(
         callee_kind=str(callee_kind),
         terminal_name=terminal_name,
         receiver_range=receiver_range,
-        argument_ranges=tuple(arguments),
+        arguments=tuple(arguments),
         scope_path=scope_path,
         callee_path_ranges=tuple(callee_path_ranges),
         database_link_range=database_link_range,
@@ -1795,7 +1868,7 @@ def _validate_import(
         _require_exact_fields(payload, {
             "directiveKind", "targetKind", "targetRange",
         }, field="import.payload")
-    elif version == "2.0.0":
+    elif version in _STRUCTURAL_VERSIONS:
         _require_exact_fields(payload, {
             "directiveKind", "scopePath", "entries",
         }, field="import.payload")
@@ -1810,7 +1883,7 @@ def _validate_import(
             f"invalid value {directive_kind!r}",
         )
     scope_path = ()
-    if version == "2.0.0":
+    if version in _STRUCTURAL_VERSIONS:
         scope_path = _validate_scope_path(
             payload.get("scopePath"), field="import.payload.scopePath",
             source_length=len(source), occurrence_range=fact_range,
@@ -1880,10 +1953,10 @@ def _validate_completeness(
     if not isinstance(rows, list):
         raise _fail("completeness", "array required")
     expected_kinds = (
-        _V2_COMPLETENESS_KINDS if version == "2.0.0" else _LEGACY_KINDS
+        _V2_COMPLETENESS_KINDS if version in _STRUCTURAL_VERSIONS else _LEGACY_KINDS
     )
     allowed_kinds = expected_kinds + (
-        _V2_OPTIONAL_COMPLETENESS_KINDS if version == "2.0.0" else ()
+        _V2_OPTIONAL_COMPLETENESS_KINDS if version in _STRUCTURAL_VERSIONS else ()
     )
     result: dict[str, dict[str, Any]] = {}
     for index, row in enumerate(rows):
@@ -2195,14 +2268,14 @@ def validate_common_evidence(
     )
     language: str | None = None
     frontend_schema: str | None = None
-    if version == "2.0.0":
+    if version in _STRUCTURAL_VERSIONS:
         language_value = evidence.get("language")
         frontend_value = evidence.get("frontendSchema")
         if not isinstance(language_value, str) or not language_value:
-            raise _fail("language", "IR 2.0 requires a nonblank language identity")
+            raise _fail("language", "IR 2.x requires a nonblank language identity")
         if not isinstance(frontend_value, str) or not frontend_value:
             raise _fail(
-                "frontendSchema", "IR 2.0 requires a nonblank frontend identity",
+                "frontendSchema", "IR 2.x requires a nonblank frontend identity",
             )
         language = language_value
         frontend_schema = frontend_value
@@ -2216,7 +2289,7 @@ def validate_common_evidence(
 
     ordinals: dict[tuple[str, int, int], int] = {}
     fact_kinds: dict[str, str] = {}
-    allowed_kinds = _FACT_KINDS if version == "2.0.0" else _LEGACY_KINDS
+    allowed_kinds = _FACT_KINDS if version in _STRUCTURAL_VERSIONS else _LEGACY_KINDS
     emitted_by_kind = {kind: 0 for kind in allowed_kinds}
     calls: list[CallEvidenceFact] = []
     callables: list[CallableEvidenceFact] = []
@@ -2267,10 +2340,10 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "callable":
-            if version != "2.0.0":
+            if version not in _STRUCTURAL_VERSIONS:
                 raise _fail(
                     f"facts[{index}].kind",
-                    "callable structural payload requires common evidence 2.0.0",
+                    "callable structural payload requires common evidence 2.x",
                 )
             callables.append(_validate_callable(
                 fact,
@@ -2281,10 +2354,10 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "structural_expression":
-            if version != "2.0.0":
+            if version not in _STRUCTURAL_VERSIONS:
                 raise _fail(
                     f"facts[{index}].kind",
-                    "structural expression payload requires common evidence 2.0.0",
+                    "structural expression payload requires common evidence 2.x",
                 )
             structural_expressions.append(_validate_structural_expression(
                 fact,
@@ -2295,10 +2368,10 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "parameter":
-            if version != "2.0.0":
+            if version not in _STRUCTURAL_VERSIONS:
                 raise _fail(
                     f"facts[{index}].kind",
-                    "parameter structural payload requires common evidence 2.0.0",
+                    "parameter structural payload requires common evidence 2.x",
                 )
             parameters.append(_validate_parameter(
                 fact,
@@ -2309,10 +2382,10 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "binding_target":
-            if version != "2.0.0":
+            if version not in _STRUCTURAL_VERSIONS:
                 raise _fail(
                     f"facts[{index}].kind",
-                    "binding target structural payload requires common evidence 2.0.0",
+                    "binding target structural payload requires common evidence 2.x",
                 )
             binding_targets.append(_validate_binding_target(
                 fact,
@@ -2323,10 +2396,10 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "scope_directive":
-            if version != "2.0.0":
+            if version not in _STRUCTURAL_VERSIONS:
                 raise _fail(
                     f"facts[{index}].kind",
-                    "scope directive structural payload requires common evidence 2.0.0",
+                    "scope directive structural payload requires common evidence 2.x",
                 )
             scope_directives.append(_validate_scope_directive(
                 fact,
@@ -2356,7 +2429,7 @@ def validate_common_evidence(
                 source=source,
             ))
         elif kind == "symbol":
-            if version not in {"1.2.0", "2.0.0"}:
+            if version not in {"1.2.0", *_STRUCTURAL_VERSIONS}:
                 raise _fail(
                     f"facts[{index}].kind",
                     "symbol payload requires common evidence 1.2.0",
@@ -2379,7 +2452,7 @@ def validate_common_evidence(
         symbols,
         completeness=completeness,
         configured_preprocessing=configured_preprocessing,
-    ) if version in {"1.2.0", "2.0.0"} else ()
+    ) if version in {"1.2.0", *_STRUCTURAL_VERSIONS} else ()
     return ValidatedCommonEvidence(
         version=version,
         language=language,

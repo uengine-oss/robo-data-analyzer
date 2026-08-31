@@ -1,4 +1,4 @@
-"""Language-neutral exact-once resolution core for IR 2.0 call evidence."""
+"""Language-neutral exact-once resolution core for IR 2.x call evidence."""
 from __future__ import annotations
 
 from collections import Counter
@@ -34,6 +34,12 @@ class ResolutionCoreResult:
     counts: Mapping[str, int]
 
 
+@dataclass(frozen=True)
+class PreAdapterOutcome:
+    semantic_call: Mapping[str, Any]
+    terminal_resolution: SemanticResolution | None = None
+
+
 def resolve_call_sites(
     call_sites: Sequence[Mapping[str, Any]],
     callable_facts: Sequence[Mapping[str, Any]],
@@ -45,7 +51,7 @@ def resolve_call_sites(
     *,
     evidence_sources: Iterable[Mapping[str, Any]],
     evidence_completeness: Iterable[Mapping[str, Any]],
-    wrapper_names: frozenset[str] = frozenset(),
+    wrapper_contracts: Mapping[str, str] | None = None,
     framework_function_patterns: tuple[str, ...] = (),
 ) -> ResolutionCoreResult:
     sources = _source_index(evidence_sources)
@@ -99,13 +105,15 @@ def resolve_call_sites(
         elif source is None:
             resolution = _unsupported(call_id, "missing_evidence_source_identity")
         else:
-            resolution = _pre_adapter_resolution(
+            prepared = _prepare_for_adapter(
                 call,
                 completeness=completeness,
-                wrapper_names=wrapper_names,
+                wrapper_contracts=wrapper_contracts or {},
                 framework_function_patterns=framework_function_patterns,
             )
+            resolution = prepared.terminal_resolution
             if resolution is None:
+                semantic_call = prepared.semantic_call
                 adapter = semantic_adapter(
                     str(source.get("language") or ""),
                     str(source.get("frontend_schema") or ""),
@@ -114,7 +122,7 @@ def resolve_call_sites(
                     resolution = _unsupported(call_id, "unsupported_language_adapter")
                 else:
                     candidate_set = adapter.adapt(
-                        call, callable_facts, parameter_facts, binding_target_facts,
+                        semantic_call, callable_facts, parameter_facts, binding_target_facts,
                         scope_directive_facts, import_refs, code_nodes,
                     )
                     _validate_candidate_set(
@@ -209,19 +217,21 @@ def _completeness_index(
     return result
 
 
-def _pre_adapter_resolution(
+def _prepare_for_adapter(
     call: Mapping[str, Any],
     *,
     completeness: Mapping[tuple[str, str], Mapping[str, Any]],
-    wrapper_names: frozenset[str],
+    wrapper_contracts: Mapping[str, str],
     framework_function_patterns: tuple[str, ...],
-) -> SemanticResolution | None:
+) -> PreAdapterOutcome:
     call_id = str(call["call_id"])
     source_id = str(call.get("source_id") or "")
     for kind in ("call", "callable"):
         row = completeness.get((source_id, kind))
         if row is None:
-            return _unsupported(call_id, f"missing_{kind}_completeness")
+            return PreAdapterOutcome(
+                call, _unsupported(call_id, f"missing_{kind}_completeness"),
+            )
         if row.get("status") != "complete":
             reasons = list(row.get("reasons") or ())
             reason = str(reasons[0] if reasons else row.get("reason") or "")
@@ -236,53 +246,136 @@ def _pre_adapter_resolution(
                 if "configuration" in reason or "preprocessing" in reason
                 else "unsupported"
             )
-            return SemanticResolution(
-                call_id, status, "language-neutral-resolution/v1",
-                reason=reason or f"incomplete_{kind}_evidence",
+            return PreAdapterOutcome(
+                call,
+                SemanticResolution(
+                    call_id, status, "language-neutral-resolution/v1",
+                    reason=reason or f"incomplete_{kind}_evidence",
+                ),
             )
     presence = call.get("presence_status")
     if presence == "inactive":
-        return SemanticResolution(
-            call_id, "inactive", "language-neutral-resolution/v1",
-            reason="inactive_presence",
+        return PreAdapterOutcome(
+            call,
+            SemanticResolution(
+                call_id, "inactive", "language-neutral-resolution/v1",
+                reason="inactive_presence",
+            ),
         )
     if presence in {"conditional", "unknown"}:
-        return SemanticResolution(
-            call_id, "configuration_dependent", "language-neutral-resolution/v1",
-            reason="insufficient_conditional_presence",
+        return PreAdapterOutcome(
+            call,
+            SemanticResolution(
+                call_id, "configuration_dependent", "language-neutral-resolution/v1",
+                reason="insufficient_conditional_presence",
+            ),
         )
     if presence != "active":
-        return _unsupported(call_id, "invalid_presence_status")
+        return PreAdapterOutcome(
+            call, _unsupported(call_id, "invalid_presence_status"),
+        )
     if call.get("configured_preprocessing_required") is True:
-        return SemanticResolution(
-            call_id, "configuration_dependent", "language-neutral-resolution/v1",
-            reason=str(
-                call.get("preprocessing_resolution_reason")
-                or "insufficient_configured_preprocessing_trace"
+        return PreAdapterOutcome(
+            call,
+            SemanticResolution(
+                call_id, "configuration_dependent", "language-neutral-resolution/v1",
+                reason=str(
+                    call.get("preprocessing_resolution_reason")
+                    or "insufficient_configured_preprocessing_trace"
+                ),
             ),
         )
     macro_reason = str(call.get("macro_resolution_reason") or "")
     if macro_reason:
-        return SemanticResolution(
-            call_id, "configuration_dependent", "language-neutral-resolution/v1",
-            reason=macro_reason,
-            candidate_fact_ids=tuple(str(value) for value in call.get("macro_fact_ids") or ()),
+        return PreAdapterOutcome(
+            call,
+            SemanticResolution(
+                call_id, "configuration_dependent", "language-neutral-resolution/v1",
+                reason=macro_reason,
+                candidate_fact_ids=tuple(
+                    str(value) for value in call.get("macro_fact_ids") or ()
+                ),
+            ),
         )
-    if str(call.get("call_text") or "") in wrapper_names:
-        return SemanticResolution(
-            call_id, "dynamic", "language-neutral-resolution/v1",
-            reason="runtime_wrapper_target",
+    semantic_call: Mapping[str, Any] = call
+    wrapper_name = str(call.get("call_text") or "")
+    callee_from = wrapper_contracts.get(wrapper_name)
+    if callee_from is not None:
+        semantic_call, wrapper_error = _runtime_wrapper_target(
+            call, callee_from=callee_from,
         )
-    call_name = str(call.get("call_text") or "")
+        if wrapper_error:
+            return PreAdapterOutcome(
+                call,
+                SemanticResolution(
+                    call_id, "dynamic", "language-neutral-resolution/v1",
+                    reason=wrapper_error,
+                ),
+            )
+    call_name = str(semantic_call.get("call_text") or "")
     if call_name and any(
         fnmatch.fnmatchcase(call_name, pattern)
         for pattern in framework_function_patterns
     ):
-        return SemanticResolution(
-            call_id, "framework_provided", "language-neutral-resolution/v1",
-            reason="verified_framework_runtime_contract",
+        return PreAdapterOutcome(
+            semantic_call,
+            SemanticResolution(
+                call_id, "framework_provided", "language-neutral-resolution/v1",
+                reason="verified_framework_runtime_contract",
+            ),
         )
-    return None
+    return PreAdapterOutcome(semantic_call)
+
+
+def _runtime_wrapper_target(
+    call: Mapping[str, Any], *, callee_from: str,
+) -> tuple[Mapping[str, Any], str]:
+    arguments = call.get("arguments")
+    if not isinstance(arguments, list) or not arguments:
+        return call, "runtime_wrapper_argument_missing"
+    first = arguments[0]
+    if (
+        not isinstance(first, Mapping)
+        or set(first) != {
+            "range", "source", "syntax_kind", "literal_kind",
+            "literal_value", "identifier",
+        }
+        or not isinstance(first.get("range"), Mapping)
+        or not isinstance(first.get("source"), str)
+    ):
+        return call, "runtime_wrapper_argument_structure_invalid"
+    if callee_from == "first_arg_string":
+        if (
+            first.get("syntax_kind") != "string_literal"
+            or first.get("literal_kind") != "string"
+            or first.get("identifier") is not None
+        ):
+            return call, "runtime_wrapper_string_literal_required"
+        target = first.get("literal_value")
+    elif callee_from == "first_arg_identifier":
+        if (
+            first.get("syntax_kind") != "identifier"
+            or first.get("literal_kind") is not None
+            or first.get("literal_value") is not None
+        ):
+            return call, "runtime_wrapper_identifier_required"
+        target = first.get("identifier")
+    else:
+        raise ResolutionInvariantError(
+            f"unsupported runtime wrapper callee_from: {callee_from!r}"
+        )
+    if not isinstance(target, str) or not target.strip():
+        return call, "runtime_wrapper_target_blank"
+    semantic_call = dict(call)
+    semantic_call.update({
+        "call_text": target,
+        "callee_kind": "named",
+        "callee_source": str(first.get("source") or ""),
+        "callee_range": first.get("range"),
+        "receiver_range": None,
+        "receiver_source": None,
+    })
+    return semantic_call, ""
 
 
 def _unsupported(call_id: str, reason: str) -> SemanticResolution:

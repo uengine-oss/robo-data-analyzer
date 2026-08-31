@@ -26,7 +26,11 @@ from pipeline.steps.step6_build_context.referenced_symbols import _build_referen
 from pipeline.steps.step6_build_context.external_evidence import build_external_evidence_context
 from pipeline.languages import ROUTINE_LABELS, dml_effect_ops
 from pipeline.dml_semantics import dml_type_of
-from pipeline.models.analysis_context import AnalysisContext, CallOccurrenceFact
+from pipeline.models.analysis_context import (
+    AnalysisContext,
+    CallArgumentFact,
+    CallOccurrenceFact,
+)
 from pipeline.models.call_resolution import (
     normalize_call_resolution_ledger,
     normalize_call_resolution_subset,
@@ -209,16 +213,66 @@ def build_parser_call_evidence(
                 "parser call owner differs from resolution ledger: "
                 f"call_id={call_id!r}"
             )
-        site_argument_ranges = site.get("argument_ranges")
-        if not isinstance(site_argument_ranges, list):
+        raw_arguments = site.get("arguments")
+        if not isinstance(raw_arguments, list):
             raise ValueError(
-                f"invalid parser call argument ranges: call_id={call_id!r}"
+                f"invalid parser call arguments: call_id={call_id!r}"
             )
         call_range = _canonical_call_range(site.get("range"))
         callee_range = _canonical_call_range(site.get("callee_range"))
-        argument_ranges = tuple(
-            _canonical_call_range(value) for value in site_argument_ranges
-        )
+        arguments: list[CallArgumentFact] = []
+        for index, value in enumerate(raw_arguments):
+            if not isinstance(value, dict) or set(value) != {
+                "range", "source", "syntax_kind", "literal_kind",
+                "literal_value", "identifier",
+            }:
+                raise ValueError(
+                    "invalid parser call argument structure: "
+                    f"call_id={call_id!r}, index={index}"
+                )
+            source_value = value.get("source")
+            source_range = _canonical_call_range(value.get("range"))
+            syntax_kind = value.get("syntax_kind")
+            literal_kind = value.get("literal_kind")
+            literal_value = value.get("literal_value")
+            identifier = value.get("identifier")
+            if syntax_kind == "string_literal":
+                valid_structure = (
+                    literal_kind == "string"
+                    and isinstance(literal_value, str)
+                    and identifier is None
+                )
+            elif syntax_kind == "identifier":
+                valid_structure = (
+                    literal_kind is None
+                    and literal_value is None
+                    and isinstance(identifier, str)
+                    and bool(identifier.strip())
+                )
+            elif syntax_kind == "expression":
+                valid_structure = (
+                    literal_kind is None and literal_value is None and identifier is None
+                )
+            else:
+                valid_structure = False
+            if (
+                source_range is None
+                or not isinstance(source_value, str)
+                or not valid_structure
+            ):
+                raise ValueError(
+                    "invalid parser call argument structure: "
+                    f"call_id={call_id!r}, index={index}"
+                )
+            arguments.append(CallArgumentFact(
+                source=source_value,
+                source_range=source_range,
+                syntax_kind=syntax_kind,
+                literal_kind=literal_kind,
+                literal_value=literal_value,
+                identifier=identifier,
+            ))
+        argument_ranges = tuple(argument.source_range for argument in arguments)
         if any(value is None for value in (
             call_range, callee_range, *argument_ranges,
         )):
@@ -226,15 +280,6 @@ def build_parser_call_evidence(
                 f"parser call ranges are invalid: call_id={call_id!r}"
             )
 
-        argument_sources = site.get("argument_sources")
-        if (
-            not isinstance(argument_sources, list)
-            or len(argument_sources) != len(site_argument_ranges)
-        ):
-            raise ValueError(
-                "parser call argument source/range population mismatch: "
-                f"call_id={call_id!r}"
-            )
         receiver_source = site.get("receiver_source")
         receiver_range = _canonical_call_range(site.get("receiver_range"))
         if (receiver_source is None) != (receiver_range is None):
@@ -317,10 +362,6 @@ def build_parser_call_evidence(
             raise ValueError(
                 f"incomplete parser call occurrence projection: call_id={call_id!r}"
             )
-        if not all(isinstance(value, str) for value in argument_sources):
-            raise ValueError(
-                f"invalid parser call argument source: call_id={call_id!r}"
-            )
         if receiver_source is not None and not isinstance(receiver_source, str):
             raise ValueError(
                 f"invalid parser call receiver source: call_id={call_id!r}"
@@ -354,11 +395,10 @@ def build_parser_call_evidence(
                 line=line,
                 callee=name.lower(),
                 call_source=call_source,
-                argument_sources=tuple(argument_sources),
+                arguments=tuple(arguments),
                 receiver_source=receiver_source,
                 source_range=(offset, length),
                 callee_range=callee_range,
-                argument_ranges=argument_ranges,
                 receiver_range=receiver_range,
                 scope_path=tuple(scope_path),
                 grammar_rule=str(site.get("grammar_rule") or ""),

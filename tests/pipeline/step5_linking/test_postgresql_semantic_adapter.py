@@ -123,7 +123,7 @@ def _call(
         "range": _range(100, 20),
         "callee_range": _range(100, 10),
         "receiver_range": _range(100, 4) if len(path) > 1 else None,
-        "argument_ranges": [
+        "arguments": [
             _range(112 + index * 2, 1) for index in range(argument_count)
         ],
         "scope_path": _scope(),

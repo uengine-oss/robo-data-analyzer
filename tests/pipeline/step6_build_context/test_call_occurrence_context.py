@@ -5,6 +5,7 @@ import pytest
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import (
     AnalysisContext,
+    CallArgumentFact,
     CallOccurrenceFact,
     ControlSubtreeNode,
 )
@@ -63,8 +64,7 @@ def _site(call_id: str, offset: int, source: str) -> dict:
         "callee_range": {"charOffset": offset, "charLength": 5},
         "call_source": source,
         "callee_source": "check",
-        "argument_ranges": [],
-        "argument_sources": [],
+        "arguments": [],
         "receiver_source": None,
         "receiver_range": None,
         "scope_path": [{
@@ -168,10 +168,18 @@ def test_call_projection_uses_parser_line_as_the_only_structure_source() -> None
 
 def test_call_projection_rejects_argument_source_range_population_drift() -> None:
     site = _site("effect-call", 130, "check(y)")
-    site["argument_ranges"] = [{"charOffset": 136, "charLength": 1}]
+    site["arguments"] = [{
+        "range": {"charOffset": 136, "charLength": 1},
+        "source": "y",
+        "syntax_kind": "expression",
+        "literal_kind": None,
+        "literal_value": None,
+        "identifier": None,
+        "unexpected": True,
+    }]
     resolution = _resolution("effect-call", 0)
 
-    with pytest.raises(ValueError, match="source/range population mismatch"):
+    with pytest.raises(ValueError, match="argument structure"):
         build_parser_call_evidence([site], [resolution], [_routine()])
 
 
@@ -287,7 +295,10 @@ def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
             line=1,
             callee="copy",
             call_source="copy(dst0, src0)",
-            argument_sources=("dst0", "src0"),
+            arguments=(
+                CallArgumentFact("dst0", (15, 4), "expression"),
+                CallArgumentFact("src0", (21, 4), "expression"),
+            ),
             source_range=(10, 16),
             structural_role="effect",
         ),
@@ -296,7 +307,10 @@ def test_same_line_call_effects_follow_source_range_not_hash_id() -> None:
             line=1,
             callee="copy",
             call_source="copy(dst1, src1)",
-            argument_sources=("dst1", "src1"),
+            arguments=(
+                CallArgumentFact("dst1", (35, 4), "expression"),
+                CallArgumentFact("src1", (41, 4), "expression"),
+            ),
             source_range=(30, 16),
             structural_role="effect",
         ),

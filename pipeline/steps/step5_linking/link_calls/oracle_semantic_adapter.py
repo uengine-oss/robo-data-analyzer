@@ -93,7 +93,7 @@ def _arity_compatibility(
 ) -> str:
     parameters = _parameter_components(fact)
     required = sum(not _has_default(parameter) for parameter in parameters)
-    supplied = len(call.get("argument_ranges") or ())
+    supplied = len(call.get("arguments") or ())
     return "compatible" if required <= supplied <= len(parameters) else "incompatible"
 
 

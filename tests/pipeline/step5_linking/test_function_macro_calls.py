@@ -136,7 +136,7 @@ def _call(caller: CodeNode, name: str, *, call_id: str = "trace-call") -> dict:
         "line": 2,
         "range": {"char_offset": 10, "char_length": len(name) + 2},
         "callee_range": {"char_offset": 10, "char_length": len(name)},
-        "argument_ranges": [],
+        "arguments": [],
         "grammar_rule": "postfixExpression",
     }
 

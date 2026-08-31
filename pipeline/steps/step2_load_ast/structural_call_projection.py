@@ -66,8 +66,10 @@ def build_call_occurrence_record(
         "call_source": exact_source(fact.call_range),
         "callee_range": fact.callee_range.as_dict(),
         "callee_source": exact_source(fact.callee_range),
-        "argument_ranges": [item.as_dict() for item in fact.argument_ranges],
-        "argument_sources": [exact_source(item) for item in fact.argument_ranges],
+        "arguments": [
+            {**item.as_record(), "source": exact_source(item.range)}
+            for item in fact.arguments
+        ],
         "receiver_range": (
             fact.receiver_range.as_dict()
             if fact.receiver_range is not None else None

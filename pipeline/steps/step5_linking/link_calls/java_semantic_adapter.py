@@ -49,7 +49,7 @@ def _arity_compatibility(call: Mapping[str, Any], fact: Mapping[str, Any]) -> st
         # surrounding record header, outside this callable fact's source range.
         # Treat arity as unknown instead of inventing a zero-parameter signature.
         return "unknown"
-    supplied = len(call.get("argument_ranges") or ())
+    supplied = len(call.get("arguments") or ())
     declared, variable_arity = _parameter_shape(fact)
     if variable_arity:
         return "compatible" if supplied >= max(0, declared - 1) else "incompatible"

@@ -424,8 +424,12 @@
   - baseline diff, 단계별 wall time·queue·token·KV cache·publication, exact-once 누락·중복, 새 실패 좌표를
     함께 판정한다. 임의 cap·truncation·skip·fallback으로 시간을 줄이지 않는다.
 
-- [ ] **C07 runtime wrapper call 12건의 Parser→Analyzer binding 폐쇄**
-  - wrapper argument의 grammar-owned literal/identifier/range를 소비해 실제 target을 검증한다.
+- [x] **C07 runtime wrapper call 12건의 Parser→Analyzer binding 폐쇄**
+  - sealed Parser IR `2.0.0`의 range-only replay는 유지하고 current `2.1.0`의
+    `arguments[{range,syntaxKind,literalKind,literalValue,identifier}]` exact schema를 소비해 실제 target을
+    검증한다. `argumentRanges`에 값을 숨겨 싣거나 두 버전 필드의 alias를 허용하지 않는다.
+  - wrapper 계약은 이름 집합으로 축약하지 않고 `wrapper + callee_from`을 exact-once 검증한다. 유효한
+    grammar-owned target만 기존 언어 adapter로 보내며 구조 누락·종류 불일치는 명시 unresolved로 닫는다.
   - 이름·괄호·문자열 정규식 추측 없이 exact occurrence를 internal/external/excluded/unresolved 중 하나로
     종결하고 nested call과 partial-upload 반례를 함께 검증한다.
 

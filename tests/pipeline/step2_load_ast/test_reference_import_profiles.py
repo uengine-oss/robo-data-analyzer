@@ -90,6 +90,18 @@ class ImportResolutionLedgerTest(unittest.TestCase):
             "insufficient_import_binding_environment", ledger[0]["reason"],
         )
 
+    def test_v21_envelope_preserves_structural_import_without_claiming_binding(self) -> None:
+        ledger = build_import_resolution_ledger([
+            self._ref(evidence_version="2.1.0"),
+        ])
+
+        self.assertEqual(1, len(ledger))
+        self.assertEqual("2.1.0", ledger[0]["evidence_version"])
+        self.assertEqual("unresolved", ledger[0]["outcome"])
+        self.assertEqual(
+            "insufficient_import_binding_environment", ledger[0]["reason"],
+        )
+
     def test_every_binding_entry_has_one_source_ordered_outcome(self) -> None:
         first = self._ref()["entries"][0]
         second = {**first, "entry_ordinal": 1, "target": '"other.h"'}

@@ -116,7 +116,10 @@ def _call(
         "receiver_range": _range(45, 4) if receiver else None,
         "receiver_source": receiver_source,
         "callee_path_components": callee_path_components or [],
-        "argument_ranges": [_range(60 + index * 2, 1) for index in range(argument_count)],
+        "arguments": [
+            {"range": _range(60 + index * 2, 1)}
+            for index in range(argument_count)
+        ],
         "scope_path": [
             *_scope(class_start=class_start),
             {"kind": "function", "range": _range(30, 100)},

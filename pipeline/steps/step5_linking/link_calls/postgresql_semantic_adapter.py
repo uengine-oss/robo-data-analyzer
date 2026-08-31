@@ -125,7 +125,7 @@ def _arity_compatibility(
         and _parameter_mode(parameter) != "VARIADIC"
         for parameter in considered
     )
-    supplied = len(call.get("argument_ranges") or ())
+    supplied = len(call.get("arguments") or ())
     if supplied < required:
         return "incompatible"
     if not variadic and supplied > len(considered):

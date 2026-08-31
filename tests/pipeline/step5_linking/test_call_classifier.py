@@ -59,16 +59,132 @@ def test_non_active_expression_and_missing_owner_are_explicitly_accounted() -> N
     assert result.missing_routine_owner_count == 1
 
 
-def test_wrapper_target_is_dynamic_without_argument_reparse() -> None:
+def _argument(
+    source: str,
+    *,
+    syntax_kind: str,
+    literal_value: str | None = None,
+    identifier: str | None = None,
+) -> dict:
+    return {
+        "range": {"charOffset": 57, "charLength": len(source)},
+        "source": source,
+        "syntax_kind": syntax_kind,
+        "literal_kind": "string" if syntax_kind == "string_literal" else None,
+        "literal_value": literal_value,
+        "identifier": identifier,
+    }
+
+
+def test_wrapper_string_target_uses_existing_adapter_for_partial_upload_external() -> None:
     caller = _node("code:a.c:run", "run", "a.c")
+    call = _call("wrapper", caller, "mpfm_dlcall")
+    call["arguments"] = [_argument(
+        '"remote_job"', syntax_kind="string_literal", literal_value="remote_job",
+    )]
     result = _classify(
-        [_call("wrapper", caller, "mpfm_dlcall")], [caller],
+        [call], [caller],
         wrappers=[{"wrapper": "mpfm_dlcall", "callee_from": "first_arg_string"}],
+        framework_names=frozenset({"mpfm_dlcall"}),
     )
 
     assert result.edges == []
-    assert result.wrapper_unresolved == 1
-    assert result.ledger[0]["resolution_status"] == "dynamic"
+    assert result.wrapper_unresolved == 0
+    assert result.ledger[0]["resolution_status"] == "external"
+    assert result.ledger[0]["outcome"] == "preserved"
+    assert result.ledger[0]["reason"] == "partial_upload_external_boundary"
+    assert result.ledger[0]["external_identity_key"]
+
+
+def test_wrapper_identifier_target_resolves_internal_definition() -> None:
+    caller = _node("code:a.c:run", "run", "a.c")
+    target = _node("code:a.c:target_job", "target_job", "a.c")
+    definition = _callable(
+        "def-target", target.name, "a.c", role="definition",
+        code_node_id=target.id,
+    )
+    call = _call("wrapper", caller, "dispatch")
+    call["arguments"] = [_argument(
+        "target_job", syntax_kind="identifier", identifier="target_job",
+    )]
+
+    result = _classify(
+        [call], [caller, target], [definition],
+        wrappers=[{"wrapper": "dispatch", "callee_from": "first_arg_identifier"}],
+    )
+
+    assert [(edge.caller_id, edge.callee_id) for edge in result.edges] == [
+        (caller.id, target.id),
+    ]
+    assert result.ledger[0]["resolution_status"] == "internal"
+    assert result.ledger[0]["outcome"] == "edge"
+
+
+def test_wrapper_missing_or_mismatched_argument_structure_fails_closed() -> None:
+    caller = _node("code:a.c:run", "run", "a.c")
+    missing = _call("missing", caller, "mpfm_dlcall")
+    mismatched = _call("mismatched", caller, "mpfm_dlcall")
+    mismatched["arguments"] = [_argument(
+        "target_job", syntax_kind="identifier", identifier="target_job",
+    )]
+
+    result = _classify(
+        [missing, mismatched], [caller],
+        wrappers=[{"wrapper": "mpfm_dlcall", "callee_from": "first_arg_string"}],
+    )
+
+    assert result.wrapper_unresolved == 2
+    assert [row["reason"] for row in result.ledger] == [
+        "runtime_wrapper_argument_missing",
+        "runtime_wrapper_string_literal_required",
+    ]
+    assert all(row["resolution_status"] == "dynamic" for row in result.ledger)
+
+
+def test_wrapper_and_nested_argument_call_keep_separate_occurrences() -> None:
+    caller = _node("code:a.c:run", "run", "a.c")
+    wrapper = _call("outer", caller, "dispatch")
+    wrapper["arguments"] = [_argument(
+        "target_job", syntax_kind="identifier", identifier="target_job",
+    )]
+    nested = _call("inner", caller, "target_job")
+
+    result = _classify(
+        [wrapper, nested], [caller],
+        wrappers=[{"wrapper": "dispatch", "callee_from": "first_arg_identifier"}],
+    )
+
+    assert [row["call_id"] for row in result.ledger] == ["outer", "inner"]
+    assert [row["resolution_status"] for row in result.ledger] == [
+        "external", "external",
+    ]
+
+
+def test_duplicate_wrapper_contract_is_rejected() -> None:
+    caller = _node("code:a.c:run", "run", "a.c")
+    contracts = [
+        {"wrapper": "dispatch", "callee_from": "first_arg_identifier"},
+        {"wrapper": "dispatch", "callee_from": "first_arg_identifier"},
+    ]
+
+    try:
+        _classify([_call("call", caller, "dispatch")], [caller], wrappers=contracts)
+    except Exception as error:
+        assert "duplicate runtime wrapper contract" in str(error)
+    else:
+        raise AssertionError("duplicate wrapper contract must fail closed")
+
+
+def test_wrapper_contract_cannot_override_workspace_routine() -> None:
+    caller = _node("code:a.c:dispatch", "dispatch", "a.c")
+    contracts = [{"wrapper": "dispatch", "callee_from": "first_arg_identifier"}]
+
+    try:
+        _classify([_call("call", caller, "dispatch")], [caller], wrappers=contracts)
+    except Exception as error:
+        assert "conflicts with workspace routine" in str(error)
+    else:
+        raise AssertionError("workspace routine must outrank wrapper contract")
 
 
 def test_missing_ir2_identity_never_reenters_name_resolution() -> None:

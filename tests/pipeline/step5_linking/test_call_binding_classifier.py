@@ -104,7 +104,7 @@ def _call(call_id: str, caller: CodeNode, name: str, *, kind: str = "named") -> 
         "range": _range(50, 10),
         "callee_range": _range(50, 6),
         "receiver_range": None,
-        "argument_ranges": [],
+        "arguments": [],
         "scope_path": _scope(),
         "grammar_rule": "postfixExpression",
     }

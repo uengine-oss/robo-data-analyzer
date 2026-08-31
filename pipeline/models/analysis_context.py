@@ -98,6 +98,18 @@ class StatementFact:
 
 
 @dataclass(frozen=True)
+class CallArgumentFact:
+    """One Parser-owned call argument preserved without source reparsing."""
+
+    source: str
+    source_range: tuple[int, int]
+    syntax_kind: Literal["string_literal", "identifier", "expression"]
+    literal_kind: str | None = None
+    literal_value: str | None = None
+    identifier: str | None = None
+
+
+@dataclass(frozen=True)
 class CallOccurrenceFact:
     """One exact call occurrence joined to Analyzer-owned resolution.
 
@@ -111,11 +123,10 @@ class CallOccurrenceFact:
     line: int
     callee: str
     call_source: str
-    argument_sources: tuple[str, ...] = ()
+    arguments: tuple[CallArgumentFact, ...] = ()
     receiver_source: str | None = None
     source_range: tuple[int, int] | None = None
     callee_range: tuple[int, int] | None = None
-    argument_ranges: tuple[tuple[int, int], ...] = ()
     receiver_range: tuple[int, int] | None = None
     scope_path: tuple[tuple[str, tuple[int, int]], ...] = ()
     grammar_rule: str = ""
@@ -133,6 +144,9 @@ class CallOccurrenceFact:
     callee_id: str = ""
     external_identity_key: str = ""
 
+    @property
+    def argument_sources(self) -> tuple[str, ...]:
+        return tuple(argument.source for argument in self.arguments)
 
 @dataclass
 class AnalysisContext:
