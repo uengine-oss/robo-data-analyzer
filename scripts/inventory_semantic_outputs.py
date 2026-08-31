@@ -1,8 +1,8 @@
-"""Read-only inventory of semantic prompt outputs and their stored graph values.
+"""Read-only inventory of semantic outputs and their stored graph values.
 
-This tool makes no semantic judgment and calls no LLM.  It is intended to expose
-silent blanks, sufficiency-state coverage, findings, empty deterministic rule/example
-fields, and ambiguous source coordinates before a reanalysis.
+This tool makes no semantic judgment and calls no LLM.  It exposes silent blanks,
+findings, empty deterministic Rule/Example fields, and ambiguous source coordinates
+for the exact analysis scope and generation sealed by one run manifest.
 """
 
 from __future__ import annotations
@@ -12,14 +12,20 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
-import re
+import sys
 from typing import Any, Iterable
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-from pipeline.quality_gates.rule_audit_artifact import load_rule_audit_records
-from graph.ownership import ANALYZER_GRAPH_OWNER
+from pipeline.quality_gates.rule_audit_artifact import (
+    RULE_AUDIT_DIRECTORY,
+    load_rule_audit_records,
+)
 from search.corpus.generation import completed_generation_session
 
 
@@ -52,14 +58,31 @@ def _records(path: Path) -> Iterable[dict[str, Any]]:
             yield props
 
 
-def _status_counts(values: Iterable[dict[str, Any]]) -> dict[str, int]:
-    return dict(Counter(str(value.get("evidence_status", "<absent>")) for value in values))
+def _slot_values(value: Any) -> dict[str, str]:
+    """Return the current exact-key semantic slot map."""
+    if not isinstance(value, dict):
+        raise ValueError(f"semantic slots must be an object: {type(value).__name__}")
+    return {str(key): str(item or "") for key, item in value.items()}
 
 
-def _meaning_payload(value: dict[str, Any]) -> dict[str, Any]:
-    """Normalize current nested semantic wire values while retaining flat history."""
-    meaning = value.get("meaning")
-    return meaning if isinstance(meaning, dict) else value
+def _run_identity(run_dir: Path, database: str) -> tuple[str, str]:
+    """Read the graph identity sealed by this run and reject cross-run joins."""
+    manifest_path = run_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid run manifest: {manifest_path}: {error}") from error
+    analysis_scope_id = str(manifest.get("analysis_scope_id") or "").strip()
+    generation_id = str(manifest.get("generation_id") or "").strip()
+    manifest_database = str(manifest.get("neo4j_database") or "").strip()
+    if not analysis_scope_id or not generation_id or not manifest_database:
+        raise ValueError(f"run manifest graph identity is incomplete: {manifest_path}")
+    if manifest_database != database:
+        raise ValueError(
+            f"run manifest database mismatch: expected={manifest_database!r}, "
+            f"requested={database!r}"
+        )
+    return analysis_scope_id, generation_id
 
 
 def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]]:
@@ -69,28 +92,62 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
     for path in sorted(prompt_dir.glob("code_summary*.jsonl")):
         for record in _records(path):
             parsed = (record.get("response") or {}).get("parsed") or {}
-            if "nodes" in parsed:
-                summaries.extend((parsed.get("nodes") or {}).values())
-            elif isinstance(parsed.get("result"), dict):
-                summaries.append(parsed["result"])
-            else:
-                summaries.append(parsed)
+            summaries.append({
+                "summary": parsed.get("summary"),
+                "stereotype": parsed.get("stereotype"),
+                "slots": _slot_values(parsed.get("slots")),
+            })
 
+    rule_directory = run_dir / RULE_AUDIT_DIRECTORY
+    if not rule_directory.is_dir():
+        raise ValueError(f"current rule structure directory is missing: {rule_directory}")
     audit_records = load_rule_audit_records(run_dir)
-    rules: list[dict[str, Any]] = [
+    structural_rules: list[dict[str, Any]] = [
         rule
         for record in audit_records.values()
         for rule in record["rules"]
     ]
-    if not audit_records:
-        for path in sorted(prompt_dir.glob("code_rules_examples*.jsonl")):
-            for record in _records(path):
-                parsed = (record.get("response") or {}).get("parsed") or {}
-                if "nodes" in parsed:
-                    for node in (parsed.get("nodes") or {}).values():
-                        rules.extend((node.get("rules") or {}).values())
-                else:
-                    rules.extend((parsed.get("rules") or {}).values())
+    rule_calls = 0
+    rule_response_rows = 0
+    rule_effect_meanings = 0
+    empty_rule_effect_meanings = 0
+    missing_rule_response_rows = 0
+    extra_rule_response_rows = 0
+    unexpected_rule_targets = 0
+    duplicate_rule_targets = 0
+    rule_dispositions: Counter[str] = Counter()
+    seen_rule_targets: set[str] = set()
+    for path in sorted(prompt_dir.glob("code_rule_meanings*.jsonl")):
+        for record in _records(path):
+            rule_calls += 1
+            target_id = str(record.get("target_id") or "")
+            if target_id in seen_rule_targets:
+                duplicate_rule_targets += 1
+            seen_rule_targets.add(target_id)
+            parsed = (record.get("response") or {}).get("parsed") or {}
+            response_rows = parsed.get("rows")
+            effect_meanings = parsed.get("effects")
+            if not isinstance(response_rows, dict) or not isinstance(
+                effect_meanings, dict
+            ):
+                raise ValueError(
+                    f"Rule meaning response must contain exact-key row/effect maps: "
+                    f"{target_id!r}"
+                )
+            rule_response_rows += len(response_rows)
+            rule_dispositions.update(str(value) for value in response_rows.values())
+            rule_effect_meanings += len(effect_meanings)
+            empty_rule_effect_meanings += sum(
+                _blank(value) for value in effect_meanings.values()
+            )
+            audit = audit_records.get(target_id)
+            if audit is None:
+                unexpected_rule_targets += 1
+                continue
+            expected_rows = set((audit["evidence"].get("rows") or {}).keys())
+            actual_rows = set(str(key) for key in response_rows)
+            missing_rule_response_rows += len(expected_rows - actual_rows)
+            extra_rule_response_rows += len(actual_rows - expected_rows)
 
     tables: list[dict[str, Any]] = []
     columns: list[dict[str, Any]] = []
@@ -100,12 +157,19 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
     for record in _records(table_path):
         parsed = (record.get("response") or {}).get("parsed") or {}
         table_id = str(record.get("target_id") or "")
-        tables.append(_meaning_payload(parsed))
+        tables.append({"slots": _slot_values(parsed.get("slots"))})
         if table_id:
             target_table_ids.add(table_id)
-        for column in parsed.get("columns", []):
-            columns.append(_meaning_payload(column))
-            name = str(column.get("name") or column.get("column_name") or "")
+        raw_columns = parsed.get("columns")
+        if not isinstance(raw_columns, dict):
+            raise ValueError("table description columns must be an exact-key object")
+        for name, column in raw_columns.items():
+            if not isinstance(column, dict):
+                raise ValueError(f"column semantic frame must be an object: {name!r}")
+            columns.append({
+                "name": str(name),
+                "slots": _slot_values(column.get("slots")),
+            })
             if table_id and name:
                 target_column_ids.add(f"{table_id}.{name}")
 
@@ -124,57 +188,65 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
                 "outputs": len(summaries),
                 "empty_summary": sum(_blank(item.get("summary")) for item in summaries),
                 "empty_stereotype": sum(_blank(item.get("stereotype")) for item in summaries),
-                "status": _status_counts(summaries),
-                "missing_context_nonempty": sum(
-                    not _blank(item.get("missing_context")) for item in summaries
+                "slots": sum(len(item["slots"]) for item in summaries),
+                "empty_slots": sum(
+                    _blank(value)
+                    for item in summaries
+                    for value in item["slots"].values()
                 ),
             },
             "rule": {
-                "outputs": len(rules),
-                "empty_structural_condition": sum(
-                    _blank(item.get("structural_condition")) for item in rules
+                "model_calls": rule_calls,
+                "obligation_rows": len(structural_rules),
+                "response_rows": rule_response_rows,
+                "business_rule_rows": rule_dispositions.get("business_rule", 0),
+                "implementation_detail_rows": rule_dispositions.get(
+                    "implementation_detail", 0
                 ),
-                "empty_structural_effects": sum(
-                    _blank(item.get("structural_effects")) for item in rules
+                "unknown_disposition_rows": sum(
+                    count
+                    for disposition, count in rule_dispositions.items()
+                    if disposition not in {"business_rule", "implementation_detail"}
                 ),
-                "structural_effects_without_business_effects": sum(
-                    not _blank(item.get("structural_effects"))
-                    and _blank(item.get("business_effects"))
-                    for item in rules
+                "empty_structural_condition_rows": sum(
+                    _blank(item.get("structural_condition"))
+                    for item in structural_rules
                 ),
+                "empty_structural_effect_rows": sum(
+                    _blank(item.get("structural_effects"))
+                    for item in structural_rules
+                ),
+                "effect_meanings": rule_effect_meanings,
+                "empty_effect_meanings": empty_rule_effect_meanings,
+                "missing_response_rows": missing_rule_response_rows,
+                "extra_response_rows": extra_rule_response_rows,
+                "unexpected_target_calls": unexpected_rule_targets,
+                "duplicate_target_calls": duplicate_rule_targets,
             },
             "table": {
                 "outputs": len(tables),
                 "empty_meaning": sum(
-                    _blank(item.get("logical_name")) and _blank(item.get("description"))
+                    all(_blank(value) for value in item["slots"].values())
                     for item in tables
                 ),
-                "status": _status_counts(tables),
-                "missing_context_nonempty": sum(
-                    not _blank(item.get("missing_context")) for item in tables
+                "slots": sum(len(item["slots"]) for item in tables),
+                "empty_slots": sum(
+                    _blank(value)
+                    for item in tables
+                    for value in item["slots"].values()
                 ),
             },
             "column": {
                 "outputs": len(columns),
                 "empty_meaning": sum(
-                    _blank(item.get("logical_name")) and _blank(item.get("description"))
+                    all(_blank(value) for value in item["slots"].values())
                     for item in columns
                 ),
-                "logical_name_only": sum(
-                    not _blank(item.get("logical_name")) and _blank(item.get("description"))
+                "slots": sum(len(item["slots"]) for item in columns),
+                "empty_slots": sum(
+                    _blank(value)
                     for item in columns
-                ),
-                "description_only": sum(
-                    _blank(item.get("logical_name")) and not _blank(item.get("description"))
-                    for item in columns
-                ),
-                "both_meaning_fields": sum(
-                    not _blank(item.get("logical_name")) and not _blank(item.get("description"))
-                    for item in columns
-                ),
-                "status": _status_counts(columns),
-                "missing_context_nonempty": sum(
-                    not _blank(item.get("missing_context")) for item in columns
+                    for value in item["slots"].values()
                 ),
             },
             "finding": {
@@ -191,52 +263,15 @@ def _prompt_inventory(run_dir: Path) -> tuple[dict[str, Any], set[str], set[str]
 
 def _rule_evidence(run_dir: Path) -> dict[str, dict[str, Any]]:
     audit_records = load_rule_audit_records(run_dir)
-    if audit_records:
-        return {
-            f"{target_id}::R-{str(rule_id).removeprefix('R')}": dict(row)
-            for target_id, record in audit_records.items()
-            for rule_id, row in (record["evidence"].get("rows") or {}).items()
-        }
-    prompt_dir = run_dir / "llm-prompts"
-    decoder = json.JSONDecoder()
-    evidence: dict[str, dict[str, Any]] = {}
-    paths = list(prompt_dir.glob("code_rules_examples*.jsonl"))
-    paths.extend(prompt_dir.glob("code_gate_rules*.jsonl"))
-    for path in sorted(set(paths)):
-        for record in _records(path):
-            content = str(record.get("user_content") or "")
-            targets = list(re.finditer(r"^target_id:\s*(.+)$", content, re.MULTILINE))
-            if not targets and record.get("target_id") not in (None, "", "unknown"):
-                target_id = str(record["target_id"])
-                sections = [(target_id, content)]
-            else:
-                sections = []
-                for index, match in enumerate(targets):
-                    stop = targets[index + 1].start() if index + 1 < len(targets) else len(content)
-                    sections.append((match.group(1).strip(), content[match.end() : stop]))
-            for target_id, section in sections:
-                marker = section.find("rule_evidence_json:")
-                if marker < 0:
-                    continue
-                payload = section[marker + len("rule_evidence_json:") :].lstrip()
-                try:
-                    decoded, _ = decoder.raw_decode(payload)
-                except json.JSONDecodeError:
-                    continue
-                for rule_id, row in (decoded.get("rows") or {}).items():
-                    evidence[f"{target_id}::R-{str(rule_id).removeprefix('R')}"] = row
-    return evidence
-
-
-def _missing_context_nonempty(value: Any) -> bool:
-    if _blank(value):
-        return False
-    if isinstance(value, str):
-        try:
-            return not _blank(json.loads(value))
-        except json.JSONDecodeError:
-            return True
-    return True
+    if not (run_dir / RULE_AUDIT_DIRECTORY).is_dir():
+        raise ValueError(
+            f"current rule structure directory is missing: {run_dir / RULE_AUDIT_DIRECTORY}"
+        )
+    return {
+        f"{target_id}::R-{str(rule_id).removeprefix('R')}": dict(row)
+        for target_id, record in audit_records.items()
+        for rule_id, row in (record["evidence"].get("rows") or {}).items()
+    }
 
 
 def _split_coordinate_groups(
@@ -272,6 +307,8 @@ def _split_coordinate_groups(
 def _graph_inventory(
     database: str,
     env_file: Path,
+    analysis_scope_id: str,
+    generation_id: str,
     target_table_ids: set[str],
     target_column_ids: set[str],
     rule_evidence: dict[str, dict[str, Any]],
@@ -282,66 +319,68 @@ def _graph_inventory(
         auth=(os.environ["ROBO_NEO4J_USER"], os.environ["ROBO_NEO4J_PASSWORD"]),
     )
     try:
-        with completed_generation_session(driver, database) as session:
+        with completed_generation_session(
+            driver,
+            database,
+            analysis_scope_id=analysis_scope_id,
+            expected_generation_id=generation_id,
+        ) as session:
             summaries = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "MATCH (n:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
                     "WHERE n.meaning_status IS NOT NULL "
-                    "RETURN properties(n) AS props",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "RETURN properties(n) AS props"
                 )
             ]
             rules = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n:RULE {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "RETURN properties(n) AS props",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "MATCH (n:Rule {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) RETURN properties(n) AS props"
                 )
             ]
             examples = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n:EXAMPLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "RETURN properties(n) AS props",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "MATCH (n:Example {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) RETURN properties(n) AS props"
                 )
             ]
             tables = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n:TABLE {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "RETURN properties(n) AS props",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "MATCH (n:Table {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) RETURN properties(n) AS props"
                 )
             ]
             columns = [
                 record["props"]
                 for record in session.run(
-                    "MATCH (n:COLUMN {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "RETURN properties(n) AS props",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "MATCH (n:Column {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) RETURN properties(n) AS props"
                 )
             ]
             duplicate_coordinates = [
                 dict(record)
                 for record in session.run(
-                    "MATCH (n:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
+                    "MATCH (n:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
                     "WHERE n.meaning_status IS NOT NULL "
                     "WITH n.file_path AS file, n.start_line AS start, n.end_line AS end, "
-                    "collect({id:n.id,summary:n.summary,stereotype:n.stereotype}) AS nodes "
-                    "WHERE size(nodes)>1 RETURN file,start,end,nodes ORDER BY file,start,end",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "collect({id:n.stable_id,summary:n.summary,stereotype:n.stereotype}) AS nodes "
+                    "WHERE size(nodes)>1 RETURN file,start,end,nodes ORDER BY file,start,end"
                 )
             ]
             parent_edges = [
                 (str(record["parent_id"]), str(record["child_id"]))
                 for record in session.run(
-                    "MATCH (p:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id})"
-                    "-[:PARENT_OF]->(c:ANALYZER_OWNED {graph_owner:$graph_owner, generation_id:$generation_id}) "
-                    "RETURN p.id AS parent_id,c.id AS child_id",
-                    graph_owner=ANALYZER_GRAPH_OWNER,
+                    "MATCH (p:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id})-[:PARENT_OF]->"
+                    "(c:CodeNode {analysis_scope_id:$analysis_scope_id, "
+                    "generation_id:$generation_id}) "
+                    "RETURN p.stable_id AS parent_id,c.stable_id AS child_id"
                 )
             ]
     finally:
@@ -352,7 +391,7 @@ def _graph_inventory(
     ]
     structural_effect_classes: Counter[str] = Counter()
     for item in empty_structural_effect_rules:
-        row = rule_evidence.get(str(item.get("id") or ""))
+        row = rule_evidence.get(str(item.get("stable_id") or ""))
         if row is None:
             structural_effect_classes["evidence_missing"] += 1
         elif row.get("direct"):
@@ -363,8 +402,14 @@ def _graph_inventory(
             structural_effect_classes["no_direct_not_nested"] += 1
 
     def semantic_nodes(items: list[dict[str, Any]], targets: set[str]) -> dict[str, Any]:
-        selected = [item for item in items if str(item.get("id") or "") in targets]
-        skipped = [item for item in items if str(item.get("id") or "") not in targets]
+        selected = [
+            item for item in items
+            if str(item.get("stable_id") or "") in targets
+        ]
+        skipped = [
+            item for item in items
+            if str(item.get("stable_id") or "") not in targets
+        ]
         return {
             "total": len(items),
             "prompt_targets": len(selected),
@@ -449,14 +494,19 @@ def main() -> int:
     run_dir = args.run_dir.resolve()
     prompts, table_ids, column_ids = _prompt_inventory(run_dir)
     rule_evidence = _rule_evidence(run_dir)
+    analysis_scope_id, generation_id = _run_identity(run_dir, args.database)
     result = {
         "run_dir": str(run_dir),
         "database": args.database,
+        "analysis_scope_id": analysis_scope_id,
+        "generation_id": generation_id,
         "semantic_judgment": False,
         "prompt_outputs": prompts,
         "graph": _graph_inventory(
             args.database,
             args.env_file,
+            analysis_scope_id,
+            generation_id,
             table_ids,
             column_ids,
             rule_evidence,
