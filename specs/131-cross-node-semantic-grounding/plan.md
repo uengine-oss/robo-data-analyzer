@@ -82,6 +82,8 @@
 - 같은 run의 SearchSegment OpenAI embedding도 `text-embedding-3-small` 공식 $0.02/M input 단가로
   성공 HTTP response별 usage를 기록하고 동일 budget에 누적한다. 생성 40호출과 embedding request 수를
   섞어 logical generation count를 바꾸지 않되 총 provider token·비용에서는 어느 쪽도 누락하지 않는다.
+  실행 환경에서 provider/model을 `openai`/`text-embedding-3-small`로 명시하고, 유료 embedding의
+  HTTP 실패를 재전송·분할로 우회하지 않는다.
 - hard provider limit을 실제로 넘는 함수에만 exact partition+synthesis를 적용한다.
 
 ### P5. Strategy B

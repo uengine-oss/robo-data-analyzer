@@ -4,6 +4,8 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
+import httpx
+
 from llm import embedder
 from llm.usage.cost_budget import CostBudget
 
@@ -53,6 +55,16 @@ class _EmbeddingClient:
         return self.response
 
 
+class _RetryableFailureClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def post(self, url: str, *, json: dict) -> httpx.Response:
+        self.calls += 1
+        request = httpx.Request("POST", url, json=json)
+        return httpx.Response(429, request=request)
+
+
 def test_paid_embedding_usage_is_persisted_and_charged() -> None:
     response = _EmbeddingResponse(usage={"prompt_tokens": 7, "total_tokens": 7})
     budget = CostBudget(limit_usd=1.0)
@@ -95,4 +107,26 @@ def test_paid_embedding_without_provider_usage_fails_closed() -> None:
         else:
             raise AssertionError("missing paid embedding usage must fail")
         assert not usage_path.exists()
+    assert budget.spent_usd == 0.0
+
+
+def test_paid_embedding_http_failure_is_not_retried_or_split() -> None:
+    client = _RetryableFailureClient()
+    budget = CostBudget(limit_usd=1.0)
+
+    try:
+        asyncio.run(embedder._send(
+            client,
+            "https://provider.invalid/embeddings",
+            ["첫 의미", "둘째 의미"],
+            asyncio.Semaphore(1),
+            usage_log_path=Path("unused.jsonl"),
+            cost_budget=budget,
+        ))
+    except embedder.EmbeddingError as error:
+        assert "retry and split are forbidden" in str(error)
+    else:
+        raise AssertionError("paid embedding transport failure must stop the run")
+
+    assert client.calls == 1
     assert budget.spent_usd == 0.0

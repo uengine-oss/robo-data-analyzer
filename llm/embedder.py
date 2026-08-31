@@ -177,7 +177,9 @@ async def _send(
     agent_name: str = "embedding",
 ) -> list[Vector]:
     """한 묶음 전송. 서버 거부는 분할·백오프로 흡수하고, 끝내 실패하면 raise."""
-    for attempt in range(SETTINGS.embedding.max_retries):
+    paid_accounted_request = usage_log_path is not None
+    attempt_limit = 1 if paid_accounted_request else SETTINGS.embedding.max_retries
+    for attempt in range(attempt_limit):
         try:
             async with gate:
                 return await _post(
@@ -189,6 +191,11 @@ async def _send(
                     agent_name=agent_name,
                 )
         except httpx.HTTPStatusError as exc:
+            if paid_accounted_request:
+                raise EmbeddingError(
+                    "paid embedding request failed; retry and split are forbidden: "
+                    f"HTTP {exc.response.status_code}"
+                ) from exc
             if exc.response.status_code not in _RETRYABLE:
                 raise EmbeddingError(f"임베딩 서버 오류 {exc.response.status_code}") from exc
             if len(texts) > 1:

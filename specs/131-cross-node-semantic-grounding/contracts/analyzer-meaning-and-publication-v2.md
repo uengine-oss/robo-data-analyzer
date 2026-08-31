@@ -1081,7 +1081,8 @@ required population을 truncation·Top-N·sampling·skip·임의 token/item 상�
 성공 HTTP response가 반환한 model·prompt tokens·total tokens를 request별로 `usage.jsonl`에 기록하고,
 공식 입력 단가로 계산한 비용을 같은 run `CostBudget`에 누적한다. provider usage가 없거나 비정상이면
 vector가 있어도 미계측 성공으로 승격하지 않는다. 생성 의미의 logical invocation 수와 embedding
-provider request 수는 별도 집계하되 총 token·비용에는 둘 다 포함한다.
+provider request 수는 별도 집계하되 총 token·비용에는 둘 다 포함한다. 이 계측 경로의 HTTP 실패는
+재전송하거나 더 작은 request로 분할하지 않고 run을 실패시킨다.
 
 최종 합격은 세 층을 모두 요구한다.
 
