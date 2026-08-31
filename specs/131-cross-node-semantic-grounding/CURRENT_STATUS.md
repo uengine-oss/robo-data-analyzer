@@ -2331,3 +2331,25 @@ language-neutral semantic IR로 변환하게 하는 것이다.
   실제 원문을 선택·검증하거나 사용 발생을 판단하는 데 필요한 tool/semantic selector이며 graph/storage
   identity가 아니다. 다음 좌표는 prompt와 tool 결과의 반복 payload를 같은 영양가 기준으로 감사한다.
   약 5만 LOC 성능은 GPU 복구 전까지 미검증이다.
+
+## 123. Agent 초기 입력·검증 tool 반복 payload 제거 (2026-08-31)
+
+- external-format 최초 user message에서 sample별 `file_index|total_chars|total_lines` inventory를 제거했다.
+  이 값과 실제 shape 분포는 어차피 필수 첫 관찰인 `sample_overview`가 전체 sample을 page로 한 번 소유한다.
+  verify 결과의 파일 chars 복창도 제거하되 sample 순번, match 수, 대표 key·match 길이·원문, unmatched tail,
+  negative 판정은 규칙 품질을 바꾸는 정보라 유지했다.
+- `verify_table_regex`의 같은 `(call_regex, offset)` 재호출은 앞선 tool message 전체를 다시 붙이지 않는다.
+  `ALREADY_VERIFIED_PAGE`와 다음 offset 또는 다음 단계만 반환한다. 첫 실행 결과와 production matcher cache는
+  그대로 유지하므로 재계산도 없다.
+- 모든 성공 page에 붙던 부분추출/DDL/op-token 장문 힌트를 제거했다. 현재 page에서 실제 partial entity가
+  있을 때만 경계 교정, 완전 추출 DDL 미해소가 있을 때만 범위/패턴 판정, 실제 비어 있지 않은 미인식
+  op token이 있을 때만 mapping 교정을 반환한다. 성공·부분·미해소·pagination·동일 page 반복 반례로
+  서로 불필요한 힌트가 섞이지 않음을 고정했다.
+- 대표 actual string chars는 external 최초 입력 285→115(-59.6%), 동일 verify page 재호출
+  204→71(-65.2%), 정상 table verify page 292→89(-69.5%), external verify 167→150(-10.2%)다.
+  실제 provider 호출이 없으므로 token 절감으로 과장하지 않는다.
+- 검증: 국소 `23 passed`, Agent/Step4 확대 `154 passed, 34 subtests`, 전체 pytest
+  `1442 passed, 4 skipped, 338 subtests`, authoritative unittest `1204 tests, skipped 2`다. 실제 LLM/API,
+  Neo4j 접근/write, 새 DB, SKT 재분석은 0회다. 보호 Catalog WIP와 금지 script는 읽기·수정·실행·stage하지
+  않았다. 다음 좌표는 나머지 filesystem/sample/mining tool page header와 prompt 설명의 반복을 같은
+  producer→consumer 기준으로 감사하되, 원문 전수 접근과 pagination closure를 절감 때문에 약화하지 않는다.

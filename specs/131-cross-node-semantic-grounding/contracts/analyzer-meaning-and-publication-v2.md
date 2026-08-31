@@ -475,6 +475,13 @@ strict root이고 Rule은 effect/row의 두 exact map이다. 입력의 condition
 strict root를 사용한다. 어느 family든 모델 출력에는 evidence, confidence, question, 내부 ID/hash,
 임의 extra, 자유형식 missing-context가 없다.
 
+Agent tool wire도 정보 단일 소유를 따른다. external-format 최초 message는 extension과 작업 지시만 가지며
+sample별 chars/lines/shape는 필수 `sample_overview`가 소유한다. `verify_external_rule`은 sample별 match
+수, 대표 key/길이/원문, unmatched tail과 negative 판정만 반환하고 최초 inventory의 파일 크기를 복창하지
+않는다. `verify_table_regex`의 동일 `(call_regex, offset)` 재호출은 기존 report 전체를 다시 반환하지 않고
+`ALREADY_VERIFIED_PAGE`와 다음 행동만 반환한다. 성공 page에는 실패 교정 힌트가 없으며 partial entity,
+DDL 미해소, 잘못된 op token처럼 실제 문제가 관찰된 page에만 그 문제의 교정을 붙인다.
+
 Scanning·external proposal의 현재 root는 다음처럼 닫힌다.
 
 ```yaml

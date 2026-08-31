@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -46,19 +45,11 @@ def _analyzer_skill_name(extension: str, ordinal: int) -> str:
     return f"external-{body.strip('-') or 'format'}-{ordinal}"
 
 
-def _user_message(extension: str, samples: list[str]) -> str:
-    """모든 학습 파일의 크기만 알리고 원문은 페이지 도구로 한 번씩 읽게 한다."""
-    inventory = []
-    for index, sample in enumerate(samples):
-        inventory.append({
-            "file_index": index,
-            "total_chars": len(sample),
-            "total_lines": len(sample.splitlines()),
-        })
+def _user_message(extension: str) -> str:
+    """Give only request identity; exploration tools own all sample facts."""
     return "\n".join([
         f"extension: {extension}",
-        "training_sample_inventory (원문은 sample 도구로 필요한 페이지를 읽는다):",
-        json.dumps(inventory, ensure_ascii=False, indent=2),
+        "sample_overview로 학습 파일 전체의 구조를 확인하라.",
         "형식을 관찰·검증한 뒤 ExternalFormatProposal 을 submit_external 로 제출하라.",
     ])
 
@@ -96,7 +87,7 @@ async def run_external_agent(
             system_prompt=read_run_text(_SYSTEM_PROMPT_PATH, encoding="utf-8"),
             tools=tools,
             response_format=ExternalFormatProposal,
-            user_message=_user_message(extension, samples),
+            user_message=_user_message(extension),
             run_dir=run_dir,
             cost_budget=cost_budget,
             stream_emit=stream_emit,

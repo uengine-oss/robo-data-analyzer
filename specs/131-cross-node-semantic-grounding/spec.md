@@ -107,6 +107,10 @@ Example은 LLM 0회다. 정적 callsite inventory가 이 목록 밖의 호출을
 모든 family는 byte-identical 공통 prefix와 strict closed schema를 사용한다. schema에는 검증 제약이
 아닌 title·description annotation을 넣지 않고 prompt가 의미 설명을 한 번만 소유한다. 첫 실제 요청이 cache
 warm-up이며 dummy 요청은 없다. Summary·Table·Rule은 서로 기다리지 않고 비차단 병렬 실행한다.
+Agent의 최초 user message와 tool 결과도 같은 사실을 반복 소유하지 않는다. 외부 포맷 sample의 크기·줄 수·
+구조 분포는 필수 `sample_overview`가 한 번 소유하며 최초 message와 verify 결과가 복창하지 않는다. 결정론
+verify의 같은 page 재호출은 앞서 대화에 존재하는 report를 다시 붙이지 않고 stop/next 행동만 반환한다.
+성공 page에는 실패 교정용 장문 힌트를 붙이지 않고 실제 실패 종류가 있을 때만 해당 교정을 반환한다.
 같은 concern 재질문, 두 의미 동시 질의, hidden judge/repair, content retry, 자동 follow-up/tool loop는
 금지한다. 현재 runner와 provider SDK의 자동 재시도는 0이다. 서버가 request bytes를 받지 않았음이
 증명되는 전송 계약이 생기기 전에는 transport 실패도 다시 보내지 않는다. `deadline`·`length`·

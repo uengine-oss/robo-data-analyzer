@@ -7,7 +7,7 @@ from pathlib import Path
 
 from llm.usage.cost_budget import CostBudget
 from pipeline.execution.pause_controller import PauseController
-from agents.external import ExternalAgentRejected, run_external_agent
+from agents.external import ExternalAgentRejected, _user_message, run_external_agent
 from pipeline.steps.step4_scan_project.external_skills import (
     ExternalFormatProposal,
     ProposedExternalExtractionRule,
@@ -23,6 +23,15 @@ def _proposal(prefix: str = "CFG") -> ExternalFormatProposal:
 
 
 class ExternalAgentTest(unittest.IsolatedAsyncioTestCase):
+    def test_initial_message_leaves_sample_facts_to_overview_tool(self) -> None:
+        message = _user_message(".cfgx")
+
+        self.assertIn("extension: .cfgx", message)
+        self.assertIn("sample_overview", message)
+        self.assertNotIn("training_sample_inventory", message)
+        self.assertNotIn("total_chars", message)
+        self.assertNotIn("total_lines", message)
+
     async def _run(self, invoker, samples=None):
         with tempfile.TemporaryDirectory() as temp:
             return await run_external_agent(

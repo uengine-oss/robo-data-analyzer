@@ -437,6 +437,18 @@
   - 전체 pytest `1439 passed, 4 skipped, 338 subtests`, authoritative unittest `1201 tests,
     skipped 2`; LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
 
+- [x] **B36 Agent 초기 입력·검증 tool 반복 payload 제거**
+  - [x] external 최초 message의 sample별 chars/lines inventory를 제거하고 필수 `sample_overview`가 크기·줄 수·
+    shape 분포를 한 번 소유하게 한다. verify는 파일 크기를 복창하지 않는다.
+  - [x] table regex 동일 page 재호출은 cached report 전체를 재전송하지 않고 stop/next 행동만 돌려준다.
+  - [x] table regex 성공 page의 장문 실패 힌트를 제거하고 실제 partial/unresolved/op-token 문제에만 해당
+    교정을 반환한다.
+  - [x] 대표 chars는 external 최초 입력 285→115(-59.6%), 동일 verify page 204→71(-65.2%), 정상
+    table verify page 292→89(-69.5%), external verify 167→150(-10.2%)다. 실제 token으로 과장하지 않는다.
+  - [x] 국소 `23 passed`, Agent/Step4 확대 `154 passed, 34 subtests`, 전체 pytest
+    `1442 passed, 4 skipped, 338 subtests`, authoritative unittest `1204 tests, skipped 2`; 실제
+    LLM/API·Neo4j·새 DB·SKT 재분석은 0회다.
+
 ## C. 작은 실제 SKT 검증
 
 - [x] **C01 작은 SKT Rule 의미 직접 판정**

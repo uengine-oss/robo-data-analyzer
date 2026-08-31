@@ -35,7 +35,7 @@ def make_verify_table_regex_tool(
     # 약한 모델의 재검증 루프 연료를 끊는다.
     validated: dict[str, LinkOutcome] = {}
     rendered_pages: dict[tuple[str, int], str] = {}
-    repeat_count: dict[tuple[str, int], int] = {}
+    next_offsets: dict[tuple[str, int], int | None] = {}
 
     @tool
     async def verify_table_regex(call_regex: str, offset: int = 0) -> str:
@@ -62,13 +62,13 @@ def make_verify_table_regex_tool(
         """
         page_key = (call_regex, offset)
         if page_key in rendered_pages:
-            n = repeat_count[page_key] = repeat_count.get(page_key, 1) + 1
-            return (
-                f"이미 검증 완료된 페이지다 (동일 입력 {n}회째 호출). 같은 입력은 "
-                "결과가 결정론으로 동일하다 — 재검증 불필요. 아래는 이전 결과 그대로.\n"
-                "남은 자료가 표시되면 다음 offset으로 이동하고, 없으면 다음 단계로 진행하라.\n"
-                + rendered_pages[page_key]
+            next_offset = next_offsets[page_key]
+            action = (
+                f"offset={next_offset}로 이동하라"
+                if next_offset is not None
+                else "재검증하지 말고 다음 단계로 진행하라"
             )
+            return f"ALREADY_VERIFIED_PAGE: 결과는 앞선 tool message와 동일하다. {action}."
 
         if offset < 0:
             return "INVALID_OFFSET: offset은 0 이상이어야 함"
@@ -102,6 +102,7 @@ def make_verify_table_regex_tool(
             report = ("매치 0건 — 이 정규식은 소스의 어떤 호출과도 안 맞음. "
                       "wrapper 이름 · 따옴표 · 공백(\\s*) · 인자 구분자를 다시 확인하라.")
             rendered_pages[page_key] = report
+            next_offsets[page_key] = None
             return report
 
         if offset >= len(outcome.samples):
@@ -125,18 +126,26 @@ def make_verify_table_regex_tool(
                 else "DDL 테이블 아님"
             )
             lines.append(f"  [{mark}] entity='{s.entity}' op_token='{s.op_token}' -> {tail}")
-        lines.append(
-            "힌트: '부분 추출'은 entity 뒤에 `_`, `-`, `.`, `$` 등 실제 이름 문자가 "
-            "남았다는 뜻이다. 전체 테이블 토큰을 캡처하라. entity 에 '_s0024' 같은 꼬리표가 "
-            "붙으면 반대로 그룹이 너무 넓다 — 경계를 좁혀라. op_token 이 변수명이면 교정하라. "
-            "[X] 가 일부뿐이면 그 테이블은 분석 범위 밖(external)일 수 있다."
-        )
+        if any(not sample.entity_complete for sample in shown):
+            lines.append(
+                "교정: 부분 추출된 entity가 있다. 실제 테이블 토큰 전체를 캡처하도록 경계를 고쳐라."
+            )
+        if any(sample.entity_complete and not sample.resolved_table for sample in shown):
+            lines.append(
+                "판정: 완전 추출됐지만 DDL에 없는 entity가 있다. 범위 밖 table인지 pattern 오류인지 확인하라."
+            )
+        if any(sample.op_token and not sample.token_recognized for sample in shown):
+            lines.append(
+                "교정: 인식되지 않은 op_token이 있다. operation token capture/mapping을 확인하라."
+            )
+        next_offset = page_end if page_end < len(outcome.samples) else None
         if page_end < len(outcome.samples):
             lines.append(
                 f"남은 자료가 있다. 같은 call_regex와 offset={page_end}로 이어서 읽어라."
             )
         report = "\n".join(lines)
         rendered_pages[page_key] = report
+        next_offsets[page_key] = next_offset
         return report
 
     return verify_table_regex
@@ -151,7 +160,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
 
     @tool
     def verify_external_rule(pattern: str) -> str:
-        """청크 분할 규칙 후보 1개를 실제 samples 에 적용 → 스팬·키 결과 리포트.
+        """청크 분할 규칙 후보 1개를 실제 samples 에 적용 → 길이·키 결과 리포트.
 
         **언제 사용**: 규칙을 설계한 뒤 submit_external 전에 **반드시** 규칙마다 1회.
         결과가 나쁘면 규칙을 고쳐 재호출한다.
@@ -174,7 +183,7 @@ def make_verify_external_rule_tool(samples: list[str], negative_samples: list[st
                 matches = probe_extraction_rule(pattern, "key", sample)
             except ExternalSkillValidationError as error:
                 return f"REJECTED: {error}"
-            lines.append(f"sample[{index}]: 매치 {len(matches)}건 (파일 {len(sample):,}자)")
+            lines.append(f"sample[{index}]: 매치 {len(matches)}건")
             for match in matches[:8]:
                 excerpt = sample[match.start:match.end].replace("\n", "\\n")
                 if len(excerpt) > 90:

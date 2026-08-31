@@ -37,6 +37,7 @@ class VerifyExternalRuleToolTest(unittest.TestCase):
         self.assertIn("key='AAA'", report)
         self.assertIn("chars=", report)
         self.assertNotIn("span=[", report)
+        self.assertNotIn("(파일", report)
         self.assertEqual(
             {"pattern"},
             set(tool.args_schema.model_json_schema()["properties"]),
