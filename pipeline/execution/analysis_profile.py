@@ -113,6 +113,20 @@ def _validate_output_path(path: Path) -> Path:
     return resolved
 
 
+def _reject_validation_reference_inside_run_output(
+    *, reference: Path | None, field_name: str, run_output: Path,
+) -> None:
+    """Keep immutable validation inputs outside the mutable run-output tree."""
+    if reference is None:
+        return
+    resolved_reference = reference.resolve()
+    if resolved_reference == run_output or run_output in resolved_reference.parents:
+        raise ValueError(
+            f"{field_name} must be outside run_output because run retention may "
+            f"remove mutable run artifacts: {resolved_reference}"
+        )
+
+
 def _optional_validation_reference(
     values: Mapping[str, Any], base: Path, stem: str,
 ) -> tuple[Path | None, str | None]:
@@ -237,6 +251,19 @@ def resolve_analysis_inputs(
     ddl_candidate = data_dir / "ddl"
     ddl_dir = ddl_candidate if ddl_candidate.is_dir() else None
 
+    baseline_ref = profile.validation_baseline_ref if profile else None
+    answer_key_ref = profile.validation_answer_key_ref if profile else None
+    _reject_validation_reference_inside_run_output(
+        reference=baseline_ref,
+        field_name="validation_baseline_ref",
+        run_output=run_output,
+    )
+    _reject_validation_reference_inside_run_output(
+        reference=answer_key_ref,
+        field_name="validation_answer_key_ref",
+        run_output=run_output,
+    )
+
     return ResolvedAnalysisInputs(
         data_dir=data_dir,
         source_dir=source_dir,
@@ -247,13 +274,11 @@ def resolve_analysis_inputs(
         run_output=run_output,
         profile_path=profile.source_path if profile else None,
         selected_source_ids=profile.selected_source_ids if profile else (),
-        validation_baseline_ref=profile.validation_baseline_ref if profile else None,
+        validation_baseline_ref=baseline_ref,
         validation_baseline_sha256=(
             profile.validation_baseline_sha256 if profile else None
         ),
-        validation_answer_key_ref=(
-            profile.validation_answer_key_ref if profile else None
-        ),
+        validation_answer_key_ref=answer_key_ref,
         validation_answer_key_sha256=(
             profile.validation_answer_key_sha256 if profile else None
         ),

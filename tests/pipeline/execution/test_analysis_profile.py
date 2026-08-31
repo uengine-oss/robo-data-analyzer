@@ -146,6 +146,50 @@ class AnalysisProfileContractTest(unittest.TestCase):
                     default_run_output=root / "unused-runs",
                 )
 
+    def test_validation_references_inside_run_output_are_rejected_before_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._tree(root)
+            run_output = root / "runs"
+            run_output.mkdir()
+
+            for stem in ("validation_baseline", "validation_answer_key"):
+                with self.subTest(stem=stem):
+                    reference = run_output / stem
+                    reference.write_text(stem, encoding="utf-8")
+                    profile_path = root / f"{stem}.yaml"
+                    profile_path.write_text(
+                        "\n".join((
+                            "data_dir: corpus",
+                            "strategy: framework",
+                            "neo4j_database: test",
+                            "locale: ko",
+                            "run_output: runs",
+                            f"{stem}_ref: runs/{stem}",
+                            f"{stem}_sha256: {hashlib.sha256(reference.read_bytes()).hexdigest()}",
+                        )),
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        rf"{stem}_ref must be outside run_output",
+                    ):
+                        resolve_analysis_inputs(
+                            profile=load_analysis_profile(profile_path),
+                            explicit_data_dir=None,
+                            explicit_strategy=None,
+                            explicit_database=None,
+                            explicit_locale=None,
+                            explicit_run_output=None,
+                            default_data_dir=root / "unused-data",
+                            default_database="unused",
+                            default_locale="fr",
+                            default_run_output=root / "unused-runs",
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()
