@@ -8,7 +8,7 @@ antlr 이 이미 뽑은 ``CALL`` 노드(``…:CALL:<line>`` function_id + 콜리
 - 콜리 이름이 빌트인/표준(``DBMS_``/``UTL_``/… prefix) → **드롭** (분석 대상 아님).
 - 콜리 단순명이 분석대상 정의 노드(PROCEDURE/FUNCTION/TRIGGER 루트)와 일치 → **internal**
   (대상 = 그 정의 노드 — CALL-site 가 아니라 정의 노드로 해석해 방향 정확).
-- 그 외 실제 프로시저명 → **external** — 그래프에 ``:FUNCTION:EXTERNAL`` stub 생성
+- 그 외 실제 프로시저명 → **external** — 그래프에 stub 함수(``external`` 속성) 생성
   (upsert_calls). 스키마(package) = 호출 수식어(``SCH.PROC``) 또는 없으면 호출자 자기
   스키마(bare = 자기 스키마의 프로시저). 모듈·함수 = 프로시저명.
 
@@ -64,7 +64,7 @@ class CallLinker:
             else:
                 # external = 분석대상 밖 실 프로시저. 스키마(package) = 호출 수식어
                 # (SCH.PROC) 또는 bare 면 호출자 자기 스키마. 모듈·함수 = 프로시저명.
-                # upsert_calls 가 internal 과 대칭으로 :FUNCTION:EXTERNAL stub 생성.
+                # upsert_calls 가 internal 과 대칭으로 stub 함수 생성.
                 if (caller_id, simple) in seen:
                     continue
                 seen.add((caller_id, simple))
