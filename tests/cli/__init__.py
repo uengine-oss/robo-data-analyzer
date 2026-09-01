@@ -1,1 +1,0 @@
-"""CLI contract tests."""

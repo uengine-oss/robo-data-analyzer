@@ -1,4 +1,4 @@
-"""Canonical text used for both SearchSegment storage and semantic scoring."""
+"""Canonical text used for routine semantic search."""
 from __future__ import annotations
 
 

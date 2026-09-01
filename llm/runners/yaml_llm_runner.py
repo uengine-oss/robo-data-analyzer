@@ -1,10 +1,10 @@
 """yaml 기반 LLM 호출 헬퍼 — 단순 LLM 호출 (Agent 외부).
 
-용도: ``pipeline/semantic_tasks/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
+용도: ``pipeline/meaning/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/semantic_tasks`` (code_summary /
+- ``pipeline/meaning`` (code_summary /
   code_table_usage_meanings)
-- ``pipeline/steps/step8_post_processing`` (module_summary / table_description)
+- ``pipeline/stages/output`` (module_summary / table_description)
 
 yaml 형식 (단순)::
 
@@ -16,13 +16,13 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/_common.yaml` — 단일 진실
+    # `pipeline/meaning/<family>/prompts/<strategy>/_common.yaml` — 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
-    # `pipeline/semantic_tasks/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    # `pipeline/meaning/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
     extends: _common
     user_template_specific: |
       <이 분할 고유 user_template 지침>
@@ -50,19 +50,19 @@ from typing import Optional, TypeVar
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from llm.usage.cost_budget import CostBudget
-from llm.client import build_llm_client
-from llm.configs.loader import load_llm_config
-from llm.usage.pricing import compute_cost
+from llm.llm_client import build_llm_client
+from llm.configs.config_loader import load_llm_config
+from llm.usage.model_pricing import compute_cost
 from llm.usage.token_usage import TokenUsageRecord, UnmeteredLlmCallError, track_usage
 from llm.usage.usage_jsonl_writer import persist_usage_and_charge_budget
 from shared.events.runtime_logger import log_info, log_warning
-from llm.filters import apply_cache_friendly_filters
+from llm.prompt_filters import apply_cache_friendly_filters
 from llm import response_cache
 from llm.repetition_guard import RepetitionGuardCallback, RepetitionLoopAborted
 from llm.structured_output import bind_structured_output
-from llm.tracing import serialize_response, write_rule_record
+from llm.request_tracing import serialize_response, write_rule_record
 from pipeline.execution.run_output_context import get_run_dir
 
 
@@ -71,7 +71,7 @@ T = TypeVar("T", bound=BaseModel)
 
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
 from llm.runners.prompt_values import _extract_target_and_sort
-from llm.runners.invocation import _write_error_record
+from llm.runners.model_invocation import _write_error_record
 from llm.runners.model_output_error import (
     ModelOutputError,
     model_output_kind,

@@ -1,7 +1,7 @@
 """Policy for selecting expansion roots and direct retrieval candidates."""
 from __future__ import annotations
 
-from search.config import Config
+from search.search_config import Config
 
 
 def support_plan(

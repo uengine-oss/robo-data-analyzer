@@ -47,7 +47,7 @@ ANALYSIS_LLM_LANE_WEIGHTS = {
 }
 
 def analysis_llm_slots() -> PrioritySemaphore:
-    from shared.config.settings import SETTINGS
+    from shared.config.app_settings import SETTINGS
 
     llm_capacity = min(
         SETTINGS.analysis_pipeline.max_concurrency,

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import BaseModel
 
 from llm.runners.model_output_error import ModelOutputError
-from llm.client import _build_anthropic_client, _build_openai_compatible_client
+from llm.llm_client import _build_anthropic_client, _build_openai_compatible_client
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from pipeline.execution.run_output_context import (
     reset_response_locale,
@@ -42,14 +42,14 @@ class ProviderRetryBoundaryTest(unittest.TestCase):
         )
 
     def test_openai_compatible_client_disables_sdk_retries(self) -> None:
-        with patch("llm.client.ChatOpenAI") as client:
+        with patch("llm.llm_client.ChatOpenAI") as client:
             _build_openai_compatible_client(
                 self._config("openai"), "test-key", "model", 0.0, 100, False,
             )
         self.assertEqual(0, client.call_args.kwargs["max_retries"])
 
     def test_anthropic_client_disables_sdk_retries(self) -> None:
-        with patch("llm.client.ChatAnthropic") as client:
+        with patch("llm.llm_client.ChatAnthropic") as client:
             _build_anthropic_client(
                 self._config("anthropic"), "test-key", "model", 0.0, 100, False,
             )

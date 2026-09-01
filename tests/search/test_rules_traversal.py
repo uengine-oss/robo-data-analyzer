@@ -1,14 +1,8 @@
-"""Retriever._rules_for — current HAS_RULE→HAS_EXAMPLE traversal tests.
-
-하위 소비자가 함수별 Rule의 구조 사실과 Strategy-B 의미 상태를
-tables, examples[{kind, given, then}]}] (파이썬 leaf 계약, spec 116)를 누락·오염 0 으로
-받는지 검증. 실제 Neo4j 없이 fake session 의 .run().data() 로 검증.
-"""
 from __future__ import annotations
 
 import unittest
 
-from search.ranking.retriever import Retriever
+from search.ranking.graph_retriever import Retriever
 
 
 class _Result:
@@ -20,85 +14,49 @@ class _Result:
 
 
 class _Session:
-    """Fake Neo4j session — _rules_for 는 s.run(...).data() 만 사용."""
-
     def __init__(self, rows):
-        self._rows = rows
-        self.last_params: dict = {}
+        self.rows = rows
+        self.last_params = {}
         self.last_cypher = ""
 
     def run(self, cypher, **params):
         self.last_cypher = cypher
         self.last_params = params
-        return _Result(self._rows)
-
-
-def _row(rule, anchor, **overrides):
-    base = {
-        "rule_node_id": f"fn::{rule}",
-        "ordinal": anchor,
-        "anchor_line": anchor,
-        "structural_condition": f'F("cd") == "{anchor}"',
-        "structural_effects": ['ret("0")'],
-        "business_effects": ['meaning_return("0", "정상 결과")'],
-        "owner_signature": "fn(itf)",
-        "example_id": None,
-        "given_conditions": None,
-        "expected_effects": None,
-        "tables": [],
-    }
-    base.update(overrides)
-    return base
+        return _Result(self.rows)
 
 
 class RulesTraversalTest(unittest.TestCase):
     def _retriever(self, rows):
         return Retriever(_Session(rows), object())
 
-    def test_groups_examples_under_rules_in_order(self):
-        rows = [
-            _row("R-3", 3, example_id="fn::R-3::E1", example_ordinal=1,
-                 given_conditions=['F("cd") == "3"'], expected_effects=['ret("0")']),
-            _row("R-9", 9, example_id="fn::R-9::E1", example_ordinal=1,
-                 given_conditions=['F("cd") == "9"'], expected_effects=['ret("1")']),
-        ]
+    def test_returns_direct_rules(self):
+        rows = [{
+            "rule_id": "fn::R-3",
+            "rule_order": 1,
+            "line": 3,
+            "condition": 'F("cd") == "3"',
+            "effects": ['ret("0")'],
+            "condition_description": "",
+            "effect_descriptions": ["정상 결과를 반환한다"],
+        }]
         out = self._retriever(rows)._rules_for("fn")
-        self.assertEqual([x["rule_id"] for x in out], ["R-3", "R-9"])
-        self.assertEqual([x["anchor_line"] for x in out], [3, 9])
-        self.assertEqual(len(out[0]["examples"]), 1)
-        self.assertEqual(out[0]["examples"][0], {
-            "given_conditions": ['F("cd") == "3"'],
-            "expected_effects": ['ret("0")'],
-        })
-        # 테이블 귀속은 규칙 단위다 — example 이 아니라 rule 에 붙는다.
-        self.assertNotIn("tables", out[0])
+        self.assertEqual(rows, out)
+        self.assertEqual(
+            {"rule_id", "rule_order", "line", "condition", "effects",
+             "condition_description", "effect_descriptions"},
+            set(out[0]),
+        )
 
-    def test_duplicate_join_row_does_not_duplicate_one_example(self):
-        row = _row("R-3", 3, example_id="fn::R-3::E1",
-                   given_conditions=["g"], expected_effects=["t"])
-        out = self._retriever([row, dict(row)])._rules_for("fn")
-        self.assertEqual(len(out), 1)
-        self.assertEqual(len(out[0]["examples"]), 1)
-
-    def test_query_uses_current_stable_identity_and_orders_by_anchor(self):
-        r = self._retriever([])
-        r._rules_for("member.c::checkout")
-        self.assertEqual(r.s.last_params["stable_id"], "member.c::checkout")
-        # idx 숫자 정렬 계약: '::E10' 이 '::E2' 앞에 오지 않도록 size 선행 정렬.
-        self.assertIn("ORDER BY ordinal, anchor_line", r.s.last_cypher)
-        self.assertIn("example_ordinal", r.s.last_cypher)
-        self.assertIn("r.stable_id", r.s.last_cypher)
-        self.assertNotIn("AFFECTS_TABLE", r.s.last_cypher)
-
-    def test_rule_without_examples_yields_machine_body_only(self):
-        out = self._retriever([_row("R-3", 3)])._rules_for("fn")
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["examples"], [])
-        self.assertEqual(out[0]["structural_condition"], 'F("cd") == "3"')
-        self.assertEqual(out[0]["structural_effects"], ['ret("0")'])
+    def test_query_uses_direct_identity_and_source_order(self):
+        retriever = self._retriever([])
+        retriever._rules_for("member.c::checkout")
+        self.assertEqual("member.c::checkout", retriever.s.last_params["node_id"])
+        self.assertIn("ORDER BY rule_order, line", retriever.s.last_cypher)
+        self.assertIn("r._id", retriever.s.last_cypher)
+        self.assertIn("HAS_RULE", retriever.s.last_cypher)
 
     def test_no_rules_returns_empty(self):
-        self.assertEqual(self._retriever([])._rules_for("fn"), [])
+        self.assertEqual([], self._retriever([])._rules_for("fn"))
 
 
 if __name__ == "__main__":

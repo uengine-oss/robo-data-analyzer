@@ -45,10 +45,10 @@ from pipeline.models.semantic_frame import SemanticFrame, SlotSpec, StructuralPr
 from pipeline.models.analysis_meta import AnalysisRun
 from pipeline.models.analysis_meta import Codebase
 from pipeline.models.human_glossary import HumanGlossary, load_human_glossary
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 
 from llm import response_cache
-from llm.embedder import validate_runtime_configuration as validate_embedding_runtime
+from llm.text_embedder import validate_runtime_configuration as validate_embedding_runtime
 from llm.model_runtime_capabilities import load_model_runtime_capabilities
 from llm.usage.cost_budget import CostBudget
 from shared.events.runtime_logger import (
@@ -60,16 +60,14 @@ from shared.events.runtime_logger import (
 )
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.neo4j_client import Neo4jClient
-from graph.product_batch_writer import write_product_batch
-from graph.schema.constraints import ensure_schema
-from graph.generation import begin_generation, publish_generation, terminate_generation
+from graph.product_writer import replace_product_graph
 from pipeline.models.call_resolution import normalize_call_resolution_ledger, summarize_call_resolution_ledger
 from pipeline.models.import_resolution import (
     normalize_import_resolution_ledger,
     summarize_import_resolution_ledger,
 )
 from graph.connection_context import get_override
-from shared.files.cache import SourceFileCache
+from shared.files.source_cache import SourceFileCache
 from shared.files.run_cache_context import reset_run_file_cache, set_run_file_cache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
@@ -79,9 +77,9 @@ from pipeline.execution.sealed_analysis_inputs import (
     build_sealed_analysis_inputs,
     write_sealed_analysis_inputs,
 )
-from pipeline.publication.product_plan import (
-    CompleteProductPlanInput,
-    build_complete_product_write_plan,
+from pipeline.publication.product_graph import (
+    ProductGraphInput,
+    build_product_graph,
 )
 from pipeline.execution.run_registry import clear as clear_active_run
 from pipeline.execution.run_registry import set_active as set_active_run
@@ -92,12 +90,12 @@ from pipeline.execution.run_output_context import (
     set_response_locale,
     set_run_dir,
 )
-from pipeline.steps.step2_load_ast.dispatch import ast_and_source_roots
-from pipeline.analysis_ir.parser_facts.source_ast_closure import (
+from pipeline.stages.ast.ast_dispatch import ast_and_source_roots
+from pipeline.parsing.facts.source_ast_closure import (
     SourceAstClosure,
     verify_source_ast_closure,
 )
-from pipeline.steps.step3_load_external.inventory import inventory_project
+from pipeline.stages.external.source_inventory import inventory_project
 
 
 _RUN_OUTPUT_OWNER_MARKER = ".robo-data-analyzer-output"
@@ -107,10 +105,13 @@ _PRODUCT_STATE_FIELDS = (
     "packages",
     "modules",
     "code_nodes",
-    "belongs_to_edges",
-    "has_member_edges",
+    "variables",
+    "constants",
+    "data_types",
     "parent_of_edges",
     "statement_next_edges",
+    "references_edges",
+    "init_by_edges",
     "tables",
     "columns",
     "has_column_edges",
@@ -122,11 +123,9 @@ _PRODUCT_STATE_FIELDS = (
     "call_resolution_ledger",
     "reads_writes_edges",
     "rules",
-    "examples",
     "has_rule_edges",
-    "has_example_edges",
-    "component_member_ids_by_component_id",
-    "search_segments",
+    "rule_table_edges",
+    "routine_embeddings",
 )
 
 
@@ -145,17 +144,12 @@ async def _read_final_workflow_state(app: Any, config: dict) -> dict[str, Any]:
     return dict(values)
 
 
-def _build_complete_product_input(
+def _build_product_graph_input(
     *,
     final_state: Mapping[str, Any],
-    run: AnalysisRun,
-    source_ast_closure: SourceAstClosure,
-    glossary: HumanGlossary,
     call_resolution_ledger: Sequence[Mapping[str, Any]],
     import_resolution_ledger: Sequence[Mapping[str, Any]],
-    prepublish_wall_time_ms: int,
-    prepublish_performance_artifact_hash: str,
-) -> CompleteProductPlanInput:
+) -> ProductGraphInput:
     """Bind the final workflow state to the closed product-plan contract."""
     final_call_ledger = normalize_call_resolution_ledger(
         final_state["call_resolution_ledger"]
@@ -178,18 +172,17 @@ def _build_complete_product_input(
             "final workflow import ledger differs from its sole streamed producer"
         )
 
-    return CompleteProductPlanInput(
-        analysis_scope_id=run.analysis_scope_id,
-        generation_id=run.run_id,
-        source_ast_closure=source_ast_closure,
-        human_glossary=glossary,
+    return ProductGraphInput(
         packages=final_state["packages"],
         modules=final_state["modules"],
         code_nodes=final_state["code_nodes"],
-        belongs_to_edges=final_state["belongs_to_edges"],
-        has_member_edges=final_state["has_member_edges"],
+        variables=final_state["variables"],
+        constants=final_state["constants"],
+        data_types=final_state["data_types"],
         parent_of_edges=final_state["parent_of_edges"],
         statement_next_edges=final_state["statement_next_edges"],
+        references_edges=final_state["references_edges"],
+        init_by_edges=final_state["init_by_edges"],
         tables=final_state["tables"],
         columns=final_state["columns"],
         has_column_edges=final_state["has_column_edges"],
@@ -198,22 +191,12 @@ def _build_complete_product_input(
         resolved_external_reference_links=(
             final_state["resolved_external_reference_links"]
         ),
-        external_reference_ledger=final_state["external_reference_ledger"],
         calls_edges=final_state["calls_edges"],
-        call_resolution_ledger=final_call_ledger,
         reads_writes_edges=final_state["reads_writes_edges"],
         rules=final_state["rules"],
-        examples=final_state["examples"],
         has_rule_edges=final_state["has_rule_edges"],
-        has_example_edges=final_state["has_example_edges"],
-        component_member_ids_by_component_id=(
-            final_state["component_member_ids_by_component_id"]
-        ),
-        search_segments=final_state["search_segments"],
-        prepublish_wall_time_ms=prepublish_wall_time_ms,
-        prepublish_performance_artifact_hash=(
-            prepublish_performance_artifact_hash
-        ),
+        rule_table_edges=final_state["rule_table_edges"],
+        routine_embeddings=final_state["routine_embeddings"],
     )
 
 
@@ -403,10 +386,9 @@ async def execute_run(
             root=str(codebase.root),
             strategy=getattr(strategy, "name", "?"),
             run_id=run.run_id,
-            analysis_scope_id=run.analysis_scope_id,
         )
         # Canonical source/AST/diagnostic population must close before any graph
-        # mutation or generation publication begins.
+        # mutation begins.
         ast_root, parser_source_root = ast_and_source_roots(
             codebase.root, codebase.corpus_root,
         )
@@ -439,8 +421,8 @@ async def execute_run(
             SETTINGS.analysis_llm.model_runtime_capabilities_ref,
             SETTINGS.analysis_llm.model_runtime_capabilities_sha256,
         )
-        # Embedding is a required downstream paid/runtime boundary.  Reject an
-        # impossible provider/model/endpoint tuple before spending generation
+        # Embedding is a required downstream paid/runtime boundary. Reject an
+        # impossible provider/model/endpoint tuple before spending analysis
         # tokens; otherwise a run can finish all meanings and die at Step 8.
         validate_embedding_runtime()
         project_input_inventory = inventory_project(
@@ -460,7 +442,7 @@ async def execute_run(
             source_ast_closure_bytes=source_ast_closure_bytes,
             source_ast_closure_sha256=source_ast_closure_sha256,
             strategy_prompts_dir=Path(
-                getattr(strategy, "prompts_dir", "pipeline/semantic_tasks")
+                getattr(strategy, "prompts_dir", "pipeline/meaning")
             ),
             human_glossary_manifest=human_glossary.manifest_dict(corpus_root),
             source_cache=source_cache,
@@ -476,35 +458,16 @@ async def execute_run(
             "run",
             "analysis_inputs_sealed",
             sealed_analysis_inputs_sha256=sealed_analysis_inputs.sha256,
-            analysis_scope_files=(
-                sealed_analysis_inputs.payload["analysis_scope_files"]["file_count"]
+            source_files=(
+                sealed_analysis_inputs.payload["source_files"]["file_count"]
             ),
             ddl_files=(
                 sealed_analysis_inputs.payload["ddl_files"].get("file_count", 0)
             ),
         )
-        neo_client = Neo4jClient(
-            generation_id=run.run_id,
-            analysis_scope_id=run.analysis_scope_id,
-        )
-        generation_started = False
-        generation_terminal = False
+        neo_client: Neo4jClient | None = None
         try:
-            await ensure_schema(neo_client)
-            await begin_generation(
-                neo_client,
-                generation_id=run.run_id,
-                strategy=getattr(strategy, "name", "?"),
-                source_ast_closure=source_ast_closure.as_dict(),
-            )
-            generation_started = True
             _update_run_manifest(run.run_dir, status="building")
-            log_info(
-                "run", "neo4j_ready",
-                database=_resolved_neo4j_database(),
-                generation_id=run.run_id,
-                wiped=False,
-            )
 
             # 응답 캐시 정리 — 프롬프트를 고칠 때마다 다시는 안 읽히는 항목이 쌓인다.
             # run 시작 1회, 상한 초과 시에만 실제로 지운다.
@@ -638,11 +601,9 @@ async def execute_run(
                         run.run_dir,
                         {
                             "schema_version": "prepublish-performance/v1",
-                            "analysis_scope_id": run.analysis_scope_id,
-                            "generation_id": run.run_id,
                             "measurement_boundary": (
                                 "run_start_through_final_workflow_state_before_"
-                                "product_plan_build_and_product_writes"
+                                "product_graph_build_and_publish"
                             ),
                             "prepublish_wall_time_ms": prepublish_wall_time_ms,
                             "workflow_node_completion_timeline": (
@@ -651,63 +612,38 @@ async def execute_run(
                         },
                     )
                 )
-                product_plan = build_complete_product_write_plan(
-                    _build_complete_product_input(
+                product_graph = build_product_graph(
+                    _build_product_graph_input(
                         final_state=final_state,
-                        run=run,
-                        source_ast_closure=source_ast_closure,
-                        glossary=human_glossary,
                         call_resolution_ledger=call_resolution_ledger,
                         import_resolution_ledger=import_resolution_ledger,
-                        prepublish_wall_time_ms=prepublish_wall_time_ms,
-                        prepublish_performance_artifact_hash=(
-                            prepublish_performance_artifact_hash
-                        ),
                     )
                 )
-                product_stage_write_timings: list[dict[str, Any]] = []
-                for batch in product_plan.batches:
-                    stage_started_at = time.monotonic()
-                    receipt = await write_product_batch(neo_client, batch)
-                    product_stage_write_timings.append({
-                        "stage_name": receipt.stage_name,
-                        "wall_time_ms": int(
-                            (time.monotonic() - stage_started_at) * 1000
-                        ),
-                        "operation_count": receipt.operation_count,
-                        "idempotent_replay": receipt.idempotent_replay,
-                    })
+                neo_client = Neo4jClient()
                 publish_started_at = time.monotonic()
-                graph_closure = await publish_generation(
-                    neo_client,
-                    generation_id=run.run_id,
-                    quality_status=quality_summary["run_quality_status"],
-                    call_resolution_ledger=call_resolution_ledger,
-                    import_resolution_ledger=import_resolution_ledger,
-                    product_plan=product_plan,
+                receipt = await replace_product_graph(
+                    neo_client, product_graph,
                 )
                 publish_transaction_wall_time_ms = int(
                     (time.monotonic() - publish_started_at) * 1000
                 )
-                quality_summary["run_quality_status"] = graph_closure["quality_status"]
-                generation_terminal = True
+                graph_closure = {
+                    "graph_sha256": receipt.graph_sha256,
+                    "node_count": receipt.node_count,
+                    "relationship_count": receipt.relationship_count,
+                }
                 try:
-                    _write_product_generation_closure(run.run_dir, graph_closure)
+                    _write_product_graph_receipt(run.run_dir, graph_closure)
                     _write_content_addressed_performance_artifact(
                         run.run_dir,
                         {
                             "schema_version": "postcommit-performance/v1",
-                            "analysis_scope_id": run.analysis_scope_id,
-                            "generation_id": run.run_id,
                             "prepublish_performance_artifact_hash": (
                                 prepublish_performance_artifact_hash
                             ),
-                            "product_plan_sha256": graph_closure[
-                                "product_plan_sha256"
-                            ],
-                            "product_stage_write_timings": (
-                                product_stage_write_timings
-                            ),
+                            "product_graph_sha256": receipt.graph_sha256,
+                            "product_node_count": receipt.node_count,
+                            "product_relationship_count": receipt.relationship_count,
                             "publish_transaction_wall_time_ms": (
                                 publish_transaction_wall_time_ms
                             ),
@@ -723,7 +659,7 @@ async def execute_run(
                     )
                 except Exception as artifact_error:
                     log_error(
-                        "run", "write_published_generation_artifact_failed", artifact_error,
+                        "run", "write_product_graph_artifact_failed", artifact_error,
                         stream_emit=stream.emit if stream is not None else None,
                         run_id=run.run_id,
                     )
@@ -747,37 +683,13 @@ async def execute_run(
                 )
 
             if stopped:
-                await terminate_generation(
-                    neo_client,
-                    generation_id=run.run_id,
-                    status="stopped",
-                    reason="user stop",
-                )
-                generation_terminal = True
                 _update_run_manifest(run.run_dir, status="stopped")
 
-        except BaseException as run_error:
-            if generation_started and not generation_terminal:
-                try:
-                    await terminate_generation(
-                        neo_client,
-                        generation_id=run.run_id,
-                        status="failed",
-                        reason=redact_sensitive_text(
-                            f"{type(run_error).__name__}: {run_error}"
-                        ),
-                    )
-                    generation_terminal = True
-                    _update_run_manifest(run.run_dir, status="failed")
-                except Exception as terminal_error:
-                    log_error(
-                        "run", "terminate_failed_generation_failed", terminal_error,
-                        stream_emit=stream.emit if stream is not None else None,
-                        run_id=run.run_id,
-                    )
+        except BaseException:
             raise
         finally:
-            await neo_client.close()
+            if neo_client is not None:
+                await neo_client.close()
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
         try:
@@ -988,8 +900,6 @@ def _write_initial_manifest(
     manifest = {
         "schema_version": "2.0",
         "run_id": run.run_id,
-        "analysis_scope_id": run.analysis_scope_id,
-        "generation_id": run.run_id,
         "status": "initializing",
         "started_at": run.started_at.isoformat(),
         "corpus_root": str(corpus_root),
@@ -1017,8 +927,6 @@ def _write_preflight_failure_manifest(run: AnalysisRun, error: BaseException) ->
     manifest = {
         "schema_version": "2.0",
         "run_id": run.run_id,
-        "analysis_scope_id": run.analysis_scope_id,
-        "generation_id": run.run_id,
         "status": "failed_preflight",
         "started_at": run.started_at.isoformat(),
         "strategy": run.codebase.strategy,
@@ -1047,12 +955,12 @@ def _write_source_ast_closure(
     return target.resolve(), payload, hashlib.sha256(payload).hexdigest()
 
 
-def _write_product_generation_closure(run_dir: Path, closure: dict[str, Any]) -> None:
+def _write_product_graph_receipt(run_dir: Path, receipt: dict[str, Any]) -> None:
     """Persist the complete verified product ledger after publication."""
-    target = run_dir / "product-generation-closure.json"
+    target = run_dir / "product-graph-receipt.json"
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(
-        json.dumps(closure, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     temporary.replace(target)
@@ -1064,20 +972,15 @@ def _update_run_manifest(
     status: str,
     graph_closure: dict[str, Any] | None = None,
 ) -> None:
-    """Atomically add the terminal generation status to the run manifest."""
+    """Atomically add the terminal run status and published graph receipt."""
     target = run_dir / "manifest.json"
     manifest = json.loads(target.read_text(encoding="utf-8"))
     manifest["status"] = status
-    manifest["generation_id"] = manifest["run_id"]
     if graph_closure is not None:
-        manifest["product_closure"] = {
-            key: {
-                "count": graph_closure[key]["count"],
-                "sha256": graph_closure[key]["sha256"],
-            }
-            for key in (
-                "product_stages", "product_operations", "product_records",
-            )
+        manifest["product_graph"] = {
+            "sha256": graph_closure["graph_sha256"],
+            "node_count": graph_closure["node_count"],
+            "relationship_count": graph_closure["relationship_count"],
         }
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(

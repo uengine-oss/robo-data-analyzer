@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import unittest
 
-from search.corpus.corpus import Corpus, _CORPUS_QUERY
+from search.corpus.search_corpus import Corpus, _CORPUS_QUERY
 from search.corpus.embed_material import compose_embed_text
-from search.ranking.recall import _structural
-from search.ranking.rerank import passage
+from search.ranking.graph_recall import _structural
+from search.ranking.result_rerank import passage
 
 
 def _row(node_id: str, summary: str, **overrides) -> dict:
@@ -41,7 +41,8 @@ class SummaryOnlyContractTest(unittest.TestCase):
     def test_queries_require_summary(self) -> None:
         where_clause = _CORPUS_QUERY.split("RETURN", 1)[0]
         self.assertIn("node.summary IS NOT NULL", where_clause)
-        self.assertIn("HAS_SEARCH_SEGMENT", where_clause)
+        self.assertIn("node._owner = 'analyzer'", where_clause)
+        self.assertIn("_search_embedding", _CORPUS_QUERY)
         self.assertNotIn("logical_name", _CORPUS_QUERY)
 
     def test_sparse_and_structural_channels_ignore_other_fields(self) -> None:
@@ -56,7 +57,7 @@ class SummaryOnlyContractTest(unittest.TestCase):
             ),
             _row("other", "completely unrelated"),
         ]
-        corpus = Corpus(rows, {}, "scope:test", "run:test")
+        corpus = Corpus(rows, {})
         scores = corpus.bm25.get_scores(["needle"])
         self.assertGreater(scores[0], scores[1])
         self.assertEqual([("summary-hit", 1.0)], _structural(corpus, "needle", 10))

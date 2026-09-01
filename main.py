@@ -25,7 +25,6 @@ from fastapi import FastAPI
 from api.analyze_router import router as analyze_router
 from api.mcp_app import mcp
 from api.search_router import router as search_router
-from api.source_router import router as source_router
 
 
 @asynccontextmanager
@@ -38,7 +37,6 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="ROBO Analyzer", version="0.1.0", lifespan=_lifespan)
 app.include_router(analyze_router)
 app.include_router(search_router)
-app.include_router(source_router)
 app.mount("/robo/mcp", mcp.streamable_http_app())
 
 

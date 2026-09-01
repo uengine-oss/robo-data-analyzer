@@ -19,11 +19,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 import yaml
 
-from search.config import DEFAULT
-from search.corpus.corpus import load_corpus
+from search.search_config import DEFAULT
+from search.corpus.search_corpus import load_corpus
 from search.corpus.neo4j_reader import read_driver
-from search.ranking.retriever import Retriever
-from shared.config.settings import SETTINGS
+from search.ranking.graph_retriever import Retriever
+from shared.config.app_settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 
 _GOLD = Path(__file__).resolve().parent

@@ -20,9 +20,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from pipeline.strategies import get_pipeline
+from pipeline.pipeline_strategies import get_pipeline
 from pipeline.models.analysis_meta import Codebase
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.runtime_logger import log_warning
 from graph.connection_context import Neo4jOverride, set_override

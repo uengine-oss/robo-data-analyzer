@@ -1,7 +1,7 @@
 # ROBO Data Analyzer 헌법
 
 이 문서는 Analyzer가 어떤 기능을 추가하거나 리팩터링하더라도 지켜야 하는 최상위 원칙이다.
-구체적인 wire와 필드는 `specs/131-cross-node-semantic-grounding/`의 현행 spec과 contract가
+구체적인 wire와 필드는 `specs/001-analyzer-redesign/`의 현행 spec과 contract가
 소유한다. 과거 spec·실험·보고서는 현재 제품 계약을 바꾸지 못한다.
 
 ## I. 사실을 확인한 뒤에만 제품을 바꾼다
@@ -63,8 +63,8 @@
 6. Rule atom 업무 의미와 row 분류
 7. 최종 Table·Column 설명
 
-- Example, Module, Component, Glossary, search segment, graph projection과 모든 ledger는 LLM 없이
-  결정론적으로 만든다.
+- 예시 문장, Module, Component, Glossary, search segment, graph projection과 모든 ledger를 위한
+  별도 LLM 호출은 만들지 않는다. 현행 제품 graph에서 제거된 객체는 생성·저장하지 않는다.
 - Summary·FunctionTableUsage·Rule은 같은 함수 입력에서 concern별 projection을 만들고 서로의
   자연어 결과나 완료를 기다리지 않는다. 승인된 3분할 외에 같은 함수를 다른 의미로 다시 묻지 않는다.
 - hidden judge, repair, second meaning pass, dummy warm-up, 자동 follow-up/tool loop, content retry는
@@ -92,7 +92,7 @@
 - Rule 모델은 Analyzer가 확정한 condition/effect atom key마다 의미 문자열 하나와 row의
   `business_rule|implementation_detail|insufficient` 분류 문자열 하나만 한 응답에서 채운다. atom이
   비면 Analyzer가 해당 row를 `insufficient`로 닫는다. 새 row·symbol·effect,
-  Python, Rule, Example, 근거·질문 문장을 만들지 않는다.
+  Python, Rule, 근거·질문 문장을 만들지 않는다.
 - 모델의 schema·grounding·coverage 실패는 구조 후보를 제품 의미로 승격시키지 않는다. 모델이 만든
   진단 문장을 또 저장하지 않고 Analyzer가 보존된 구조와 상태로 감사 사유를 결정론적으로 만든다.
 
@@ -104,15 +104,15 @@
   업무 조건·효과로 투영해 제품 Rule로 공개한다.
 - `implementation_detail`은 `excluded`, 의미 불충분은 `unverified`, 모델 호출 실패는
   `unavailable` finding으로 후보 row마다 정확히 한 번 종료한다.
-- Example은 공개된 Rule의 같은 조건·효과에서 LLM 0회로 생성한다. Rule과 Example의 의미 값과 순서는
-  동일해야 한다.
+- Analyzer는 공개할 Rule의 구조 조건·효과와 자연어 설명을 같은 row에서 조립한다. 별도 Example 제품은
+  만들지 않는다.
 - restricted Python은 자연어 변동을 구조적으로 비교하기 위한 표기이지 실행 코드가 아니다.
   Python parse 성공이나 반복 문자열 동일성은 업무 의미 정확도나 제품 합격이 아니다.
 
 ## VIII. 결정론 코드는 의미를 추측하지 않고 조립·검증·보존한다
 
 - AST/DDL 구조, source range, owner, direct data access, call candidate와 occurrence, source order,
-  exact key, Rule/Example 조립, graph identity와 ledger는 결정론 코드가 소유한다.
+  exact key, Rule 조립, graph identity와 ledger는 결정론 코드가 소유한다.
 - 결정론 코드는 근거가 없는 업무 뜻을 만들거나 모델의 부족한 뜻을 fallback으로 채우지 않는다.
 - 표준·라이브러리·framework 제공 함수는 내부 판정 장부에는 필요할 수 있지만 제품 `CALLS` 관계로
   공개하지 않는다. lexical shadowing 뒤 선택된 callable identity와 봉인 registry로 분류한다.
@@ -130,18 +130,18 @@
   input/output token, cache, prefill/decode, validation, write/publish 시간으로 측정한다.
 - 요청 admission은 실제 token·KV·GPU 자원에 근거한다. 관측 없이 동시성 숫자를 고정하지 않는다.
 
-## X. 기존 DB에 검증된 generation만 원자적으로 공개한다
+## X. 검증된 batch만 기존 DB에 원자적으로 공개한다
 
-- 새 database나 임시 database를 만들지 않는다. 실행 시작 시 인증과 `SHOW DATABASES`가 실패하거나
-  허용된 기존 database 집합과 online 상태가 다르면 즉시 중단한다.
-- 전체 graph 삭제나 부분 결과의 active 공개를 금지한다. 구조와 의미 stage는 서로 다른
-  `(identity, property)` 소유권을 가져야 한다.
-- 모든 node·relationship을 비공개 building generation에 쓰고, operation·property·identity·endpoint·
-  exact-once ledger를 같은 generation에서 다시 읽어 검증한다.
-- 검증이 모두 끝난 뒤에만 active generation pointer를 한 transaction에서 CAS로 교체한다. 어느 검사가
-  실패해도 transaction 전체를 rollback하고 이전 active generation을 유지한다.
+- 실행 대상 database는 요청이나 실행 설정에서 명시하며, 허용된 database인지 연결 전에 검증한다.
+  검증·벤치마크는 사용자가 작업 중인 database를 사용하지 않고 명시적으로 격리된 database만 사용한다.
+- 전체 graph 삭제와 부분 결과 공개를 금지한다. Analyzer가 소유한 node·relationship만 교체하며 Catalog·
+  Fabric 등 다른 서비스 소유 데이터는 보존한다.
+- 모든 node·relationship과 exact-once 회계는 DB 밖에서 먼저 완전히 검증한다. 제품 graph에 building
+  generation, active pointer, scope 같은 실행 제어 node나 속성을 만들지 않는다.
+- 검증된 전체 batch를 한 transaction에서 교체한다. 어느 write나 검사가 실패해도 transaction 전체를
+  rollback하고 기존 Analyzer graph를 유지한다.
 - 제품 graph에는 검증된 제품 node와 관계만 둔다. candidate, occurrence, unresolved, raw response,
-  local key, finding은 content-addressed run artifact가 소유한다.
+  local key, finding, run ID와 성능 장부는 content-addressed run artifact가 소유한다.
 
 ## XI. 검증하지 않은 축은 합격이라고 말하지 않는다
 
@@ -179,12 +179,13 @@
   않는다.
 - 원칙을 바꿀 때는 이 문서의 major/minor version을 올리고 변경 이유를 기록한다.
 
-**Version**: 2.0.0
+**Version**: 2.1.0
 
 **Ratified**: 2026-06-15
 
-**Last Amended**: 2026-08-27
+**Last Amended**: 2026-09-01
 
 **Amendment**: Parser와 Analyzer 책임 경계, 최소 비중복 모델 입력, Strategy B, exact-once 회계,
-임의 제한 금지, 기존 DB의 atomic generation 공개, 3층 검증과 범위 밖 자산 보호를 하나의 현행
-Analyzer 헌법으로 다시 세웠다. 과거의 전체 graph 삭제 전제와 Architect 제품 경계는 폐기했다.
+임의 제한 금지, 3층 검증과 범위 밖 자산 보호를 유지한다. 제품 graph의 generation/scope 제어 구조를
+폐기하고, DB 밖 완전 검증 뒤 Analyzer 소유 batch만 단일 transaction으로 교체하도록 공개 계약을
+단순화했다.

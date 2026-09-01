@@ -1,7 +1,7 @@
 """MCP over HTTP — 현재 Analyzer 검색 목록과 semantic detail을 노출한다.
 
 FastMCP(streamable-http, stateless)를 FastAPI `/robo/mcp` 에 mount. 도구 = REST 와 **같은
-검색 코어**(`search.ranking.retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
+검색 코어**(`search.ranking.graph_retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
 (진행 스트림은 프론트 REST 전용 — 사용자 합의).
 
 spec 131: ``cluster_retrieve``는 선택용 목록만, ``node_detail``은 선택한 ID의 검증된
@@ -20,7 +20,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 from search.corpus.evidence_reader import compact_rules
 
@@ -39,18 +39,16 @@ _DROP_ALWAYS = ("element_id",)
 _DROP_TABLE = _DROP_ALWAYS + ("stereotype", "writes", "reads", "calls")
 
 
-def _list_clusters(clusters: list, by_id: dict) -> list:
+def _list_clusters(clusters: list) -> list:
     """선택용 목록 프로파일 — ID·요약·관계단서·앵커 규칙만, 상세 원문/컬럼은 제외."""
     listed = []
     for c in clusters:
         nodes = []
         for n in c.get("nodes", []):
-            meta = by_id.get(n.get("id"), {})
             if n.get("label") == "TABLE":
                 m = {k: v for k, v in n.items() if k not in _DROP_TABLE}
             else:
                 m = {k: v for k, v in n.items() if k not in _DROP_ALWAYS}
-                m["logical_name"] = meta.get("logical_name", "")
                 m["rules"] = compact_rules(m.get("rules")) if n.get("role") == "anchor" else []
             nodes.append(m)
         listed.append({"score": c.get("score"), "nodes": nodes})
@@ -76,7 +74,6 @@ def _json(payload: dict) -> str:
 async def cluster_retrieve(
     query: str,
     database: Optional[str] = None,
-    analysis_scope_id: Optional[str] = None,
 ) -> str:
     """자연어 요구사항 → 관련 제품 노드 목록·규칙 근거. 응답은 JSON 텍스트.
 
@@ -92,17 +89,13 @@ async def cluster_retrieve(
     def _run() -> dict:
         # MCP 는 헤더 경로가 없으므로 database 인자로 요청별 DB 지정(analyze 규약과 동일 계층).
         _select_database(database)
-        from search.corpus.corpus import SearchUnavailable, load_corpus
-        from search.service import run_search
+        from search.corpus.search_corpus import SearchUnavailable
+        from search.search_service import run_search
         try:
-            clusters, meta = run_search(q, analysis_scope_id=analysis_scope_id)
-            corpus = load_corpus(
-                analysis_scope_id=meta.get("analysis_scope_id"),
-                generation_id=meta.get("generation_id"),
-            )
+            clusters, meta = run_search(q)
         except SearchUnavailable as e:
             return {"error": {"code": "SEARCH_UNAVAILABLE", "message": str(e)}}
-        return {"clusters": _list_clusters(clusters, corpus.by_id), "meta": meta}
+        return {"clusters": _list_clusters(clusters), "meta": meta}
 
     result = await asyncio.to_thread(_run)
     # compact·비이스케이프 1벌 — dict 반환 시 SDK 의 escape+indent+이중 전송이 크기를
@@ -115,7 +108,6 @@ async def node_detail(
     node_id: str,
     database: Optional[str] = None,
     view: str = "frame",
-    analysis_scope_id: Optional[str] = None,
 ) -> str:
     """선택한 노드의 검증된 semantic frame과 연결 근거를 조회한다.
 
@@ -138,7 +130,6 @@ async def node_detail(
         return read_node_detail(
             requested_id,
             view=requested_view,
-            analysis_scope_id=analysis_scope_id,
         )
 
     return _json(await asyncio.to_thread(_run))

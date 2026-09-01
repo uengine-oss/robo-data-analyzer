@@ -33,17 +33,6 @@ class HasColumn:
 
 
 @dataclass(frozen=True)
-class BelongsTo:
-    """네임스페이스 소속. child → parent(네임스페이스).
-
-    DDL: Table → Schema (child=table, parent=schema "db.schema").
-    AST: 그릇(FILE/CLASS) → Package (child=그릇 id, parent=폴더/패키지 id).
-    """
-    child_id: str
-    parent_id: str
-
-
-@dataclass(frozen=True)
 class Fk:
     """Table → Table (외래키).
 
@@ -76,6 +65,7 @@ class ReadsWrites:
     dml_type: str = ""                       # SELECT/INSERT/UPDATE/DELETE/MERGE — relation 보다 세분 (DBMS)
     evidence_file: str = ""                  # 발견된 파일
     evidence_line: int = 0                   # 발견된 라인
+    operations: tuple[str, ...] = ()         # 화면에 보여 줄 실제 작업 종류
 
 
 def normalize_relation(value: str) -> Optional[Literal["READS", "WRITES"]]:
@@ -116,31 +106,12 @@ class Calls:
 
 @dataclass(frozen=True)
 class ParentOf:
-    """CodeNode → nested CodeNode. parent=상위, child=중첩.
+    """상위 코드 구조 → 하위 코드 구조.
 
-    DBMS 의 PL/SQL procedure 안 SELECT/IF/CASE 같은 분석 단위가 parent 의 child.
-    Framework 는 거의 안 씀 (메서드는 평면 구조).
+    Package→File/Class, File/Class→routine/data member, routine→statement를 같은 방향으로
+    표현한다. 끝점의 구체적인 의미는 노드 라벨로 구분한다.
 
     Bottom-up DAG 알고리즘은 ``Calls`` / ``ParentOf`` 둘 다 같은 그래프 입력으로 처리.
-    """
-    parent_id: str
-    child_id: str
-
-
-# 컴포넌트 멤버십/그룹간 호출은 엣지로 저장하지 않는다 — 멤버십은 FUNCTION.component_id 속성,
-# 그룹↔그룹 호출은 CALLS + component_id 로 온디맨드 GROUP BY (build_components_step 참고).
-
-
-# ── 코드 구조 엣지 (load_ast 가 antlr JSON 트리에서 생성) ──
-
-@dataclass(frozen=True)
-class HasMember:
-    """그릇 → 멤버 ("가지다"). parent=그릇, child=멤버.
-
-    그릇 = FILE / CLASS / PACKAGE / DataType. 멤버 = 루틴(PROCEDURE/FUNCTION/METHOD/
-    TRIGGER) · 데이터(VARIABLE/CONSTANT/FIELD/PARAMETER) · struct 멤버변수.
-    멤버 종류는 **노드 라벨**로 구분 (관계는 범용). 일반 구문(SELECT/IF…)은 멤버가
-    아니라 루틴 본문의 일부 → HAS_MEMBER 아님, PARENT_OF(중첩)+NEXT(흐름) 로만.
     """
     parent_id: str
     child_id: str
@@ -178,15 +149,13 @@ class InitBy:
 
     의미 = "정의 시 외부 참조" — ``=`` 우변뿐 아니라 변수 size 표현식
     (``static char x [LEN +1]``) · 상수 식 (``#define B (A+1)``) 등 모두 포함.
-    Python 쪽이 source 라인을 직접 읽어 토큰 추출하므로 antlr 가 못 준 의존도 잡힌다.
-
-    MATCH 는 ``:ANALYZER_OWNED`` + ``id`` (종류 라벨 무관).
+    Parser가 생산한 initializer dependency fact를 Analyzer가 binding한 결과다.
     """
     from_id: str                              # 출발: Variable 또는 Constant id
     source_id: str
 
 
-# ── Example Mapping 엣지 (analyze_code 3분할 → EM 빌더가 생성) ──
+# ── Rule 엣지 ──
 
 @dataclass(frozen=True)
 class HasRule:
@@ -194,21 +163,3 @@ class HasRule:
     source_id: str
     target_id: str
     ordinal: int = 0
-
-
-@dataclass(frozen=True)
-class HasExample:
-    """Rule → Example. source=rule, target=example."""
-    source_id: str
-    target_id: str
-    ordinal: int = 0
-
-
-@dataclass(frozen=True)
-class AffectsTable:
-    """Confirmed Rule → Table effect with its deterministic operation source."""
-    source_id: str
-    target_id: str
-    access: Literal["READ", "WRITE", "READ_WRITE"]
-    op: Literal["READ", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE"]
-    op_source: Literal["SCANNER", "ANALYZER_DERIVED"]

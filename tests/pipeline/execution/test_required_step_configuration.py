@@ -1,13 +1,13 @@
 import pytest
 
 from pipeline.execution.step_config import StepConfigurationError
-from pipeline.steps.step1_parse_ddl.parse_ddl_step import parse_ddl_step
-from pipeline.steps.step2_load_ast.load_ast_step import load_ast_step
-from pipeline.steps.step5_linking.link_tables.link_tables_by_regex_step import (
+from pipeline.stages.ddl.parse_ddl_step import parse_ddl_step
+from pipeline.stages.ast.load_ast_step import load_ast_step
+from pipeline.stages.links.tables.link_tables_by_regex_step import (
     link_deterministic_step,
 )
-from pipeline.steps.step6_build_context.build_context_step import build_context_step
-from pipeline.steps.step8_post_processing.enrich_table_description_step import (
+from pipeline.stages.context.build_context_step import build_context_step
+from pipeline.stages.output.enrich_table_description_step import (
     enrich_table_description_step,
 )
 

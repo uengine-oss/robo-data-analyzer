@@ -13,32 +13,29 @@ from langchain.agents.middleware.types import ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field, ValidationError
 
-from agents.contracts import CallWrapper, DdlTransform, TableAccessPattern
-from agents.tools.inspection import (
-    SkillCatalogError,
-    build_skill_catalog,
-    make_list_code_nodes,
-)
-from agents.tools.filesystem import make_filesystem_tools
+from agents.agent_contracts import CallWrapper, DdlTransform, TableAccessPattern
+from agents.skills.skill_loader import SkillLoadError, build_skill_list
+from agents.tools.inspect_tools import make_list_code_nodes
+from agents.tools.file_tools import make_filesystem_tools
 from graph.schema.graph_nodes import CodeNode
-from llm import embedder
-from llm.client import build_llm_client
-from llm.configs.loader import _build_llm_config, load_llm_config
+from llm import text_embedder
+from llm.llm_client import build_llm_client
+from llm.configs.config_loader import _build_llm_config, load_llm_config
 from agents.middleware.cost_tracking import CostTrackingMiddleware
 from agents.middleware.tool_events import ToolEventEmitterMiddleware
-from agents.scan import _build_user_message as build_scan_user_message
+from agents.scan_agent import _build_user_message as build_scan_user_message
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.runners.prompt_values import _extract_target_and_sort
-from agents.runtime import (
+from agents.agent_runtime import (
     StructuredResponseMissingError,
     StructuredResponseStateError,
     StructuredResponseValidationError,
     _wrap_pydantic_as_submit_tool,
     run_structured_agent,
 )
-from llm import tracing
+from llm import request_tracing as tracing
 from llm.usage.cost_budget import CostBudget, InvalidCostAmountError
-from llm.usage.pricing import UnknownModelPriceError, compute_cost
+from llm.usage.model_pricing import UnknownModelPriceError, compute_cost
 from llm.usage.token_usage import (
     InvalidTokenUsageError,
     TokenUsageRecord,
@@ -50,7 +47,6 @@ from llm.usage.usage_jsonl_writer import (
     append_usage_record,
     persist_usage_and_charge_budget,
 )
-from search.query.query_llm import _record_usage
 from pipeline.execution.run_output_context import (
     reset_response_locale,
     set_response_locale,
@@ -92,7 +88,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
 
     def test_agent_stack_has_no_lossy_context_rewrite_or_summary(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        stack_source = (root / "agents" / "middleware" / "stack.py").read_text(
+        stack_source = (root / "agents" / "middleware" / "agent_stack.py").read_text(
             encoding="utf-8"
         )
         for forbidden in (
@@ -111,7 +107,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
                 self.assertNotIn(forbidden, stack_source)
         requirements = (root / "requirements.txt").read_text(encoding="utf-8")
         self.assertNotIn("deepagents", requirements)
-        settings_source = (root / "shared" / "config" / "settings.py").read_text(
+        settings_source = (root / "shared" / "config" / "app_settings.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("context_editing_trigger_tokens", settings_source)
@@ -123,8 +119,8 @@ class LlmBoundaryContractTest(unittest.TestCase):
         # Scan Agent prose is metadata, never authoritative input to another LLM.
         for relative_path in (
             "agents/prompts/residual.yaml",
-            "pipeline/semantic_tasks/summary/prompts/framework/_common.yaml",
-            "pipeline/semantic_tasks/summary/prompts/dbms/_common.yaml",
+            "pipeline/meaning/summary/prompts/framework/_common.yaml",
+            "pipeline/meaning/summary/prompts/dbms/_common.yaml",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(
@@ -132,10 +128,10 @@ class LlmBoundaryContractTest(unittest.TestCase):
                     (root / relative_path).read_text(encoding="utf-8"),
                 )
         for relative_path in (
-            "agents/residual.py",
-            "pipeline/semantic_tasks/step_entry.py",
-            "pipeline/semantic_tasks/table/prompt_values.py",
-            "pipeline/semantic_tasks/three_split_llm_fanout.py",
+            "agents/residual_agent.py",
+            "pipeline/meaning/step_entry.py",
+            "pipeline/meaning/table/prompt_values.py",
+            "pipeline/meaning/three_split_llm_fanout.py",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(
@@ -198,28 +194,18 @@ class LlmBoundaryContractTest(unittest.TestCase):
         self.assertEqual(target_id, "db:RWIS.TABLE_A")
         self.assertEqual(sort_key, "a.sql:7")
 
-    def test_component_and_glossary_calls_have_traceable_targets(self) -> None:
-        self.assertEqual(
-            ("COMPONENT:code:first", "COMPONENT:code:first"),
-            _extract_target_and_sort({"component_id": "COMPONENT:code:first"}),
-        )
-        self.assertEqual(
-            ("업무용어", "업무용어"),
-            _extract_target_and_sort({"term": "업무용어"}),
-        )
-
     def test_embedding_result_count_must_match_input_count(self) -> None:
-        provider = embedder.SETTINGS.embedding.provider
-        with patch.dict(embedder._ENCODERS, {provider: lambda _texts: [[0.1], [0.2]]}):
-            with self.assertRaises(embedder.EmbeddingError):
-                embedder.encode_texts(["one input"])
+        provider = text_embedder.SETTINGS.embedding.provider
+        with patch.dict(text_embedder._ENCODERS, {provider: lambda _texts: [[0.1], [0.2]]}):
+            with self.assertRaises(text_embedder.EmbeddingError):
+                text_embedder.encode_texts(["one input"])
 
     def test_config_name_cannot_escape_configs_directory(self) -> None:
         with self.assertRaises(RuntimeError):
             load_llm_config("../outside")
 
     def test_bundled_config_resolves_from_final_llm_tree(self) -> None:
-        config = load_llm_config("qwen36_sglang_local")
+        config = load_llm_config("qwen38_sglang_local")
 
         self.assertEqual(config.provider, "sglang")
         self.assertTrue(config.model)
@@ -298,8 +284,8 @@ class LlmBoundaryContractTest(unittest.TestCase):
             analysis_llm=SimpleNamespace(config="test-config", api_key="test-key")
         )
         with (
-            patch("llm.client.load_llm_config", return_value=config),
-            patch("llm.client.SETTINGS", settings),
+            patch("llm.llm_client.load_llm_config", return_value=config),
+            patch("llm.llm_client.SETTINGS", settings),
         ):
             with self.assertRaises(RuntimeError):
                 build_llm_client(max_tokens=0)
@@ -321,19 +307,15 @@ class LlmBoundaryContractTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CallWrapper(wrapper="dispatch", callee_from="typo")  # type: ignore[arg-type]
 
-    def test_skill_catalog_read_failure_is_not_hidden_as_blank_description(self) -> None:
+    def test_skill_list_read_failure_is_not_hidden_as_blank_description(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             skills_dir = Path(temporary_directory)
             skill_dir = skills_dir / "empty-skill"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text("", encoding="utf-8")
 
-            with self.assertRaises(SkillCatalogError):
-                build_skill_catalog(skills_dir)
-
-    def test_search_llm_usage_is_required(self) -> None:
-        with self.assertRaises(UnmeteredLlmCallError):
-            _record_usage({}, model="local", latency_ms=1)
+            with self.assertRaises(SkillLoadError):
+                build_skill_list(skills_dir)
 
     def test_usage_write_failure_is_explicit(self) -> None:
         usage = TokenUsageRecord(model="local", input_tokens=1, output_tokens=1)
@@ -616,11 +598,11 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
         )
         agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": [invalid_submit]}))
         with (
-            patch("agents.runtime.build_llm_client", return_value=object()),
-            patch("agents.runtime.build_standard_stack", return_value=[]),
-            patch("agents.runtime.create_agent", return_value=agent),
-            patch("agents.runtime.begin_agent_invoke"),
-            patch("agents.runtime.end_agent_invoke"),
+            patch("agents.agent_runtime.build_llm_client", return_value=object()),
+            patch("agents.agent_runtime.build_standard_stack", return_value=[]),
+            patch("agents.agent_runtime.create_agent", return_value=agent),
+            patch("agents.agent_runtime.begin_agent_invoke"),
+            patch("agents.agent_runtime.end_agent_invoke"),
         ):
             with self.assertRaisesRegex(StructuredResponseValidationError, "value"):
                 await run_structured_agent(
@@ -646,11 +628,11 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
         )
         agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": [valid_submit]}))
         with (
-            patch("agents.runtime.build_llm_client", return_value=object()),
-            patch("agents.runtime.build_standard_stack", return_value=[]),
-            patch("agents.runtime.create_agent", return_value=agent),
-            patch("agents.runtime.begin_agent_invoke"),
-            patch("agents.runtime.end_agent_invoke"),
+            patch("agents.agent_runtime.build_llm_client", return_value=object()),
+            patch("agents.agent_runtime.build_standard_stack", return_value=[]),
+            patch("agents.agent_runtime.create_agent", return_value=agent),
+            patch("agents.agent_runtime.begin_agent_invoke"),
+            patch("agents.agent_runtime.end_agent_invoke"),
         ):
             with self.assertRaises(StructuredResponseStateError):
                 await run_structured_agent(
@@ -687,14 +669,14 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         with (
-            patch("agents.runtime.build_llm_client", return_value=object()),
-            patch("agents.runtime.build_standard_stack", return_value=[]),
-            patch("agents.runtime.create_agent", return_value=agent),
+            patch("agents.agent_runtime.build_llm_client", return_value=object()),
+            patch("agents.agent_runtime.build_standard_stack", return_value=[]),
+            patch("agents.agent_runtime.create_agent", return_value=agent),
             patch(
-                "agents.runtime.begin_agent_invoke",
+                "agents.agent_runtime.begin_agent_invoke",
                 side_effect=OSError("diagnostic disk unavailable"),
             ),
-            patch("agents.runtime.end_agent_invoke") as end_recording,
+            patch("agents.agent_runtime.end_agent_invoke") as end_recording,
         ):
             with self.assertRaisesRegex(OSError, "diagnostic disk unavailable"):
                 await run_structured_agent(
@@ -715,11 +697,11 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
         skipped = {"messages": [SimpleNamespace(content="후보만 메모하고 끝냄")]}
         agent = SimpleNamespace(ainvoke=AsyncMock(return_value=skipped))
         with (
-            patch("agents.runtime.build_llm_client", return_value=object()),
-            patch("agents.runtime.build_standard_stack", return_value=[]),
-            patch("agents.runtime.create_agent", return_value=agent),
-            patch("agents.runtime.begin_agent_invoke"),
-            patch("agents.runtime.end_agent_invoke"),
+            patch("agents.agent_runtime.build_llm_client", return_value=object()),
+            patch("agents.agent_runtime.build_standard_stack", return_value=[]),
+            patch("agents.agent_runtime.create_agent", return_value=agent),
+            patch("agents.agent_runtime.begin_agent_invoke"),
+            patch("agents.agent_runtime.end_agent_invoke"),
         ):
             with self.assertRaises(StructuredResponseMissingError):
                 await run_structured_agent(
@@ -738,11 +720,11 @@ class AsyncLlmBoundaryContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_persistent_missing_submit_still_fails_loudly(self) -> None:
         agent = SimpleNamespace(ainvoke=AsyncMock(return_value={"messages": []}))
         with (
-            patch("agents.runtime.build_llm_client", return_value=object()),
-            patch("agents.runtime.build_standard_stack", return_value=[]),
-            patch("agents.runtime.create_agent", return_value=agent),
-            patch("agents.runtime.begin_agent_invoke"),
-            patch("agents.runtime.end_agent_invoke"),
+            patch("agents.agent_runtime.build_llm_client", return_value=object()),
+            patch("agents.agent_runtime.build_standard_stack", return_value=[]),
+            patch("agents.agent_runtime.create_agent", return_value=agent),
+            patch("agents.agent_runtime.begin_agent_invoke"),
+            patch("agents.agent_runtime.end_agent_invoke"),
         ):
             with self.assertRaises(StructuredResponseMissingError):
                 await run_structured_agent(

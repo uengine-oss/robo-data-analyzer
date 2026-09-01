@@ -19,7 +19,7 @@ from langchain_core.messages import AIMessage
 from llm.repetition_guard import RepetitionLoopAborted
 from llm.structured_output import STRUCTURED_RESPONSE_NAME
 from llm.runners.model_output_error import ModelOutputError
-from llm.runners.invocation import _extract_partial_content, _write_error_record
+from llm.runners.model_invocation import _extract_partial_content, _write_error_record
 from llm.runners.yaml_llm_runner import run_yaml_rule
 from llm.usage.token_usage import TokenUsageRecord
 from pipeline.execution.run_output_context import (
@@ -341,7 +341,7 @@ class PartialContentEvidenceTest(unittest.TestCase):
         error = RepetitionLoopAborted(
             "rule:boundary", 1, 4096, partial_text='{"rules": [    '
         )
-        with patch("llm.runners.invocation.write_rule_record") as record:
+        with patch("llm.runners.model_invocation.write_rule_record") as record:
             _write_error_record(
                 rule_name="boundary",
                 system_prompt="sys",
@@ -362,7 +362,7 @@ class PartialContentEvidenceTest(unittest.TestCase):
         self.assertEqual(_extract_partial_content(error), "tail")
 
     def test_stream_callback_tail_fills_sdk_timeout_evidence(self) -> None:
-        with patch("llm.runners.invocation.write_rule_record") as record:
+        with patch("llm.runners.model_invocation.write_rule_record") as record:
             _write_error_record(
                 rule_name="boundary",
                 system_prompt="sys",
@@ -378,7 +378,7 @@ class PartialContentEvidenceTest(unittest.TestCase):
 
     def test_exception_owned_partial_precedes_stream_callback_tail(self) -> None:
         error = RepetitionLoopAborted("rule:x", 1, 10, partial_text="owned")
-        with patch("llm.runners.invocation.write_rule_record") as record:
+        with patch("llm.runners.model_invocation.write_rule_record") as record:
             _write_error_record(
                 rule_name="boundary",
                 system_prompt="sys",
@@ -402,7 +402,7 @@ class PartialContentEvidenceTest(unittest.TestCase):
 
     def test_validation_input_extraction_failure_is_visible(self) -> None:
         error = SimpleNamespace(errors=lambda: (_ for _ in ()).throw(RuntimeError("bad evidence")))
-        with patch("llm.runners.invocation.log_warning") as warning:
+        with patch("llm.runners.model_invocation.log_warning") as warning:
             self.assertEqual("", _extract_partial_content(error))
         warning.assert_called_once()
         self.assertEqual("extract_validation_input_failed", warning.call_args.args[1])

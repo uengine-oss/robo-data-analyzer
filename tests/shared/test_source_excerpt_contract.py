@@ -6,9 +6,9 @@ from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
-from pipeline.steps.step2_load_ast.load_ast_step import _with_code_text
-from pipeline.semantic_tasks.source_body import exact_source_body
-from shared.files.cache import SourceFileCache
+from pipeline.stages.ast.load_ast_step import _with_code_text
+from pipeline.meaning.source_body import exact_source_body
+from shared.files.source_cache import SourceFileCache
 from shared.files.source_excerpt import SourceExcerpt
 
 

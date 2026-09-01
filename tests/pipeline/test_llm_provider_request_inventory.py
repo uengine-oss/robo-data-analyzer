@@ -11,13 +11,13 @@ from unittest.mock import patch
 
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from agents.contracts import ResidualPatternResult, ScanProposal
-from agents.external import _user_message as external_user_message
-from agents.runtime import _wrap_pydantic_as_submit_tool
-from agents.scan import _build_scan_tools, _build_user_message as scan_user_message
-from agents.tools.mining import make_structure_candidate_tool
-from agents.tools.sampling import make_sample_exploration_tools
-from agents.tools.validation import make_verify_external_rule_tool
+from agents.agent_contracts import ResidualPatternResult, ScanProposal
+from agents.external_agent import _user_message as external_user_message
+from agents.agent_runtime import _wrap_pydantic_as_submit_tool
+from agents.scan_agent import _build_scan_tools, _build_user_message as scan_user_message
+from agents.tools.pattern_mining import make_structure_candidate_tool
+from agents.tools.sample_tools import make_sample_exploration_tools
+from agents.tools.verify_tools import make_verify_external_rule_tool
 from graph.schema.graph_nodes import CodeNode
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
 from tests.pipeline.semantic_prompt_paths import prompt_dir
@@ -27,22 +27,22 @@ from llm.structured_output import (
 )
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.semantic_tasks.table.response_schema import (
+from pipeline.meaning.table.response_schema import (
     batch_function_table_usages_response_model,
     function_table_usages_response_model,
 )
-from pipeline.semantic_tasks.rule.meaning_frame import (
+from pipeline.meaning.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     rule_meaning_response_model,
 )
 from pipeline.models.semantic_frame import SlotSpec
-from pipeline.semantic_tasks.summary.response_schema import frame_summary_response_model
-from pipeline.semantic_tasks.table.description_frame import (
+from pipeline.meaning.summary.response_schema import frame_summary_response_model
+from pipeline.meaning.table.description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
-from pipeline.steps.step4_scan_project.external_skills import ExternalFormatProposal
-from pipeline.semantic_tasks.semantic_frame_planner import (
+from pipeline.stages.scan.external_skills import ExternalFormatProposal
+from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
@@ -50,7 +50,6 @@ from pipeline.execution.run_output_context import (
     reset_response_locale,
     set_response_locale,
 )
-from search.query.rewrite import GlossaryRewriteResponse, _cluster_system
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -251,14 +250,6 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
             external_tools[-1], strict=True,
         )["function"]["parameters"]
 
-        with patch("search.query.rewrite.build_glossary", return_value={
-            "terms": [{
-                "canonical": "ORDER", "colloquial": ["주문"],
-                "meaning": "주문 업무",
-            }],
-        }):
-            search_system = _cluster_system()
-
         return (
             ProviderRequest(
                 "scan", "agent-tools",
@@ -351,24 +342,15 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                     ),
                 }, _table_model(), sealed_skt_calls=2,
             ),
-            ProviderRequest(
-                "search_glossary", "search:function_calling",
-                search_system, "주문을 조회해줘",
-                provider_structured_output_binding_schema(
-                    GlossaryRewriteResponse.model_json_schema(),
-                    method="function_calling",
-                ),
-            ),
         )
 
-    def test_exactly_eleven_boundaries_serialize_through_production_builders(self):
+    def test_exactly_ten_boundaries_serialize_through_production_builders(self):
         inventory = self._inventory()
-        self.assertEqual(11, len(inventory))
+        self.assertEqual(10, len(inventory))
         self.assertEqual({
             "scan", "external", "residual", "framework_summary",
             "dbms_summary", "framework_table_usage", "dbms_table_usage",
             "framework_rule", "dbms_rule", "table_description",
-            "search_glossary",
         }, {item.name for item in inventory})
         for item in inventory:
             with self.subTest(boundary=item.name):

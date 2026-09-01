@@ -160,9 +160,7 @@ class Module:
     DBMS 예: PL/SQL package · 스크립트 파일.
 
     ``start_line`` / ``end_line`` 으로 한 파일 안 여러 클래스(Java inner class 등)의
-    라인 범위를 구분한다. 함수 의미 분석이 끝나면 Analyzer는 검증된 함수 요약을
-    ``summary_rollup_*`` 두 배열에 같은 순서로 복제한다. Module 자체의 새 요약이나
-    역할을 추측하지 않는다.
+    라인 범위를 구분한다.
     """
     id: str                                  # 고유 식별자 = 이 모듈의 fqn (예: "com.example.OrderService")
     name: str
@@ -181,9 +179,6 @@ class Module:
     extends_type: str = ""
     implements_types: str = ""
 
-    # 결정론적 함수 요약 묶음. 같은 index의 ID와 summary가 한 쌍이다.
-    summary_rollup_function_ids: tuple[str, ...] = ()
-    summary_rollup_summaries: tuple[str, ...] = ()
 
 
 @dataclass
@@ -207,7 +202,7 @@ class CodeNode:
     raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
     # 소속·트리 (참조 = 대상 노드의 id) ────
-    owner_id: str = ""                       # 소속 Module 의 id (HAS_MEMBER 엣지 빌드 + 모듈 그룹핑용 — 노드 속성엔 안 박음)
+    owner_id: str = ""                       # 소속 Module id (PARENT_OF 빌드용 — 제품 속성에는 저장하지 않음)
     package: str = ""                        # 소속 패키지(폴더) id — external 호출 스키마 귀속용 (노드 속성엔 안 박음)
     parent_id: Optional[str] = None          # 트리 부모 (DBMS nested range 흡수 — Framework 는 거의 None)
 
@@ -246,10 +241,6 @@ class CodeNode:
         return self.label
 
 
-# 컴포넌트(부품)는 합성 노드로 만들지 않는다 — Leiden 군집 멤버십은 FUNCTION.component_id
-# 속성이 단일 진실(build_components_step). 이름·그룹간 관계는 거기서 파생(시각화=hull, 그룹호출=온디맨드 GROUP BY).
-
-
 @dataclass(frozen=True)
 class Variable:
     """변수 — 필드 / 멤버 / 전역변수 (선언).
@@ -267,6 +258,7 @@ class Variable:
     comment: str = ""
     annotations: str = ""
     init_value: str = ""                     # 초기화식
+    _identifier_references: tuple[tuple[str, int], ...] = ()
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
     raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
@@ -282,6 +274,7 @@ class Constant:
     end_line: int
     label: str                               # Neo4j 라벨 = 자기 antlr type (필수, DEFINE / CONSTANT_FIELD …)
     value: str = ""                          # 상수 값
+    _identifier_references: tuple[tuple[str, int], ...] = ()
     var_type: str = ""
     comment: str = ""
     code_text: str = ""                      # 원문 슬라이스 (step2 가 채움 — 라인 범위 기준)
@@ -303,11 +296,11 @@ class DataType:
     raw_code_text: str = ""                  # 결정론 분석 전용 정확한 원문 (Neo4j 비저장)
 
 
-# ── Example Mapping 노드 (analyze_code 3분할 결과 → EM 빌더가 생성) ──
+# ── Rule 노드 ──
 
 @dataclass(frozen=True)
 class Rule:
-    """결정론 구조 규칙 — JSON 봉투 + 파이썬 표현식 leaf (spec 131).
+    """결정론 구조와 모델이 채운 사람이 읽는 의미를 함께 가진 규칙.
 
     정체성 ``id`` = ``<function id>::R<anchor>`` — anchor 가 파일 절대 줄이라 함수 내
     유일하다(폐기된 statement 해시 공유 개념을 사용하지 않는다).
@@ -316,15 +309,5 @@ class Rule:
     anchor_line: int = 0                     # 절대 파일 줄 — 채점·배칭의 단일 좌표
     structural_condition: str = ""           # 원문에서 결정론 생성한 Python 조건
     structural_effects: tuple[str, ...] = () # 원문에서 결정론 생성한 Python 효과
-    business_effects: tuple[str, ...] = ()   # Strategy-B 업무 의미 Python 효과
-
-
-@dataclass(frozen=True)
-class Example:
-    """구조화 Rule 검증 시나리오 — 파이썬 leaf (spec 116).
-
-    정체성 ``id`` = ``<rule id>::E<idx>``. given/then 은 파이썬 leaf 목록.
-    """
-    id: str
-    given_conditions: tuple[str, ...] = ()   # Rule에서 그대로 재사용한 구조 조건 목록
-    expected_effects: tuple[str, ...] = ()   # 조건이 참일 때 발생할 업무 효과 목록
+    condition_description: str = ""          # 사람이 읽는 실행 조건
+    effect_descriptions: tuple[str, ...] = () # 사람이 읽는 실행 결과

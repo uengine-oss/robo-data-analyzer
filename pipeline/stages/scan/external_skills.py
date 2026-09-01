@@ -1,0 +1,343 @@
+"""Closed ExternalSkill schema, timeout validation and atomic persistence."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+import regex
+import yaml
+
+from llm.structured_schema import CompactLlmResponse
+from shared.files.safe_paths import resolve_within
+from shared.files.run_cache_context import read_run_text
+
+
+_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_EXTENSION = re.compile(r"^\.[a-z0-9][a-z0-9._+-]*$")
+_RULE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_UNSAFE = (
+    re.compile(r"\([^)]*[+*][^)]*\)\s*(?:[+*]|\{\d)") ,
+    re.compile(r"\\[1-9]"),
+    re.compile(r"\(\?(?:R|0|\()"),
+)
+
+
+class ExternalExtractionRule(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    pattern: Annotated[str, Field(min_length=1)]
+    key_group: str
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, value: str) -> str:
+        if not _RULE_NAME.fullmatch(value):
+            raise ValueError("rule name must be a lowercase identifier")
+        return value
+
+    @field_validator("key_group")
+    @classmethod
+    def _valid_key_group(cls, value: str) -> str:
+        if not _RULE_NAME.fullmatch(value):
+            raise ValueError("key_group must be a named capture group")
+        return value
+
+class _ExternalRuleSet(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    rules: tuple[ExternalExtractionRule, ...]
+
+    @field_validator("name")
+    @classmethod
+    def _valid_slug(cls, value: str) -> str:
+        if not _SLUG.fullmatch(value):
+            raise ValueError("skill name must be a lowercase slug")
+        return value
+
+    @model_validator(mode="after")
+    def _unique_rules(self) -> "_ExternalRuleSet":
+        if not self.rules:
+            raise ValueError("rules must contain at least one entry")
+        names = [rule.name for rule in self.rules]
+        if len(names) != len(set(names)):
+            raise ValueError("rule names must be unique")
+        return self
+
+
+class ProposedExternalExtractionRule(CompactLlmResponse):
+    """Identity-free model proposal; every pattern must expose ``key``."""
+
+    pattern: Annotated[str, Field(min_length=1)]
+
+
+class ExternalFormatProposal(CompactLlmResponse):
+    """Minimal model output for an unknown external format."""
+
+    rules: tuple[ProposedExternalExtractionRule, ...]
+
+    @model_validator(mode="after")
+    def _nonempty_rules(self) -> "ExternalFormatProposal":
+        if not self.rules:
+            raise ValueError("rules must contain at least one entry")
+        return self
+
+
+class ExternalSkill(_ExternalRuleSet):
+    """Analyzer-owned reusable skill with the learned extension assignment."""
+
+    extensions: tuple[str, ...]
+
+    @field_validator("extensions")
+    @classmethod
+    def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.lower() for value in values)
+        if any(not _EXTENSION.fullmatch(value) for value in normalized):
+            raise ValueError("extensions must contain normalized suffixes")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("extensions must be unique")
+        return normalized
+
+
+@dataclass(frozen=True)
+class ExternalRuleMatch:
+    """One proposed span over the original text — never generated content (spec 078)."""
+    key: str
+    start: int                               # char offset of the full match in the source
+    end: int                                 # exclusive char offset
+    line: int
+    rule_name: str
+
+
+@dataclass(frozen=True)
+class ValidatedExternalSkill:
+    skill: ExternalSkill
+    fingerprint: str
+    is_validated: bool = True
+
+
+class ExternalSkillValidationError(ValueError):
+    pass
+
+
+def _effective_timeout(text_length: int) -> float:
+    """Size-aware default regex timeout (wall-clock).
+
+    고정 50ms 는 두 가지 실측 문제를 냈다: ① MB 급 실물 파일은 선형 패턴도 초과,
+    ② 로컬 LLM 이 같은 머신 CPU 를 점유하면 프로세스 선점만으로 수십 ms 가 튄다
+    (동일 skill 이 검증은 통과하고 적용에서 죽는 비결정 거부). 선형 스캔 여유
+    (≈1MB/s)+고정 여유를 입력 전체 크기에 비례해 준다. 고정 천장을 두면 큰 정상
+    파일이 내용과 무관하게 거부되므로 사용하지 않는다. 파국적 백트래킹은 입력 비례
+    시간을 넘으면 계속 거부한다. 호출자가 timeout_seconds 를 명시하면 그 값이 그대로
+    쓰인다.
+    """
+    return 0.25 + text_length * 1e-6
+
+
+def _compiled_rule(rule: ExternalExtractionRule):
+    for unsafe in _UNSAFE:
+        if unsafe.search(rule.pattern):
+            raise ExternalSkillValidationError(f"unsafe regex construct in rule {rule.name}")
+    try:
+        compiled = regex.compile(rule.pattern, regex.MULTILINE)
+    except regex.error as error:
+        raise ExternalSkillValidationError(f"regex compile failed for {rule.name}: {error}") from error
+    required = {rule.key_group}
+    missing = sorted(group for group in required if group not in compiled.groupindex)
+    if missing:
+        raise ExternalSkillValidationError(f"missing named capture groups for {rule.name}: {missing}")
+    return compiled
+
+
+def _apply_rule(
+    rule: ExternalExtractionRule,
+    text: str,
+    *,
+    timeout_seconds: float | None,
+) -> list[ExternalRuleMatch]:
+    compiled = _compiled_rule(rule)
+    timeout = timeout_seconds if timeout_seconds is not None else _effective_timeout(len(text))
+    output: list[ExternalRuleMatch] = []
+    try:
+        for match in compiled.finditer(text, timeout=timeout):
+            key = (match.group(rule.key_group) or "").strip()
+            if not key:
+                raise ExternalSkillValidationError(f"rule {rule.name} produced an empty key")
+            if match.end() <= match.start():
+                raise ExternalSkillValidationError(f"rule {rule.name} produced a zero-width span")
+            line = text.count("\n", 0, match.start()) + 1
+            output.append(ExternalRuleMatch(key, match.start(), match.end(), line, rule.name))
+    except TimeoutError as error:
+        raise ExternalSkillValidationError(f"rule {rule.name} exceeded regex timeout") from error
+    return output
+
+
+def probe_extraction_rule(
+    pattern: str,
+    key_group: str,
+    text: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> list[ExternalRuleMatch]:
+    """Run one candidate rule against one text with the production engine.
+
+    Shared by the agent's verify tool so "what the agent verified" is byte-for-
+    byte "what validation/production will execute" (same safety checks, same
+    span semantics).  Raises ``ExternalSkillValidationError`` on any rejection.
+    """
+    try:
+        rule = ExternalExtractionRule(name="candidate", pattern=pattern, key_group=key_group)
+    except Exception as error:
+        raise ExternalSkillValidationError(f"invalid rule fields: {error}") from error
+    return _apply_rule(rule, text, timeout_seconds=timeout_seconds)
+
+
+def _fingerprint(skill: ExternalSkill) -> str:
+    payload = json.dumps(skill.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_external_skill(
+    skill: ExternalSkill,
+    positive_samples: list[str],
+    *,
+    negative_samples: list[str] | None = None,
+    timeout_seconds: float | None = None,
+) -> ValidatedExternalSkill:
+    """Validate safety and exact non-whitespace source coverage.
+
+    A custom parser is accepted only when its rule spans form a non-overlapping
+    closure over every positive source.  Whitespace between records is the sole
+    permitted gap; any other byte remains semantic because an unknown format has
+    no grammar that could prove it ignorable.
+    """
+    if not positive_samples:
+        raise ExternalSkillValidationError("at least one positive sample is required")
+    all_matches: list[ExternalRuleMatch] = []
+    for sample_index, text in enumerate(positive_samples):
+        sample_matches: list[ExternalRuleMatch] = []
+        for rule in skill.rules:
+            matches = _apply_rule(rule, text, timeout_seconds=timeout_seconds)
+            all_matches.extend(matches)
+            sample_matches.extend(matches)
+        _require_exact_source_coverage(text, sample_matches, sample_index=sample_index)
+    if not all_matches:
+        raise ExternalSkillValidationError("skill produced no keys from positive samples")
+    for rule in skill.rules:
+        for match in all_matches:
+            if len(match.key) >= 4 and (match.key in rule.pattern or re.escape(match.key) in rule.pattern):
+                raise ExternalSkillValidationError("skill pattern enumerates an extracted customer key")
+    for text in negative_samples or []:
+        for rule in skill.rules:
+            if _apply_rule(rule, text, timeout_seconds=timeout_seconds):
+                raise ExternalSkillValidationError(f"rule {rule.name} matched a negative sample")
+    return ValidatedExternalSkill(skill=skill, fingerprint=_fingerprint(skill))
+
+
+def _require_exact_source_coverage(
+    text: str,
+    matches: list[ExternalRuleMatch],
+    *,
+    sample_index: int,
+) -> None:
+    """Require exact-once coverage of every non-whitespace source character."""
+    ordered = sorted(matches, key=lambda item: (item.start, item.end, item.rule_name))
+    cursor = 0
+    for match in ordered:
+        if match.start < cursor:
+            raise ExternalSkillValidationError(
+                f"overlapping source spans in positive sample[{sample_index}] "
+                f"at [{match.start}:{match.end}]"
+            )
+        gap = text[cursor:match.start]
+        if gap and not gap.isspace():
+            excerpt = gap.strip().replace("\r", "\\r").replace("\n", "\\n")[:120]
+            raise ExternalSkillValidationError(
+                f"uncovered source in positive sample[{sample_index}] "
+                f"at [{cursor}:{match.start}]: {excerpt}"
+            )
+        cursor = match.end
+    tail = text[cursor:]
+    if tail and not tail.isspace():
+        excerpt = tail.strip().replace("\r", "\\r").replace("\n", "\\n")[:120]
+        raise ExternalSkillValidationError(
+            f"uncovered source in positive sample[{sample_index}] "
+            f"at [{cursor}:{len(text)}]: {excerpt}"
+        )
+
+
+def apply_validated_external_skill(
+    validated: ValidatedExternalSkill,
+    text: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> list[ExternalRuleMatch]:
+    if not validated.is_validated or validated.fingerprint != _fingerprint(validated.skill):
+        raise ExternalSkillValidationError("external skill validation fingerprint mismatch")
+    output = [
+        match
+        for rule in validated.skill.rules
+        for match in _apply_rule(rule, text, timeout_seconds=timeout_seconds)
+    ]
+    seen: set[tuple[str, int, int]] = set()
+    unique: list[ExternalRuleMatch] = []
+    for item in output:
+        identity = (item.key, item.start, item.end)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(item)
+    return unique
+
+
+def serialize_external_skill(skill: ExternalSkill) -> str:
+    body = yaml.safe_dump(skill.model_dump(mode="json"), allow_unicode=True, sort_keys=False)
+    return f"# External Skill: {skill.name}\n\n```yaml\n{body}```\n"
+
+
+def parse_external_skill(document: str) -> ExternalSkill:
+    match = re.fullmatch(r"# External Skill: [^\n]+\n\n```yaml\n(.*)```\n", document, re.DOTALL)
+    if match is None:
+        raise ExternalSkillValidationError("invalid external SKILL.md envelope")
+    payload = yaml.safe_load(match.group(1))
+    if not isinstance(payload, dict):
+        raise ExternalSkillValidationError("external SKILL.md payload must be a mapping")
+    return ExternalSkill.model_validate(payload)
+
+
+def persist_external_skill(skill: ExternalSkill, root: Path) -> Path:
+    if not skill.extensions:
+        raise ExternalSkillValidationError(
+            "extensionless external skill is run-only and cannot be persisted"
+        )
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    skill_dir = resolve_within(root, skill.name)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "SKILL.md"
+    # 고정 tmp 이름은 동시 run 2개가 같은 skill 을 저장할 때 상대 쓰기를 지울 수
+    # 있다 — 프로세스별 유일 이름으로 원자 교체.
+    temporary = skill_dir / f".SKILL.md.{os.getpid()}.tmp"
+    try:
+        temporary.write_text(serialize_external_skill(skill), encoding="utf-8")
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def load_external_skills(root: Path) -> list[ExternalSkill]:
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    return [
+        parse_external_skill(read_run_text(path, encoding="utf-8"))
+        for path in sorted(root.glob("*/SKILL.md"))
+    ]

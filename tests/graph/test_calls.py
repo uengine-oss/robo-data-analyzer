@@ -5,12 +5,10 @@ import unittest
 
 from tests.unittest_function_cases import load_function_cases
 
-from graph.edges.calls import (
-    INTERNAL_QUERY,
+from graph.edges.call_edges import (
     CallRelationshipInvariantError,
     emit_calls,
     internal_call_items,
-    upsert_calls,
 )
 from graph.schema.graph_edges import Calls
 
@@ -43,15 +41,8 @@ def test_non_internal_scope_is_rejected_at_product_boundary() -> None:
         internal_call_items([edge])
 
 
-def test_storage_and_stream_share_the_internal_population() -> None:
+def test_stream_uses_the_final_minimal_calls_shape() -> None:
     edge = Calls("dispatch_call", "dispatch_call", recursive=True)
-
-    class Client:
-        def __init__(self) -> None:
-            self.calls = []
-
-        async def run_batch_unwind(self, query, items) -> None:
-            self.calls.append((query, items))
 
     class Stream:
         def __init__(self) -> None:
@@ -60,22 +51,16 @@ def test_storage_and_stream_share_the_internal_population() -> None:
         async def emit_async(self, event) -> None:
             self.events.append(event)
 
-    client = Client()
     stream = Stream()
-    asyncio.run(upsert_calls(client, [edge]))  # type: ignore[arg-type]
     asyncio.run(emit_calls(stream, [edge]))
 
-    assert client.calls == [(
-        INTERNAL_QUERY,
-        [{"caller_id": "dispatch_call", "callee_id": "dispatch_call", "recursive": True}],
-    )]
     assert stream.events == [{
         "type": "relationship_event",
         "op": "merge",
         "rel_type": "CALLS",
         "from": {"id": "dispatch_call"},
         "to": {"id": "dispatch_call"},
-        "props": {"scope": "internal", "recursive": True},
+        "props": {},
     }]
 
 
@@ -91,7 +76,7 @@ class CallsContractTest(unittest.TestCase):
         test_non_internal_scope_is_rejected_at_product_boundary()
 
     def test_storage_stream_parity(self) -> None:
-        test_storage_and_stream_share_the_internal_population()
+        test_stream_uses_the_final_minimal_calls_shape()
 
 
 if __name__ == "__main__":

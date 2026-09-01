@@ -5,11 +5,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from agents.contracts import ScanProposal
-from agents.scan import SkillSelectionAmbiguityError, run_scan_agent
+from agents.agent_contracts import ScanProposal
+from agents.scan_agent import SkillSelectionAmbiguityError, run_scan_agent
 from graph.schema.graph_nodes import CodeNode, Table
 from llm.usage.cost_budget import CostBudget
-from pipeline.quality_gates.lexing import split_source_for_linking
+from pipeline.checks.source_lexing import split_source_for_linking
 
 
 def _node(path: Path, end_line: int = 8) -> CodeNode:
@@ -44,7 +44,7 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             invoke = AsyncMock(side_effect=AssertionError("registered SKILL called the Agent"))
-            with patch("agents.scan._run_agent", new=invoke):
+            with patch("agents.scan_agent._run_agent", new=invoke):
                 result = await run_scan_agent(
                     project_root=root,
                     scanner_input={},
@@ -55,7 +55,7 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
                 )
 
         invoke.assert_not_awaited()
-        self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
+        self.assertEqual("proframe", result.matched_skill)
         self.assertEqual("completed", result.table_access_status)
 
     async def test_unique_verified_skill_uses_zero_agent_calls(self) -> None:
@@ -73,9 +73,9 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
             )
             invoke = AsyncMock(side_effect=AssertionError("known SKILL called the Agent"))
             with (
-                patch("agents.scan._run_agent", new=invoke),
+                patch("agents.scan_agent._run_agent", new=invoke),
                 patch(
-                    "pipeline.steps.step5_linking.link_tables.regex_table_linker.split_source_for_linking",
+                    "pipeline.stages.links.tables.regex_table_linker.split_source_for_linking",
                     wraps=split_source_for_linking,
                 ) as split_source,
             ):
@@ -94,7 +94,7 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
 
         invoke.assert_not_awaited()
         self.assertEqual(1, split_source.call_count)
-        self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
+        self.assertEqual("proframe", result.matched_skill)
         self.assertFalse(hasattr(result, "evidence_locations"))
         self.assertEqual(["PFM_CATCH"], result.handler_markers)
         self.assertTrue(result.api_contracts)
@@ -111,15 +111,15 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
             invoke = AsyncMock(return_value=draft)
             with (
                 patch(
-                    "agents.scan._iter_skill_contracts",
+                    "agents.scan_agent._iter_skill_contracts",
                     return_value=[
                         ("candidate-a", _generic_contract()),
                         ("candidate-b", _generic_contract()),
                     ],
                 ),
-                patch("agents.scan._run_agent", new=invoke),
+                patch("agents.scan_agent._run_agent", new=invoke),
                 patch(
-                    "pipeline.steps.step5_linking.link_tables.regex_table_linker.split_source_for_linking",
+                    "pipeline.stages.links.tables.regex_table_linker.split_source_for_linking",
                     wraps=split_source_for_linking,
                 ) as split_source,
             ):
@@ -157,9 +157,9 @@ class DeterministicSkillSelectionTest(unittest.IsolatedAsyncioTestCase):
                 ("candidate-b", _generic_contract()),
             ]
             with (
-                patch("agents.scan._iter_skill_contracts", return_value=contracts),
+                patch("agents.scan_agent._iter_skill_contracts", return_value=contracts),
                 patch(
-                    "pipeline.steps.step5_linking.link_tables.regex_table_linker.split_source_for_linking",
+                    "pipeline.stages.links.tables.regex_table_linker.split_source_for_linking",
                     wraps=split_source_for_linking,
                 ) as split_source,
             ):

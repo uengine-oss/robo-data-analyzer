@@ -11,8 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from agents.tools.validation import make_verify_table_regex_tool
-from pipeline.steps.step5_linking.link_tables.regex_table_linker import (
+from agents.tools.verify_tools import make_verify_table_regex_tool
+from pipeline.stages.links.tables.regex_table_linker import (
     LinkOutcome,
     MatchSample,
 )
@@ -71,7 +71,7 @@ class VerifyTableRegexIdempotentTest(unittest.TestCase):
             ],
         )
         with patch(
-            "agents.tools.validation.RegexTableLinker.link",
+            "agents.tools.verify_tools.RegexTableLinker.link",
             new=AsyncMock(return_value=outcome),
         ) as link:
             first = asyncio.run(tool.ainvoke({"call_regex": regex}))
@@ -100,7 +100,7 @@ class VerifyTableRegexIdempotentTest(unittest.TestCase):
             )],
         )
         with patch(
-            "agents.tools.validation.RegexTableLinker.link",
+            "agents.tools.verify_tools.RegexTableLinker.link",
             new=AsyncMock(return_value=outcome),
         ):
             report = asyncio.run(tool.ainvoke({"call_regex": regex}))
@@ -122,7 +122,7 @@ class VerifyTableRegexIdempotentTest(unittest.TestCase):
             )],
         )
         with patch(
-            "agents.tools.validation.RegexTableLinker.link",
+            "agents.tools.verify_tools.RegexTableLinker.link",
             new=AsyncMock(return_value=outcome),
         ):
             report = asyncio.run(tool.ainvoke({"call_regex": regex}))

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import httpx
 
-from llm import embedder
+from llm import text_embedder
 from llm.usage.cost_budget import CostBudget
 
 
@@ -18,9 +18,9 @@ def test_long_search_text_reaches_embedding_provider_without_truncation() -> Non
         received.append(list(texts))
         return [[0.25, 0.75] for _text in texts]
 
-    provider = embedder.SETTINGS.embedding.provider
-    with patch.dict(embedder._ENCODERS, {provider: encode}):
-        vectors = embedder.encode_texts([source])
+    provider = text_embedder.SETTINGS.embedding.provider
+    with patch.dict(text_embedder._ENCODERS, {provider: encode}):
+        vectors = text_embedder.encode_texts([source])
 
     assert received == [[source]]
     assert vectors == [[0.25, 0.75]]
@@ -49,7 +49,7 @@ class _EmbeddingClient:
 
     async def post(self, _url: str, *, json: dict) -> _EmbeddingResponse:
         assert json == {
-            "model": embedder.SETTINGS.embedding.model,
+            "model": text_embedder.SETTINGS.embedding.model,
             "input": ["업무 의미"],
         }
         return self.response
@@ -70,7 +70,7 @@ def test_paid_embedding_usage_is_persisted_and_charged() -> None:
     budget = CostBudget(limit_usd=1.0)
     with tempfile.TemporaryDirectory() as temporary:
         usage_path = Path(temporary) / "usage.jsonl"
-        vectors = asyncio.run(embedder._post(
+        vectors = asyncio.run(text_embedder._post(
             _EmbeddingClient(response),
             "https://provider.invalid/embeddings",
             ["업무 의미"],
@@ -95,14 +95,14 @@ def test_paid_embedding_without_provider_usage_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         usage_path = Path(temporary) / "usage.jsonl"
         try:
-            asyncio.run(embedder._post(
+            asyncio.run(text_embedder._post(
                 _EmbeddingClient(response),
                 "https://provider.invalid/embeddings",
                 ["업무 의미"],
                 usage_log_path=usage_path,
                 cost_budget=budget,
             ))
-        except embedder.EmbeddingError as error:
+        except text_embedder.EmbeddingError as error:
             assert "usage is missing" in str(error)
         else:
             raise AssertionError("missing paid embedding usage must fail")
@@ -115,7 +115,7 @@ def test_paid_embedding_http_failure_is_not_retried_or_split() -> None:
     budget = CostBudget(limit_usd=1.0)
 
     try:
-        asyncio.run(embedder._send(
+        asyncio.run(text_embedder._send(
             client,
             "https://provider.invalid/embeddings",
             ["첫 의미", "둘째 의미"],
@@ -123,7 +123,7 @@ def test_paid_embedding_http_failure_is_not_retried_or_split() -> None:
             usage_log_path=Path("unused.jsonl"),
             cost_budget=budget,
         ))
-    except embedder.EmbeddingError as error:
+    except text_embedder.EmbeddingError as error:
         assert "retry and split are forbidden" in str(error)
     else:
         raise AssertionError("paid embedding transport failure must stop the run")

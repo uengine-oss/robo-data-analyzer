@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.pause_controller import RunStopped
-from llm.fanout import gather_with_warmup
+from llm.request_fanout import gather_with_warmup
 
 
 class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
@@ -132,8 +132,8 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
     def test_both_step7_engines_use_the_shared_async_cleanup(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         for relative_path in (
-            "pipeline/semantic_tasks/framework_per_node.py",
-            "pipeline/semantic_tasks/batch_analyze.py",
+            "pipeline/meaning/framework_per_node.py",
+            "pipeline/meaning/batch_analyze.py",
         ):
             source = (repository_root / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
@@ -142,28 +142,19 @@ class PauseControllerContractTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("await pause.cancel_and_wait(", source)
 
         framework_source = (
-            repository_root / "pipeline/semantic_tasks/framework_per_node.py"
+            repository_root / "pipeline/meaning/framework_per_node.py"
         ).read_text(encoding="utf-8")
         self.assertIn("await pause.gate()", framework_source)
         self.assertIn("pause.set_inflight(list(pending))", framework_source)
 
-    def test_all_step7_item_fanouts_are_restartable_and_stop_responsive(self) -> None:
+    def test_table_enrichment_fanout_is_restartable_and_stop_responsive(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
         for relative_path in (
-            "pipeline/steps/step8_post_processing/enrich_table_description_step.py",
-            "pipeline/steps/step8_post_processing/build_module_summary_rollups_step.py",
+            "pipeline/stages/output/enrich_table_description_step.py",
         ):
             source = (repository_root / relative_path).read_text(encoding="utf-8")
             with self.subTest(path=relative_path):
                 self.assertIn("pause.run_restartable_during_pause", source)
-
-        component_source = (
-            repository_root
-            / "pipeline/steps/step8_post_processing/build_components_step.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("await asyncio.to_thread(_cluster", component_source)
-        self.assertGreaterEqual(component_source.count("await pause.gate()"), 2)
-        self.assertNotIn("pause.run_restartable_during_pause", component_source)
 
 
 if __name__ == "__main__":

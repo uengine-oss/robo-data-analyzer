@@ -27,13 +27,9 @@ from typing import Annotated, TypedDict
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.analysis_meta import AnalysisRun
 from graph.schema.graph_edges import (
-    AffectsTable,
-    BelongsTo,
     Calls,
     Fk,
     HasColumn,
-    HasExample,
-    HasMember,
     HasRule,
     InitBy,
     ParentOf,
@@ -45,7 +41,6 @@ from graph.schema.graph_nodes import (
     Column,
     Constant,
     DataType,
-    Example,
     CodeNode,
     Module,
     Package,
@@ -78,10 +73,6 @@ class WorkflowState(TypedDict, total=False):
     tables: list[Table]
     columns: list[Column]
     has_column_edges: list[HasColumn]
-    # BELONGS_TO 는 두 step 이 누적: step1(Table→Schema) + step2(그릇 FILE/CLASS→Package).
-    # 끝점 종류만 다른 같은 "소속" 관계 — default replace 면 step2 가 step1 을 덮어쓰므로
-    # ``operator.add`` 로 누적한다. 최종 제품 builder가 안정 identity로 투영·검증한다.
-    belongs_to_edges: Annotated[list[BelongsTo], operator.add]
     fk_edges: list[Fk]
 
     # ── step2_load_ast 결과 ───────────────────────
@@ -92,8 +83,6 @@ class WorkflowState(TypedDict, total=False):
     constants: list[Constant]
     data_types: list[DataType]
     parent_of_edges: list[ParentOf]
-    # 그릇 → 멤버 (루틴/변수/상수/struct 멤버). 멤버 종류는 노드 라벨로 구분.
-    has_member_edges: list[HasMember]
     # 구문 → 다음 구문 (DBMS 실행 흐름).
     statement_next_edges: list[StatementNext]
     references_edges: list[References]
@@ -144,20 +133,14 @@ class WorkflowState(TypedDict, total=False):
     table_sample_data: dict[str, dict]
     data_object_resolution_metrics: dict[str, int | float]
 
-    # ── step7 Example Mapping 결과 (analyze_code 함수 단위 누적) ──
-    # 구조화된 Rule/Example과 관련 엣지.
+    # ── step7 Rule 결과 (analyze_code 함수 단위 누적) ──
+    # 구조화된 Rule과 관련 엣지.
     # Rule 노드 id = "<function id>::R<anchor>" (anchor 좌표 정체성, spec 116).
-    # Rule/Example builder가 owner·anchor·ordinal identity의 누락·중복을 DB 쓰기 전에 검증한다.
+    # Rule builder가 owner·anchor·ordinal identity의 누락·중복을 DB 쓰기 전에 검증한다.
     rules: list[Rule]
-    examples: list[Example]
     has_rule_edges: list[HasRule]
-    has_example_edges: list[HasExample]
-    affects_table_edges: list[AffectsTable]
+    rule_table_edges: list[ReadsWrites]
 
     # ── step8 결정론 후처리 결과 ────────────────────
-    # Component node/relationship은 최종 publication만 만든다. 이 state 값은
-    # 제품 graph를 쓰기 전의 DB 비종속 전체 membership 정본이다.
-    component_member_ids_by_component_id: dict[str, list[str]]
-    # 제품 SearchSegment로 투영하기 전의 전체 text/vector/parent record.
-    # dict를 써 checkpoint에 별도 runtime type 허용을 추가하지 않는다.
-    search_segments: list[dict]
+    # routine node에 직접 저장할 ID/vector 쌍.
+    routine_embeddings: list[dict]

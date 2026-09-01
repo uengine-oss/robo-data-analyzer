@@ -32,7 +32,7 @@ def test_file_node_event_keeps_source_identity() -> None:
     assert props["end_line"] == 216
 
 
-def test_code_node_event_keeps_owner_and_public_summary_without_internal_material() -> None:
+def test_code_node_event_keeps_public_summary_without_internal_material() -> None:
     stream = _Stream()
     asyncio.run(emit_nodes(stream, [CodeNode(
         id="code:mall/shipping.c:shipping_request",
@@ -47,7 +47,7 @@ def test_code_node_event_keeps_owner_and_public_summary_without_internal_materia
         embedding=(0.1, 0.2),
     )]))
     props = stream.events[0]["props"]
-    assert props["owner_id"] == "code:mall/shipping.c"
+    assert "owner_id" not in props
     assert props["summary"] == "internal semantic material"
     assert "domain_terms" not in props
     assert "embedding" not in props
@@ -55,7 +55,7 @@ def test_code_node_event_keeps_owner_and_public_summary_without_internal_materia
 
 if __name__ == "__main__":
     test_file_node_event_keeps_source_identity()
-    test_code_node_event_keeps_owner_and_public_summary_without_internal_material()
+    test_code_node_event_keeps_public_summary_without_internal_material()
     print("[OK] graph stream source identity")
 
 

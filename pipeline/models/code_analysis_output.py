@@ -4,16 +4,15 @@
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/semantic_tasks``: SummaryOutput / FunctionTableUsagesOutput 및
+- ``pipeline/meaning``: SummaryOutput / FunctionTableUsagesOutput 및
   결정론 Rule projection
-- ``pipeline/steps/step8_post_processing``: TableDescription
+- ``pipeline/stages/output``: TableDescription
 
 호출 모드 (단일 진실):
 runner가 이 모델의 canonical JSON Schema를 provider 구조화 출력에 전달하고, raw/usage를
 확보한 뒤 이 Pydantic 모델로 내부 의미 계약을 검증한다.
 자유 키와 깊고 상한 없는 반복 구조는 SGLang+xgrammar에서 반복 폭주를 일으켰다. 현재 wire는
-코드가 확정한 유한 좌표를 required key로 만들고 공통 leaf schema를 한 번만 참조한다. Example은
-모델 출력이 아니라 accepted Rule의 제한된 Python 표기에서 파생한다.
+코드가 확정한 유한 좌표를 required key로 만들고 공통 leaf schema를 한 번만 참조한다.
 
 검증 규칙 (Pydantic validator):
 - ``summary`` 내용은 후처리가 줄이거나 다시 쓰지 않는다. 옛 ``[핵심]`` 표시와 주변 공백만
@@ -32,12 +31,9 @@ from pydantic import (
     model_validator,
 )
 
-from pipeline.models.rule_expression import (
-    EXAMPLE_LEAF_PATTERN,
-    RULE_LEAF_PATTERN,
-)
+from pipeline.models.rule_expression import RULE_LEAF_PATTERN
 from pipeline.models.semantic_frame import SemanticFrame
-from pipeline.semantic_tasks.table.usage import FunctionTableUsage
+from pipeline.meaning.table.table_usage import FunctionTableUsage
 
 
 def _normalize_summary_format(v: str) -> str:
@@ -146,39 +142,18 @@ class FunctionTableUsagesOutput(BaseModel):
     semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
-# ── 결정론 Rule/Example projection ──
+# ── 결정론 Rule 구조와 모델 의미 projection ──
 
 
-# ── 구조화 Rule·Example — JSON 봉투 + 파이썬 표현식 leaf (spec 116 3단계) ──
+# ── 구조화 Rule — JSON 봉투 + 파이썬 표현식 leaf ──
 #
-# 스키마는 **형태만** 강제한다(개행 금지). Rule과 Example은 모두 parser-owned facts에서
+# 스키마는 **형태만** 강제한다(개행 금지). Rule 구조는 parser-owned facts에서
 # 결정론 생성되므로 source predicate를 길이로 자르거나 버리지 않는다. 파이썬 문법·어휘·
 # 분기표 의미 대조는 채점기(rule_grading)가 한 번 수행한다. 위반 후보는 행 좌표가 있는
 # finding으로 격리하고 검증된 sibling은 보존한다. 어휘·pattern의 정의처는
 # pipeline/models/rule_expression.py 하나다.
 
-_ExampleLeafStr = Annotated[str, StringConstraints(pattern=EXAMPLE_LEAF_PATTERN)]
 _RuleLeafStr = Annotated[str, StringConstraints(pattern=RULE_LEAF_PATTERN)]
-
-
-class ExampleItem(BaseModel):
-    """Rule 검증 시나리오 — given/then 전부 파이썬 leaf (자연어 금지).
-
-    **LLM 출력이 아니다.** 전체 run 실측에서 모델이 낸 예시의 71.9% 가 cond/then 의
-    기계적 재진술(새 정보 0)이었고 나머지도 여집합 부정이거나 창작이었다 — 헌법 I 에
-    따라 `quality_gates.example_synthesis` 가 결정론으로 만든다 (spec 116 §21).
-    이 모델은 그 산출물의 형태 계약이며 DBMS 배치 경로도 같은 것을 쓴다.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    given_conditions: list[_ExampleLeafStr] = Field(
-        default_factory=list,
-        description="이 예시에서 참이어야 하는 Analyzer 구조 조건 목록",
-    )
-    expected_effects: list[_ExampleLeafStr] = Field(
-        default_factory=list, description="조건이 참일 때 발생해야 하는 업무 효과 목록"
-    )
 
 
 class RuleItem(BaseModel):
@@ -197,11 +172,15 @@ class RuleItem(BaseModel):
     structural_effects: list[_RuleLeafStr] = Field(
         default_factory=list, description="효과 호출문 목록 — 유일한 채점 대상"
     )
-    business_effects: list[_RuleLeafStr] = Field(
-        default_factory=list,
-        description="Analyzer가 구조와 atom 의미를 결합한 Strategy-B Python 효과",
+    condition_description: str = Field(
+        default="", description="사람이 읽는 실행 조건",
     )
-class RulesExamplesOutput(BaseModel):
+    effect_descriptions: list[str] = Field(
+        default_factory=list, description="사람이 읽는 실행 결과 목록",
+    )
+
+
+class RuleCollectionOutput(BaseModel):
     """Deterministic Rule collection; finite by branch-inventory obligations."""
 
     model_config = ConfigDict(extra="forbid")

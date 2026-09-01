@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextvars
 from pathlib import Path
 
-from shared.files.cache import SourceFileCache
+from shared.files.source_cache import SourceFileCache
 
 
 _run_file_cache: contextvars.ContextVar[SourceFileCache | None] = contextvars.ContextVar(

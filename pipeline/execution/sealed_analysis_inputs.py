@@ -7,10 +7,10 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from llm.configs.loader import load_llm_config
+from llm.configs.config_loader import load_llm_config
 from llm.model_runtime_capabilities import ModelRuntimeCapabilities
 from pipeline.models.analysis_meta import Codebase
-from shared.files.cache import SourceFileCache
+from shared.files.source_cache import SourceFileCache
 
 
 SCHEMA_VERSION = "sealed-analysis-inputs/v1"
@@ -20,12 +20,13 @@ _IMPLEMENTATION_DIRECTORIES = (
 _IMPLEMENTATION_FILES = ("main.py", "requirements.txt", "Dockerfile", "__init__.py")
 _CONTRACT_FILES = (
     ".specify/memory/constitution.md",
-    "specs/131-cross-node-semantic-grounding/README.md",
-    "specs/131-cross-node-semantic-grounding/spec.md",
-    "specs/131-cross-node-semantic-grounding/plan.md",
-    "specs/131-cross-node-semantic-grounding/tasks.md",
-    "specs/131-cross-node-semantic-grounding/contracts/parser-structural-facts-v2.md",
-    "specs/131-cross-node-semantic-grounding/contracts/analyzer-meaning-and-publication-v2.md",
+    "specs/001-analyzer-redesign/README.md",
+    "specs/001-analyzer-redesign/spec.md",
+    "specs/001-analyzer-redesign/plan.md",
+    "specs/001-analyzer-redesign/tasks.md",
+    "specs/001-analyzer-redesign/contracts/parser-contract.md",
+    "specs/001-analyzer-redesign/contracts/graph-contract.md",
+    "specs/001-analyzer-redesign/contracts/service-contract.md",
 )
 _SECRET_FIELDS = {
     ("analysis_llm", "api_key"),
@@ -209,7 +210,7 @@ def _implementation_paths(repository_root: Path) -> list[Path]:
                 relative == "llm"
                 and path.relative_to(root).parts
                 and path.relative_to(root).parts[0]
-                in {"prompts", "configs", "runtime_capabilities"}
+                in {"prompts", "configs", "capabilities"}
             )
         )
     for relative in _IMPLEMENTATION_FILES:
@@ -241,10 +242,10 @@ def build_sealed_analysis_inputs(
         [path for path in ddl_root.rglob("*.sql") if path.is_file()]
         if ddl_root is not None else []
     )
-    semantic_tasks_root = (repository_root / "pipeline" / "semantic_tasks").resolve()
+    meaning_root = (repository_root / "pipeline" / "meaning").resolve()
     configured_prompt_root = strategy_prompts_dir.expanduser().resolve()
     if not configured_prompt_root.is_dir():
-        configured_prompt_root = semantic_tasks_root
+        configured_prompt_root = meaning_root
     elif (
         configured_prompt_root.name in {"framework", "dbms"}
         and configured_prompt_root.parent.name == "prompts"
@@ -289,7 +290,7 @@ def build_sealed_analysis_inputs(
             "neo4j_database": neo4j_database,
             "selected_source_ids": list(codebase.selected_source_ids),
         },
-        "analysis_scope_files": _tree_seal(
+        "source_files": _tree_seal(
             root=project_root, paths=project_paths, content_cache=source_cache,
         ),
         "ddl_files": (

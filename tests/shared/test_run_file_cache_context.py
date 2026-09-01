@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm.configs import loader as config_loader
+from llm.configs import config_loader
 from llm.runners.prompt_rules import _load_rule
 from pipeline.models.human_glossary import load_human_glossary
-from shared.files.cache import SourceFileCache
+from shared.files.source_cache import SourceFileCache
 from shared.files.run_cache_context import (
     read_run_text,
     reset_run_file_cache,

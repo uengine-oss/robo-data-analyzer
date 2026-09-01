@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from agents.contracts import (
+from agents.agent_contracts import (
     EmbeddedSqlRule,
     MethodCallRule,
     SqlFragmentRule,

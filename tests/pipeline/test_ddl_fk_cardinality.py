@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pipeline.steps.step1_parse_ddl.ddl_parser import parse_ddl_file
+from pipeline.stages.ddl.ddl_parser import parse_ddl_file
 
 
 class DdlFkCardinalityTest(unittest.TestCase):

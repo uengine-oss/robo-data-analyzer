@@ -23,14 +23,14 @@
     from shared.events.runtime_logger import log_error, log_warning
 
     try:
-        await upsert_nodes(neo, nodes)
+        await publish_graph(neo, graph)
     except Exception as e:
-        log_error("graph.node_upsert", "upsert_nodes", e,
+        log_error("graph.product_writer", "publish_graph", e,
                   stream_emit=stream.emit if stream else None,
                   run_id=run.run_id)
         raise   # 절대원칙 #3 — silent return 금지. 호출자가 결정.
 
-새 컴포넌트 = ``component`` 인자에 모듈 경로 (예: ``"pipeline.steps.step5_linking.link_tables"``).
+새 컴포넌트 = ``component`` 인자에 모듈 경로 (예: ``"pipeline.stages.links.tables"``).
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s │ %(name)s │ %(message)s"
@@ -110,13 +110,10 @@ _COMPONENT_LABELS: dict[str, str] = {
     "step7.analyze_code":        "7️⃣  코드노드 분석",
     "step7.analyze_code.batch":  "7️⃣  DBMS 묶음 분석",
     "step7.analyze_code.three_split": "7️⃣  3분할 의미 분석",
-    "step8.build_module_summary_rollups": "8️⃣  모듈 요약 집계",
-    "step8.build_components":    "8️⃣  컴포넌트 구성",
     "step8.enrich_table_description": "8️⃣  테이블 설명",
-    "step8.build_search_segments": "8️⃣  검색 조각 구성",
+    "step8.build_search_embeddings": "8️⃣  검색 벡터 구성",
     "llm.call":                  "🤖 LLM 호출",
-    "llm.embedder":              "🔎 임베딩",
-    "search.query.query_llm":    "🔎 검색 질의 해석",
+    "llm.text_embedder":              "🔎 임베딩",
     "stream.phase":              "📡 단계",
     "stream.tool":               "🔧 도구",
     "stream.error":              "💥 스트림 에러",
@@ -138,7 +135,6 @@ _OPERATION_LABELS: dict[str, str] = {
     "upsert_tables":      "  ↑ tables",
     "upsert_columns":     "  ↑ columns",
     "upsert_has_column":  "  ↑ has_column",
-    "upsert_belongs_to":  "  ↑ belongs_to",
     "upsert_fk":          "  ↑ fk",
     "scanning":           "  탐색 중",
     "scanned":            "  탐색 완료",
@@ -175,7 +171,6 @@ _KEY_LABELS: dict[str, str] = {
     "code_nodes":            "코드노드",
     "modules":              "모듈",
     "has_column_edges":     "has_column",
-    "belongs_to_edges":     "belongs_to",
     "fk_edges":             "fk",
     "parent_of_edges":      "parent_of",
     "reads_writes_edges":   "R/W",
@@ -283,7 +278,7 @@ def _level_from_name(name: str) -> int:
 def _configure_root_once() -> None:
     """root logger 1회 설정 (idempotent).
 
-    레벨은 ``SETTINGS.observability.log_level`` 사용 (``shared.config.settings`` 단일 진입점).
+    레벨은 ``SETTINGS.observability.log_level`` 사용 (``shared.config.app_settings`` 단일 진입점).
     이미 핸들러 있으면 건너뜀 (uvicorn 기본 핸들러 보존).
 
     외부 라이브러리 노이즈 차단:
@@ -494,7 +489,7 @@ def log_error(
     NDJSON 스트림 / analyzer.log 의 한 줄에는 type+msg 만 박혀 노이즈 없음.
 
     Args:
-        component: 모듈 경로 (예: ``"pipeline.semantic_tasks"``).
+        component: 모듈 경로 (예: ``"pipeline.meaning"``).
         operation: 함수/작업 이름 (예: ``"analyze_code_three_split"``).
         error: Exception 또는 메시지 문자열.
         stream_emit: NDJSON 스트림 emit 함수 (없으면 file handler / stderr 만).

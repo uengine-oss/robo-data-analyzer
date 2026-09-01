@@ -31,7 +31,7 @@ from llm.model_runtime_capabilities import (
     ModelRuntimeCapabilitiesError,
     load_model_runtime_capabilities,
 )
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from shared.events.runtime_logger import log_info, log_warning
 
 _COMPONENT = "llm.response_cache"

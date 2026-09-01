@@ -1,6 +1,6 @@
 import unittest
 
-from pipeline.strategies import DBMS_PIPELINE, FRAMEWORK_PIPELINE
+from pipeline.pipeline_strategies import DBMS_PIPELINE, FRAMEWORK_PIPELINE
 
 
 class DbmsPipelineContractTest(unittest.TestCase):

@@ -11,7 +11,7 @@ import re
 import pytest
 from tests.unittest_function_cases import load_function_cases
 
-from agents.contracts import MethodCallRule, OpMapping, SqlFragmentRule, WrapperKeyRule
+from agents.agent_contracts import MethodCallRule, OpMapping, SqlFragmentRule, WrapperKeyRule
 from agents.rule_compiler import RuleCompileError, compile_rule
 
 _OPS = [OpMapping(token="s", op="SELECT")]

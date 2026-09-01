@@ -1,4 +1,4 @@
-"""구조화 Rule·Example 파이썬 leaf 어휘의 단일 정의처 (spec 116, 헌법 III).
+"""구조화 Rule 파이썬 leaf 어휘의 단일 정의처.
 
 cond/then 문자열 leaf 가 쓸 수 있는 함수 어휘와 형태 제약(regex pattern)을 여기서만
 정의한다. Pydantic 스키마(형태 강제)·프롬프트(어휘 안내)·채점기(ast 후검증)가 전부
@@ -29,12 +29,9 @@ COND_HELPERS: tuple[str, ...] = (
     "F", "else_of", "after_control", "at_label", "len",
 )
 
-# 구조 leaf의 형태 제약. Rule cond/then과 EXAMPLE은 parser-owned facts에서 결정론 생성되며,
-# source predicate나 statement를 임의 길이에서 자르거나 버리면 의미가 달라진다. 과거
-# LLM-generated Example의 폭주를 막던 별도 500자 상한은 Example이 LLM 0이 된 뒤에는
-# 정확한 조건을 조용히 누락시키므로 적용하지 않는다.
+# 구조 leaf의 형태 제약. Rule cond/then은 parser-owned facts에서 결정론 생성되며,
+# source predicate나 statement를 임의 길이에서 자르거나 버리면 의미가 달라진다.
 RULE_LEAF_PATTERN = r"^[^\n]+$"
-EXAMPLE_LEAF_PATTERN = RULE_LEAF_PATTERN
 
 
 class LeafSyntaxError(ValueError):

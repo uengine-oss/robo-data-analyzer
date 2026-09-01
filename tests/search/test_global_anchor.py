@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from search.config import Config
-from search.ranking.retriever import Retriever
+from search.search_config import Config
+from search.ranking.graph_retriever import Retriever
 
 
 def _candidate(cid: str, relevance: float) -> dict:
@@ -79,7 +79,7 @@ class GlobalAnchorTests(unittest.TestCase):
     def setUp(self):
         _Retriever.assert_expand_flags = []
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_three_anchors_then_one_hop_code_and_table_evidence(self, _encode):
         # 구 동작(P0) 명시 고정 — spec 057 롤백 모드의 회귀 기준선.
         retriever = _Retriever()
@@ -115,7 +115,7 @@ class GlobalAnchorTests(unittest.TestCase):
         base.update(kw)
         return Config(**base)
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_cliff_gate_keeps_only_top_anchor_and_drops_junk_branches(self, _encode):
         # a=.9 절벽 아래 b=.8·c=.7 — gap 0.05 면 앵커는 a 뿐, b·c 는 직행도 못 한다.
         retriever = _Retriever()
@@ -133,7 +133,7 @@ class GlobalAnchorTests(unittest.TestCase):
         d = next(n for n in nodes if n["id"] == "d")
         self.assertEqual({"CALLS"}, {e["relation"] for e in d["evidence"]})
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_tight_scores_keep_multiple_anchors_and_gated_direct(self, _encode):
         # 상위가 촘촘하면(gap 0.25) 복수 앵커 유지 — 복합 질의 재현율 보존.
         # d(.6)는 direct_gap 0.30 이내라 직행(SEMANTIC_SUPPORT)으로 구제된다.
@@ -147,7 +147,7 @@ class GlobalAnchorTests(unittest.TestCase):
         self.assertIn("SEMANTIC_SUPPORT", {e["relation"] for e in d["evidence"]})
         self.assertEqual({"a", "b", "c"}, set(retriever.call_queries))  # 1홉 뿌리는 앵커만
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_anchors_only_policy_has_no_direct_entry(self, _encode):
         retriever = _Retriever()
         nodes = retriever.retrieve("주문 결제", self._cfg(
@@ -159,13 +159,13 @@ class GlobalAnchorTests(unittest.TestCase):
                 self.assertNotIn("SEMANTIC_SUPPORT",
                                  {e["relation"] for e in node["evidence"]})
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_unknown_support_policy_raises(self, _encode):
         retriever = _Retriever()
         with self.assertRaises(ValueError):
             retriever.retrieve("주문 결제", self._cfg(cluster_support_policy="oops"))
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_graph_gated_admits_by_distance_and_blocks_far_low_score(self, _encode):
         # a=.9 만 앵커(gap .05). d(.6)·x 는 점수 게이트 밖이지만 앵커와 거리 1~2 → 입장.
         # b(.8)·c(.7)는 점수도 절벽 밖·그래프도 멀다(스텁 미포함) → 완전 배제.
@@ -187,7 +187,7 @@ class GlobalAnchorTests(unittest.TestCase):
         d = next(n for n in nodes if n["id"] == "d")
         self.assertIn("SEMANTIC_SUPPORT", {e["relation"] for e in d["evidence"]})
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_graph_gated_rank_floor_preserves_top_ranked_evidence_only(self, _encode):
         # 채택값 r2는 그래프 거리가 없는 2위 후보도 정답 재현율을 위해 직행 근거로 구제한다.
         # 순위 구제 후보는 자신의 이웃을 확장하지 않아 노이즈를 증폭시키지 않는다.
@@ -204,7 +204,7 @@ class GlobalAnchorTests(unittest.TestCase):
         b = next(n for n in nodes if n["id"] == "b")
         self.assertIn("SEMANTIC_SUPPORT", {e["relation"] for e in b["evidence"]})
 
-    @patch("search.ranking.retriever.embedder.encode_texts", return_value=[[1.0]])
+    @patch("search.ranking.graph_retriever.text_embedder.encode_texts", return_value=[[1.0]])
     def test_flat_low_scores_always_keep_top1(self, _encode):
         # 하한 1 — 절벽이 없어도 최고점은 항상 앵커(결과 0 위장 금지).
         retriever = _Retriever()

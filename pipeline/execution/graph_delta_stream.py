@@ -20,8 +20,15 @@ from graph.schema import graph_edges as ge
 from graph.schema import graph_nodes as gn
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.schema import rel_types as rt
-from graph.node_upsert import nonempty
-from pipeline.languages import ROUTINE_LABELS
+from pipeline.source_languages import ROUTINE_LABELS
+
+
+def nonempty(properties: dict) -> dict:
+    """Remove absent optional display values without dropping false or zero."""
+    return {
+        key: value for key, value in properties.items()
+        if value is not None and value != "" and value != () and value != []
+    }
 
 
 # label 필드 없는 노드 종류의 고정 라벨 (나머지는 node.label = antlr type).
@@ -29,38 +36,24 @@ _FIXED_NODE_LABEL: dict[type, str] = {
     gn.Table: "TABLE",
     gn.Column: "COLUMN",
     gn.Package: "PACKAGE",
-    gn.Schema: "SCHEMA",
     gn.Rule: "RULE",
-    gn.Example: "EXAMPLE",
 }
 
 # 프론트 표시에 쓰는 속성만 emit (caption·트리 라벨). 빈값은 nonempty가 제거.
 _DISPLAY_PROP_KEYS = (
     "name", "logical_name", "signature", "summary", "stereotype",
-    "meaning_status", "missing_context_count", "missing_context_artifact_hash",
-    "file_path", "start_line", "end_line", "owner_id", "dtype",
-    # RULE/EXAMPLE 파이썬 leaf 계약 (spec 116)
-    "anchor_line", "structural_condition", "structural_effects",
-    "business_effects",
-    "given_conditions", "expected_effects", "text", "reason",
-    "keys", "semantic_kind", "provenance", "status", "category",
-    "raw_reference", "catalog", "catalog_quoted", "schema", "schema_quoted", "name_quoted",
-    "database_link", "database_link_components_json", "datasource",
+    "file_path", "start_line", "end_line", "code_text",
 )
 
 # 관계 dataclass → (rel_type, from 필드, to 필드). ReadsWrites는 relation 필드가 동적 → 별도.
 _EDGE_SPEC: dict[type, tuple[str, str, str]] = {
     ge.HasColumn:  (rt.HAS_COLUMN, "parent_id", "child_id"),
-    ge.BelongsTo:  (rt.BELONGS_TO, "child_id", "parent_id"),
     ge.Fk:         (rt.FK,         "from_id", "to_id"),
     ge.ParentOf:   (rt.PARENT_OF,  "parent_id", "child_id"),
-    ge.HasMember:  (rt.HAS_MEMBER, "parent_id", "child_id"),
     ge.StatementNext: (rt.NEXT,    "prev_id", "next_id"),
     ge.References: (rt.REFERENCES, "source_id", "target_id"),
     ge.InitBy:     (rt.INIT_BY,    "from_id", "source_id"),
     ge.HasRule:    (rt.HAS_RULE,   "source_id", "target_id"),
-    ge.HasExample: (rt.HAS_EXAMPLE, "source_id", "target_id"),
-    ge.AffectsTable: (rt.AFFECTS_TABLE, "source_id", "target_id"),
 }
 
 
@@ -73,20 +66,44 @@ def _node_label(node) -> Optional[str]:
 
 
 def _node_labels(node) -> list[str]:
-    """node_event 라벨 배열 = [antlr 타입] + (stereotype 있으면) — Neo4j 멀티라벨과 동형.
-
-    위치: labels[0]=타입, labels[1:]=stereotype(spec 033/035 일관). stereotype 은 CodeNode·
-    Module 만 가짐(그 외 노드는 getattr 기본 None) → labels=[타입].
-    """
+    """Return only the concrete Parser label; roles are properties."""
     primary = _node_label(node)
-    if not primary:
-        return []
-    stereotype = getattr(node, "stereotype", None)
-    return [primary, stereotype] if stereotype else [primary]
+    return [primary] if primary else []
 
 
 def _node_props(node) -> dict:
     props = {k: getattr(node, k, "") for k in _DISPLAY_PROP_KEYS}
+    if isinstance(node, gn.Variable):
+        props.update(data_type=node.var_type, value=node.init_value)
+    elif isinstance(node, gn.Constant):
+        props.update(data_type=node.var_type, value=node.value)
+    elif isinstance(node, gn.Table):
+        props.update(
+            datasource=node.db,
+            database=node.catalog,
+            schema=node.schema,
+            table_type=node.table_type,
+            description=node.description,
+            summary=node.analyzed_description,
+        )
+    elif isinstance(node, gn.Column):
+        props.update(
+            data_type=node.dtype,
+            nullable=node.nullable,
+            primary_key=node.is_primary_key,
+            unique=node.is_unique,
+            default_value=node.default_value,
+            description=node.description,
+            summary=node.analyzed_description,
+        )
+    elif isinstance(node, gn.Rule):
+        props.update(
+            line=node.anchor_line,
+            condition=node.structural_condition,
+            effects=list(node.structural_effects),
+            condition_description=node.condition_description,
+            effect_descriptions=list(node.effect_descriptions),
+        )
     if isinstance(node, gn.CodeNode) and node.label not in ROUTINE_LABELS:
         props.pop("summary", None)
         props.pop("stereotype", None)
@@ -96,18 +113,14 @@ def _node_props(node) -> dict:
 def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
     """엣지 → (rel_type, from_id, to_id, props). 미등록 종류는 조용히 누락하지 않는다."""
     if type(edge) is ge.ReadsWrites:
+        operations = edge.operations or (
+            (edge.dml_type.strip().upper(),) if edge.dml_type.strip() else ()
+        )
         return (edge.relation, edge.source_id, edge.target_id,
-                nonempty({
-                    "dml_type": edge.dml_type,
-                    "evidence_file": edge.evidence_file,
-                    "evidence_line": edge.evidence_line,
-                    "evidence_lines": (
-                        [edge.evidence_line] if edge.evidence_line > 0 else []
-                    ),
-                }))
+                nonempty({"operations": list(operations)}))
     if type(edge) is ge.Calls:
         raise GraphDeltaContractError(
-            "CALLS must use graph.edges.calls.emit_calls so recursion intent and external stub IDs are preserved"
+            "CALLS must use graph.edges.call_edges.emit_calls so recursion intent and external stub IDs are preserved"
         )
     spec = _EDGE_SPEC.get(type(edge))
     if spec is None:
@@ -121,17 +134,9 @@ def _edge_wire(edge) -> Optional[tuple[str, str, str, dict]]:
             "is_candidate": edge.is_candidate,
         }
     elif type(edge) is ge.References:
-        props = {"evidence_line": edge.evidence_line}
+        props = {}
     elif type(edge) is ge.HasRule:
-        props = {"ordinal": edge.ordinal}
-    elif type(edge) is ge.HasExample:
-        props = {"ordinal": edge.ordinal}
-    elif type(edge) is ge.AffectsTable:
-        props = {
-            "access": edge.access,
-            "op": edge.op,
-            "op_source": edge.op_source,
-        }
+        props = {"order": edge.ordinal}
     else:
         props = {}
     return (

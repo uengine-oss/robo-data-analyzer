@@ -56,62 +56,21 @@ class RunRegistryContractTest(unittest.TestCase):
 
         self.assertNotEqual(first.run_id, second.run_id)
 
-    def test_analysis_scope_id_is_stable_across_runs_of_the_same_codebase(self) -> None:
-        codebase = Codebase(
-            root=Path("source"), corpus_root=Path("."), strategy="framework"
-        )
-
-        first = AnalysisRun.now(codebase, Path("output"))
-        second = AnalysisRun.now(codebase, Path("output"))
-
-        self.assertNotEqual(first.run_id, second.run_id)
-        self.assertEqual(first.analysis_scope_id, second.analysis_scope_id)
-        self.assertEqual(codebase.analysis_scope_id, first.analysis_scope_id)
-        self.assertRegex(
-            first.analysis_scope_id,
-            r"^analysis-scope/v2:[0-9a-f]{64}$",
-        )
-
-    def test_analysis_scope_id_separates_source_roots_and_strategies(self) -> None:
-        framework = Codebase(
-            root=Path("source-a"), corpus_root=Path("."), strategy="framework"
-        )
-        other_root = Codebase(
-            root=Path("source-b"), corpus_root=Path("."), strategy="framework"
-        )
-        dbms = Codebase(
-            root=Path("source-a"), corpus_root=Path("."), strategy="dbms"
-        )
-
-        self.assertNotEqual(framework.analysis_scope_id, other_root.analysis_scope_id)
-        self.assertNotEqual(framework.analysis_scope_id, dbms.analysis_scope_id)
-
-    def test_partial_source_population_has_a_distinct_stable_scope(self) -> None:
-        complete = Codebase(
-            root=Path("source"), corpus_root=Path("."), strategy="framework"
-        )
+    def test_partial_source_population_is_normalized_without_a_second_identity(self) -> None:
         selected = Codebase(
             root=Path("source"),
             corpus_root=Path("."),
             strategy="framework",
             selected_source_ids=("b.c", "a.c"),
         )
-        same_selected = Codebase(
-            root=Path("source"),
-            corpus_root=Path("."),
-            strategy="framework",
-            selected_source_ids=("a.c", "b.c"),
+        self.assertEqual(("a.c", "b.c"), selected.selected_source_ids)
+        self.assertEqual(
+            {"root", "corpus_root", "strategy", "ddl_dir", "datasource", "locale",
+             "selected_source_ids", "validation_baseline_ref",
+             "validation_baseline_sha256", "validation_answer_key_ref",
+             "validation_answer_key_sha256"},
+            set(selected.__dataclass_fields__),
         )
-        other_selected = Codebase(
-            root=Path("source"),
-            corpus_root=Path("."),
-            strategy="framework",
-            selected_source_ids=("a.c",),
-        )
-
-        self.assertNotEqual(complete.analysis_scope_id, selected.analysis_scope_id)
-        self.assertEqual(selected.analysis_scope_id, same_selected.analysis_scope_id)
-        self.assertNotEqual(selected.analysis_scope_id, other_selected.analysis_scope_id)
 
     def test_nested_analysis_context_types_are_checkpoint_allowlisted(self) -> None:
         self.assertIn(ReferencedSymbolContext, run_executor._STATE_MSGPACK_ALLOWLIST)
@@ -248,7 +207,6 @@ class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
         }
         state.update({
             "external_reference_ledger": {},
-            "component_member_ids_by_component_id": {},
             "call_resolution_ledger": [],
             "import_resolution_ledger": [],
         })
@@ -295,17 +253,10 @@ class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
         state["call_resolution_ledger"] = [row]
 
         with self.assertRaisesRegex(ValueError, "differs from its sole streamed"):
-            run_executor._build_complete_product_input(
+            run_executor._build_product_graph_input(
                 final_state=state,
-                run=SimpleNamespace(
-                    analysis_scope_id="scope-1", run_id="generation-1",
-                ),
-                source_ast_closure=SimpleNamespace(),
-                glossary=SimpleNamespace(),
                 call_resolution_ledger=[],
                 import_resolution_ledger=[],
-                prepublish_wall_time_ms=1,
-                prepublish_performance_artifact_hash="a" * 64,
             )
 
     def test_performance_artifact_is_canonical_and_content_addressed(self) -> None:
@@ -415,7 +366,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             (source / "missing.c").write_text(
                 "int f(void) { return 0; }\n", encoding="utf-8"
             )
-            strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
+            strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/meaning/framework")
 
             with patch.object(run_executor, "Neo4jClient") as neo4j_client:
                 with self.assertRaisesRegex(ValueError, "missing.c"):
@@ -439,7 +390,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             def as_dict() -> dict:
                 return {"schema_version": "source-ast-closure/v1", "artifacts": []}
 
-        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
+        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/meaning/framework")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with (
@@ -485,11 +436,8 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("injected pipeline failure")
 
         neo = SimpleNamespace(close=AsyncMock())
-        ensure = AsyncMock()
-        begin = AsyncMock()
         publish = AsyncMock()
-        terminate = AsyncMock()
-        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/semantic_tasks/framework")
+        strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/meaning/framework")
 
         with tempfile.TemporaryDirectory() as temporary:
             with (
@@ -500,7 +448,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     "build_sealed_analysis_inputs",
                     return_value=SealedAnalysisInputs(
                         payload={
-                            "analysis_scope_files": {"file_count": 0},
+                            "source_files": {"file_count": 0},
                             "ddl_files": {"supplied": False},
                         },
                         sha256="a" * 64,
@@ -510,11 +458,10 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     run_executor, "ast_and_source_roots",
                     return_value=(Path(temporary), Path(temporary)),
                 ),
-                patch.object(run_executor, "Neo4jClient", return_value=neo),
-                patch.object(run_executor, "ensure_schema", new=ensure),
-                patch.object(run_executor, "begin_generation", new=begin),
-                patch.object(run_executor, "publish_generation", new=publish),
-                patch.object(run_executor, "terminate_generation", new=terminate),
+                patch.object(
+                    run_executor, "Neo4jClient", return_value=neo,
+                ) as neo4j_client,
+                patch.object(run_executor, "replace_product_graph", new=publish),
                 patch.object(run_executor, "build_langgraph_workflow", return_value=FailingApp()),
                 patch.object(run_executor.response_cache, "sweep"),
             ):
@@ -529,14 +476,10 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                         run_output_root=Path(temporary) / "runs",
                     )
 
-        ensure.assert_awaited_once_with(neo)
-        begin.assert_awaited_once()
         publish.assert_not_awaited()
-        terminate.assert_awaited_once()
-        self.assertEqual("failed", terminate.await_args.kwargs["status"])
-        neo.close.assert_awaited_once()
+        neo4j_client.assert_not_called()
 
-    async def test_success_writes_every_product_stage_before_single_publish(self) -> None:
+    async def test_success_publishes_one_complete_product_graph(self) -> None:
         class Closure:
             artifacts: tuple = ()
 
@@ -558,39 +501,21 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             async def aget_state(self, _config):
                 return SimpleNamespace(values=final_state)
 
-        batches = [
-            SimpleNamespace(stage_name="code_structure"),
-            SimpleNamespace(stage_name="analysis_health"),
-        ]
-        product_plan = SimpleNamespace(batches=batches)
+        product_graph = SimpleNamespace(sha256="a" * 64)
         events: list[str] = []
 
-        async def write_stage(_client, batch):
-            events.append(f"write:{batch.stage_name}")
-            return SimpleNamespace(
-                stage_name=batch.stage_name,
-                operation_count=1,
-                idempotent_replay=False,
-            )
-
-        async def publish(_client, **kwargs):
-            self.assertIs(product_plan, kwargs["product_plan"])
+        async def publish(_client, graph):
+            self.assertIs(product_graph, graph)
             events.append("publish")
-            return {
-                "schema_version": "product-generation-closure/v1",
-                "analysis_scope_id": kwargs["product_plan"].scope_id
-                if hasattr(kwargs["product_plan"], "scope_id") else "scope",
-                "generation_id": kwargs["generation_id"],
-                "quality_status": "completed",
-                "product_plan_sha256": "a" * 64,
-                "product_stages": {"count": 2, "sha256": "b" * 64},
-                "product_operations": {"count": 2, "sha256": "c" * 64},
-                "product_records": {"count": 2, "sha256": "d" * 64},
-            }
+            return SimpleNamespace(
+                graph_sha256="a" * 64,
+                node_count=2,
+                relationship_count=1,
+            )
 
         neo = SimpleNamespace(close=AsyncMock())
         strategy = SimpleNamespace(
-            name="framework", prompts_dir="pipeline/semantic_tasks/framework",
+            name="framework", prompts_dir="pipeline/meaning/framework",
         )
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -602,7 +527,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     "build_sealed_analysis_inputs",
                     return_value=SealedAnalysisInputs(
                         payload={
-                            "analysis_scope_files": {"file_count": 0},
+                            "source_files": {"file_count": 0},
                             "ddl_files": {"supplied": False},
                         },
                         sha256="a" * 64,
@@ -613,20 +538,16 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     return_value=(Path(temporary), Path(temporary)),
                 ),
                 patch.object(run_executor, "Neo4jClient", return_value=neo),
-                patch.object(run_executor, "ensure_schema", new=AsyncMock()),
-                patch.object(run_executor, "begin_generation", new=AsyncMock()),
-                patch.object(run_executor, "terminate_generation", new=AsyncMock()),
                 patch.object(
                     run_executor, "build_langgraph_workflow",
                     return_value=SuccessfulApp(),
                 ),
                 patch.object(
                     run_executor,
-                    "build_complete_product_write_plan",
-                    return_value=product_plan,
+                    "build_product_graph",
+                    return_value=product_graph,
                 ),
-                patch.object(run_executor, "write_product_batch", side_effect=write_stage),
-                patch.object(run_executor, "publish_generation", side_effect=publish),
+                patch.object(run_executor, "replace_product_graph", side_effect=publish),
                 patch.object(run_executor.response_cache, "sweep"),
             ):
                 await run_executor.execute_run(
@@ -639,10 +560,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     run_output_root=Path(temporary) / "runs",
                 )
 
-        self.assertEqual(
-            ["write:code_structure", "write:analysis_health", "publish"],
-            events,
-        )
+        self.assertEqual(["publish"], events)
         neo.close.assert_awaited_once()
 
 

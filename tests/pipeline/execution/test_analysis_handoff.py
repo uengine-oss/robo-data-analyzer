@@ -20,7 +20,7 @@ from pipeline.execution.analysis_handoff import (
     analysis_llm_slots,
     handoff_of,
 )
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 
 

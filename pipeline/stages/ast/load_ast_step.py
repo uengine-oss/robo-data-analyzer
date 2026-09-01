@@ -1,0 +1,452 @@
+"""step2_load_ast — antlr JSON AST → 코드 노드 + 구조/참조 엣지 + 호출/import 단서.
+
+antlr-parser 가 소스를 미리 파싱해 ``data/analysis/`` (``data/source`` 구조 그대로
+미러) 에 떨궈둔 AST 만 읽는다 — analyzer 는 소스를 재파싱하지 않는다. ``antlr_json_reader`` 가
+언어별 해석을, ``reference_linker`` 가 REFERENCES/INIT_BY 결정론 매칭을 담당.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import Optional, TypeVar
+
+from langchain_core.runnables import RunnableConfig
+
+from pipeline.execution.step_config import require_step_config_value, step_config
+
+from pipeline.stages.ast.ast_dispatch import ast_and_source_roots, read_antlr_json
+from pipeline.parsing.facts.source_ast_closure import (
+    SourceAstClosure,
+    ast_json_paths,
+    verify_source_ast_closure,
+)
+from pipeline.parsing.resolution.reference_links import link_references
+from pipeline.parsing.facts.expression_ownership import (
+    attach_routine_expression_ledger,
+)
+from pipeline.parsing.resolution.rule_condition_projection import (
+    attach_routine_rule_condition_bundles,
+)
+from pipeline.parsing.adapters.import_binding import (
+    build_import_binding_environment,
+    build_import_resolution_ledger,
+)
+from shared.events.runtime_logger import log_error, log_info, log_warning
+from pipeline.parsing.facts.node_identity_registry import NodeIdentityCollision, canonicalize_node_lists
+from shared.files.source_cache import SourceFileCache
+from pipeline.execution.graph_delta_stream import emit_edges, emit_message, emit_nodes
+from pipeline.execution.pause_controller import NULL_PAUSE, PauseController
+
+_STEP = "step2.load_ast"
+
+_N = TypeVar("_N")
+
+
+def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
+    """라인 범위가 있는 노드에 원문 슬라이스를 붙인다 (frozen dataclass → replace).
+
+    규칙 하나: **파일·라인이 있으면 그 원문을 갖는다.** 노드 종류로 분기하지 않는다.
+    ``end_line`` 0 = 파일 끝까지 (SourceFileCache.slice 규약).
+    """
+    result: list[_N] = []
+    for node in nodes:
+        if not node.file_path or getattr(node, "raw_code_text", ""):
+            result.append(node)
+            continue
+        excerpt = cache.excerpt(node.file_path, node.start_line, node.end_line)
+        result.append(
+            replace(
+                node,
+                raw_code_text=excerpt.raw_text,
+                code_text=excerpt.numbered_text,
+            )
+        )
+    return result
+
+
+def _assert_unique_ids(*node_lists: list) -> None:
+    """**id 전역 유일성 가드** (spec 047 FR-005) — 중복이면 즉시 raise.
+
+    왜 필요한가: 이 불변식이 깨지면 무라벨 ``MATCH (n {id: …})`` 가 **두 노드를 모두** 잡아
+    엣지·라벨이 엉뚱한 곳에 박힌다 (실제로 테이블에 코드 구조 관계가 연결되고
+    구조체가 DB 컬럼을 멤버로 가짐). 그래프가 조용히 거짓말을 하므로 **조용히 넘기면 안 된다**.
+
+    이제 id 는 네임스페이스(``code:``/``db:``) + 위치(파일경로·컨테이너경로)로 만들어져
+    구조적으로 겹칠 수 없다. 이 가드는 **그 설계가 깨졌을 때 즉시 알려주는 센서**다.
+    """
+    seen: dict[str, str] = {}
+    dups: list[str] = []
+    for nodes in node_lists:
+        for n in nodes:
+            nid = n.id
+            label = getattr(n, "label", type(n).__name__)
+            if nid in seen:
+                dups.append(f"{nid!r} ({seen[nid]} ↔ {label})")
+            else:
+                seen[nid] = label
+    if dups:
+        err = ValueError(
+            f"노드 id 중복 {len(dups)}건 — 서로 다른 노드가 같은 식별자를 갖는다 "
+            f"(spec 047 불변식 위반): {dups[:5]}"
+        )
+        log_error(_STEP, "duplicate_node_id", err, count=len(dups))
+        raise err
+
+
+def _code_text_missing(*node_lists: list) -> int:
+    """**불변식 감시** (spec 045 FR-005): file_path 가 있는데 원문이 빈 노드 수.
+
+    0 이 아니면 소스를 못 읽었다는 뜻 — ``SourceFileCache`` 가 남긴 ``source_read_failed``
+    경고와 짝을 이룬다. file_path 가 **없는** 노드(외부 stub 등)는 "원래 본문이 없는 것"이라
+    카운트에서 제외한다 — 못 읽은 것과 섞지 않는다.
+    """
+    return sum(
+        1
+        for nodes in node_lists
+        for n in nodes
+        if n.file_path and not n.code_text
+    )
+
+
+async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
+    """antlr JSON 디렉토리 → 코드 노드 + 구조/참조 엣지 + call_sites/import_refs.
+
+    코드 노드 = CodeNode / Module / Package / Variable / Constant / DataType.
+    구조 엣지 = PARENT_OF(상위→하위) / NEXT(DBMS 구문 실행 흐름)이며 reader가
+    antlr 트리에서 도출한다.
+    참조 엣지 = REFERENCES / INIT_BY (reference_linker 결정론 식별자 매칭).
+    antlr JSON 디렉토리가 없으면 ``FileNotFoundError`` — silent skip 하지 않는다.
+    """
+    cfg = step_config(config)
+    project = require_step_config_value(cfg, "codebase", step=_STEP)
+    pause: PauseController = cfg.get("pause") or NULL_PAUSE
+
+    started = time.monotonic()
+    ast_dir, source_root = ast_and_source_roots(
+        Path(project.root), Path(project.corpus_root),
+    )
+
+    if not ast_dir.is_dir():
+        err = FileNotFoundError(
+            f"antlr JSON 디렉토리 없음: {ast_dir} — antlr-parser 를 먼저 실행하세요"
+        )
+        log_error(_STEP, "start", err, root=str(project.root))
+        raise err
+
+    source_cache = cfg.get("source_cache") or SourceFileCache()
+    closure: SourceAstClosure | None = cfg.get("source_ast_closure")
+    if closure is None:
+        closure = verify_source_ast_closure(
+            project_root=Path(project.root),
+            ast_root=ast_dir,
+            source_root=source_root,
+            source_cache=source_cache,
+            selected_source_ids=getattr(project, "selected_source_ids", ()),
+        )
+
+    log_info(_STEP, "start", root=str(project.root), ast_dir=str(ast_dir))
+
+    code_nodes, modules, packages = [], [], []
+    variables, constants, data_types = [], [], []
+    parent_of = []
+    statement_next = []
+    call_sites, callable_facts, parameter_facts, binding_target_facts = [], [], [], []
+    scope_directive_facts = []
+    structural_expression_facts = []
+    semantic_expression_facts = []
+    resolved_expression_facts = []
+    macro_facts, import_refs = [], []
+    evidence_sources, evidence_completeness, preprocessing_contexts = [], [], []
+    parsed_files = 0
+    await pause.gate()
+    # 파일 순차 유지 — 제어 계약(정지 시 다음 파일을 읽지 않음)이 파일 단위 gate 를
+    # 요구한다. 이 단계의 시간 지배는 파싱이 아니라 Neo4j 업서트다.
+    for artifact in closure.artifacts:
+        result = read_antlr_json(
+            artifact.ast_path,
+            source_root,
+            expected_sha256=artifact.ast_sha256,
+            source_language=artifact.language,
+            source_cache=source_cache,
+            sealed_ast_document=artifact.ast_document,
+        )
+        code_nodes.extend(result.code_nodes)
+        modules.extend(result.modules)
+        packages.extend(result.packages)
+        variables.extend(result.variables)
+        constants.extend(result.constants)
+        data_types.extend(result.data_types)
+        parent_of.extend(result.parent_of_edges)
+        statement_next.extend(result.statement_next_edges)
+        call_sites.extend(result.call_sites)
+        callable_facts.extend(result.callable_facts)
+        parameter_facts.extend(result.parameter_facts)
+        binding_target_facts.extend(result.binding_target_facts)
+        scope_directive_facts.extend(result.scope_directive_facts)
+        structural_expression_facts.extend(result.structural_expression_facts)
+        semantic_expression_facts.extend(result.semantic_expression_facts)
+        resolved_expression_facts.extend(result.resolved_expression_facts)
+        macro_facts.extend(result.macro_facts)
+        import_refs.extend(result.import_refs)
+        evidence_sources.extend(result.evidence_sources)
+        evidence_completeness.extend(result.evidence_completeness)
+        preprocessing_contexts.extend(result.preprocessing_contexts)
+        parsed_files += 1
+        await pause.gate()
+
+    await pause.gate()
+    call_fact_ids = [site.get("call_id") for site in call_sites]
+    if len(call_fact_ids) != len(set(call_fact_ids)):
+        raise ValueError("common evidence call fact IDs are not globally exact-once")
+    callable_fact_ids = [fact.get("fact_id") for fact in callable_facts]
+    if (
+        any(not fact_id for fact_id in callable_fact_ids)
+        or len(callable_fact_ids) != len(set(callable_fact_ids))
+    ):
+        raise ValueError("common evidence callable fact IDs are not globally exact-once")
+    parameter_fact_ids = [fact.get("fact_id") for fact in parameter_facts]
+    if (
+        any(not fact_id for fact_id in parameter_fact_ids)
+        or len(parameter_fact_ids) != len(set(parameter_fact_ids))
+    ):
+        raise ValueError("common evidence parameter fact IDs are not globally exact-once")
+    binding_target_fact_ids = [
+        fact.get("fact_id") for fact in binding_target_facts
+    ]
+    if (
+        any(not fact_id for fact_id in binding_target_fact_ids)
+        or len(binding_target_fact_ids) != len(set(binding_target_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence binding target fact IDs are not globally exact-once"
+        )
+    scope_directive_fact_ids = [
+        fact.get("fact_id") for fact in scope_directive_facts
+    ]
+    if (
+        any(not fact_id for fact_id in scope_directive_fact_ids)
+        or len(scope_directive_fact_ids) != len(set(scope_directive_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence scope directive fact IDs are not globally exact-once"
+        )
+    expression_fact_ids = [
+        fact.get("fact_id") for fact in structural_expression_facts
+    ]
+    if (
+        any(not fact_id for fact_id in expression_fact_ids)
+        or len(expression_fact_ids) != len(set(expression_fact_ids))
+    ):
+        raise ValueError(
+            "common evidence structural expression fact IDs are not globally exact-once"
+        )
+    semantic_expression_ids = [
+        fact.get("fact_id") for fact in semantic_expression_facts
+    ]
+    if semantic_expression_ids != expression_fact_ids:
+        raise ValueError(
+            "Analyzer semantic expression ledger is not a 1:1 ordered projection"
+        )
+    resolved_expression_ids = [
+        fact.get("fact_id") for fact in resolved_expression_facts
+    ]
+    if resolved_expression_ids != expression_fact_ids:
+        raise ValueError(
+            "Analyzer resolved expression ledger is not a 1:1 ordered projection"
+        )
+    macro_fact_ids = [fact.get("fact_id") for fact in macro_facts]
+    if (
+        any(not fact_id for fact_id in macro_fact_ids)
+        or len(macro_fact_ids) != len(set(macro_fact_ids))
+    ):
+        raise ValueError("common evidence macro fact IDs are not globally exact-once")
+    source_ids = [item.get("source_id") for item in evidence_sources]
+    if len(source_ids) != parsed_files or len(source_ids) != len(set(source_ids)):
+        raise ValueError(
+            "common evidence source envelopes are not exactly one per parsed file: "
+            f"parsed={parsed_files}, envelopes={len(source_ids)}, "
+            f"unique={len(set(source_ids))}"
+        )
+    c_source_ids = {
+        str(source_id) for source_id in source_ids
+        if Path(str(source_id)).suffix.lower() in {".c", ".h"}
+    }
+    preprocessing_source_ids = [
+        str(item.get("source_id") or "") for item in preprocessing_contexts
+    ]
+    if (
+        set(preprocessing_source_ids) != c_source_ids
+        or len(preprocessing_source_ids) != len(set(preprocessing_source_ids))
+    ):
+        raise ValueError(
+            "configured preprocessing contexts are not exactly one per C source: "
+            f"expected={sorted(c_source_ids)}, actual={sorted(preprocessing_source_ids)}"
+        )
+    preprocessing_evidence_ids: list[str] = []
+    for context in preprocessing_contexts:
+        build = context["build"]
+        trace = context["trace"]
+        preprocessing_evidence_ids.extend(build["emittedCommandOccurrenceIds"])
+        preprocessing_evidence_ids.extend(build["unresolvedEvidenceIds"])
+        preprocessing_evidence_ids.extend(trace["evidenceIds"])
+    if len(preprocessing_evidence_ids) != len(set(preprocessing_evidence_ids)):
+        raise ValueError(
+            "configured preprocessing evidence IDs are not globally exact-once"
+        )
+
+    await pause.gate()
+    try:
+        canonical, collapsed_node_observations = canonicalize_node_lists(
+            code_nodes, modules, packages, variables, constants, data_types,
+        )
+        (
+            code_nodes, modules, packages,
+            variables, constants, data_types,
+        ) = canonical
+    except NodeIdentityCollision as err:
+        log_error(_STEP, "node_identity_collision", err)
+        raise
+
+    if collapsed_node_observations:
+        log_info(
+            _STEP,
+            "node_observations_canonicalized",
+            count=collapsed_node_observations,
+        )
+
+    await pause.gate()
+    # run 스코프 공유 캐시 (executor 주입) — 없으면 단독 생성(CLI/테스트 경로). FR-008.
+    # ★ reference_linker 와 **같은 인스턴스**를 쓴다 — 종전엔 둘이 각자 캐시를 만들어
+    #   step2 안에서만 같은 파일을 두 번 읽었다.
+    # REFERENCES / INIT_BY — 전 파일 노드가 모인 뒤 결정론 식별자 매칭.
+    # import_refs는 문자열 scope가 아니라 canonical entry outcome ledger로 닫는다.
+    references, init_by = await link_references(
+        code_nodes, variables, constants,
+        checkpoint=pause.gate,
+        modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
+    )
+    import_binding_environment = build_import_binding_environment(
+        evidence_sources, modules,
+    )
+    import_resolution_ledger = build_import_resolution_ledger(
+        import_refs, environment=import_binding_environment,
+    )
+
+    await pause.gate()
+    # 원문 코드 — **파일·라인이 있는 모든 노드**에 붙이는 단일 지점. 노드 종류로 분기하지 않는다.
+    # (루틴뿐 아니라 선언 노드 DEFINE/STRUCT/GLOBAL_VARIABLE/MEMBER 도 자기 원문을 갖는다 —
+    #  노드 패널이 "이 코드에서 도출됐다"를 보여주는 근거.)
+    code_nodes = _with_code_text(code_nodes, source_cache)
+    modules = _with_code_text(modules, source_cache)
+    variables = _with_code_text(variables, source_cache)
+    constants = _with_code_text(constants, source_cache)
+    data_types = _with_code_text(data_types, source_cache)
+
+    # ★ id 전역 유일성 가드 (spec 047) — 깨지면 그래프가 조용히 거짓말을 하므로 즉시 실패.
+    #   (DB 노드는 step1 이 만들지만 네임스페이스가 달라(`db:`) 코드 노드와 겹칠 수 없다.)
+    _assert_unique_ids(code_nodes, modules, packages, variables, constants, data_types)
+
+    # Analyzer-resolved expressions remain internal facts.  Assign them to the nearest
+    # routine by the canonical parent chain so Step 7 can build target-local closures
+    # without scanning every file-wide fact or reparsing source text.
+    expression_ledger = attach_routine_expression_ledger(
+        code_nodes, resolved_expression_facts,
+    )
+    assigned_expression_facts = sum(map(len, expression_ledger.values()))
+    if assigned_expression_facts != len(resolved_expression_facts):
+        raise ValueError(
+            "routine expression ownership is not exact-once: "
+            f"facts={len(resolved_expression_facts)}, assigned={assigned_expression_facts}"
+        )
+    rule_condition_bundles = attach_routine_rule_condition_bundles(
+        code_nodes, resolved_expression_facts, structural_expression_facts,
+    )
+
+    # 라이브 스트림 — 준비된 골격을 진행 화면에 발신한다. NEXT를 포함한 기본 숨김 여부는
+    # 생산 단계에서 누락하지 않고 프론트의 단일 가시성 정책이 결정한다.
+    stream = cfg.get("stream")
+    await emit_nodes(stream, code_nodes)
+    await pause.gate()
+    await emit_nodes(stream, modules)
+    await pause.gate()
+    await emit_nodes(stream, packages)
+    await pause.gate()
+    await emit_nodes(stream, variables)
+    await pause.gate()
+    await emit_nodes(stream, constants)
+    await pause.gate()
+    await emit_nodes(stream, data_types)
+    await pause.gate()
+    await emit_edges(stream, parent_of)
+    await pause.gate()
+    await emit_edges(stream, statement_next)
+    await pause.gate()
+    await emit_edges(stream, references)
+    await pause.gate()
+    await emit_edges(stream, init_by)
+    await pause.gate()
+    emit_message(
+        stream,
+        f"✅ 코드 구조 준비 완료 — 노드 {len(code_nodes)}, 포함 관계 {len(parent_of)}",
+    )
+
+    # 불변식 감시 — file_path 가 있는데 원문이 빈 노드가 있으면 소스를 못 읽은 것 (FR-005).
+    code_text_missing = _code_text_missing(
+        code_nodes, modules, variables, constants, data_types
+    )
+    if code_text_missing:
+        log_warning(
+            _STEP, "code_text_missing",
+            f"파일·라인이 있는데 원문을 못 얻은 노드 {code_text_missing}개 — "
+            "소스 read 실패(source_read_failed 경고 참조). 노드 패널·검색 재료가 빈다.",
+            count=code_text_missing,
+        )
+
+    log_info(
+        _STEP, "done",
+        parsed_files=parsed_files,
+        collapsed_node_observations=collapsed_node_observations,
+        code_text_missing=code_text_missing,
+        code_nodes=len(code_nodes), modules=len(modules),
+        packages=len(packages), variables=len(variables),
+        constants=len(constants), data_types=len(data_types),
+        parent_of_edges=len(parent_of),
+        statement_next=len(statement_next),
+        references=len(references), init_by=len(init_by),
+        call_sites=len(call_sites), import_refs=len(import_refs),
+        import_occurrences=len(import_resolution_ledger),
+        macro_facts=len(macro_facts),
+        structural_expression_facts=len(structural_expression_facts),
+        semantic_expression_facts=len(semantic_expression_facts),
+        resolved_expression_facts=len(resolved_expression_facts),
+        expression_routines=sum(bool(items) for items in expression_ledger.values()),
+        rule_condition_routines=len(rule_condition_bundles),
+        elapsed_sec=f"{time.monotonic() - started:.2f}",
+    )
+    return {
+        "code_nodes": code_nodes,
+        "modules": modules,
+        "packages": packages,
+        "variables": variables,
+        "constants": constants,
+        "data_types": data_types,
+        "parent_of_edges": parent_of,
+        "statement_next_edges": statement_next,
+        "references_edges": references,
+        "init_by_edges": init_by,
+        "call_sites": call_sites,
+        "callable_facts": callable_facts,
+        "parameter_facts": parameter_facts,
+        "binding_target_facts": binding_target_facts,
+        "scope_directive_facts": scope_directive_facts,
+        "structural_expression_facts": structural_expression_facts,
+        "semantic_expression_facts": semantic_expression_facts,
+        "resolved_expression_facts": resolved_expression_facts,
+        "macro_facts": macro_facts,
+        "import_refs": import_refs,
+        "import_resolution_ledger": import_resolution_ledger,
+        "evidence_sources": evidence_sources,
+        "evidence_completeness": evidence_completeness,
+        "preprocessing_contexts": preprocessing_contexts,
+    }

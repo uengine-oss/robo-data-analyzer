@@ -6,32 +6,31 @@ import unittest
 
 from pydantic import ValidationError
 
-from agents.contracts import ResidualPatternResult, ScanProposal
+from agents.agent_contracts import ResidualPatternResult, ScanProposal
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.semantic_tasks.rule.meaning_frame import (
+from pipeline.meaning.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     rule_meaning_response_model,
 )
-from pipeline.semantic_tasks.summary.response_schema import (
+from pipeline.meaning.summary.response_schema import (
     frame_summary_response_model,
 )
 from pipeline.models.semantic_frame import (
     SlotSpec,
 )
-from pipeline.semantic_tasks.table.description_frame import (
+from pipeline.meaning.table.description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
-from search.query.rewrite import GlossaryRewriteResponse
-from pipeline.semantic_tasks.table.response_schema import (
+from pipeline.meaning.table.response_schema import (
     batch_function_table_usages_response_model,
     function_table_usages_response_model,
 )
-from pipeline.steps.step4_scan_project.external_skills import ExternalFormatProposal
-from pipeline.semantic_tasks.semantic_frame_planner import (
+from pipeline.stages.scan.external_skills import ExternalFormatProposal
+from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
@@ -103,7 +102,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 "table_access_patterns", "ddl_transform_override",
             }),
             (ExternalFormatProposal, {"rules"}),
-            (GlossaryRewriteResponse, {"substitutions"}),
         )
         for model, required in boundaries:
             with self.subTest(model=model.__name__):
@@ -148,7 +146,7 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
                 column_plans,
             ), {"logical_name", "description", "columns"}),
             (rule_meaning_response_model(("C1",), ("E1",), ("R1",)), {
-                "effects", "rows",
+                "conditions", "effects", "rows",
             }),
             (batch_rule_meaning_response_model({
                 "N1": {

@@ -10,7 +10,7 @@ from shared.files.run_cache_context import read_run_text
 from llm.runners.prompt_values import _safe_format
 from pipeline.execution.run_output_context import get_response_locale
 
-from pipeline.languages import (
+from pipeline.source_languages import (
     stereotype_priority_text,
     stereotype_prompt_options,
 )

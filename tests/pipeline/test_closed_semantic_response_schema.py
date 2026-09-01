@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from pipeline.languages import require_stereotype
+from pipeline.source_languages import require_stereotype
 
 
 class ClosedSemanticResponseSchemaTest(unittest.TestCase):

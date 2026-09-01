@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pipeline.models.analysis_finding import AnalysisFinding
 from pipeline.models.semantic_frame import FUNCTION_SUMMARY_ROLES, SemanticFrame
-from pipeline.languages import ROUTINE_LABELS
+from pipeline.source_languages import ROUTINE_LABELS
 
 
 MeaningStatus = Literal["sufficient", "partial", "insufficient"]

@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pydantic import ValidationError
 
 from graph.schema.graph_edges import (
-    Calls, HasExample, HasRule, ReadsWrites, StatementNext,
+    Calls, HasRule, ReadsWrites, StatementNext,
 )
-from graph.schema.graph_nodes import Example, Rule
+from graph.schema.graph_nodes import Rule
 from pipeline.models.code_analysis_output import RuleItem
 from pipeline.execution.graph_delta_stream import emit_edges, emit_nodes
 
@@ -62,27 +62,20 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
                 id="fn:1::R-19", anchor_line=19,
                 structural_condition='F("stock") == 0',
                 structural_effects=('call("reject", None, [])',),
-                business_effects=('meaning_call("reject", None, [], "주문을 거절한다")',),
-            ),
-            Example(
-                id="fn:1::R-19::E1",
-                given_conditions=('F("stock") == 0',),
-                expected_effects=('call("reject", None, [])',),
+                condition_description="재고가 없을 때",
+                effect_descriptions=("주문을 거절한다",),
             ),
         ])
         await emit_edges(stream, [HasRule("function:1", "fn:1::R-19")])
 
-        self.assertEqual([event["label"] for event in stream.events[:2]], [
-            "RULE", "EXAMPLE",
-        ])
+        self.assertEqual(stream.events[0]["label"], "RULE")
         self.assertNotIn("nl", stream.events[0]["props"])
-        self.assertEqual(stream.events[0]["props"]["anchor_line"], 19)
+        self.assertEqual(stream.events[0]["props"]["line"], 19)
         self.assertEqual(
-            list(stream.events[0]["props"]["structural_effects"]),
+            list(stream.events[0]["props"]["effects"]),
             ['call("reject", None, [])'],
         )
-        self.assertNotIn("kind", stream.events[1]["props"])
-        self.assertEqual(stream.events[2]["props"], {"ordinal": 0})
+        self.assertEqual(stream.events[1]["props"], {"order": 0})
 
     async def test_reads_properties_match_persisted_graph(self) -> None:
         stream = _CaptureStream()
@@ -97,12 +90,7 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
 
         await emit_edges(stream, [edge])
 
-        self.assertEqual(stream.events[0]["props"], {
-            "dml_type": "SELECT",
-            "evidence_file": "orders.sql",
-            "evidence_line": 42,
-            "evidence_lines": [42],
-        })
+        self.assertEqual(stream.events[0]["props"], {"operations": ["SELECT"]})
 
     async def test_has_rule_streams_only_independent_ordinal(self) -> None:
         stream = _CaptureStream()
@@ -118,24 +106,7 @@ class GraphDeltaContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             stream.events[0]["props"],
-            {"ordinal": 2},
-        )
-
-    async def test_has_example_streams_only_independent_ordinal(self) -> None:
-        stream = _CaptureStream()
-        await emit_edges(
-            stream,
-            [
-                HasExample(
-                    source_id="rule:shared",
-                    target_id="function:1::R0002::example:1",
-                    ordinal=1,
-                )
-            ],
-        )
-        self.assertEqual(
-            stream.events[-1]["props"],
-            {"ordinal": 1},
+            {"order": 2},
         )
 
     async def test_unsupported_and_blank_endpoint_edges_fail_closed(self) -> None:

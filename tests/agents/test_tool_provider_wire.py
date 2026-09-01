@@ -9,11 +9,11 @@ from pathlib import Path
 
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
-from agents.tools.filesystem import make_filesystem_tools
-from agents.tools.inspection import list_skills, make_list_code_nodes, read_skill
-from agents.tools.mining import make_structure_candidate_tool
-from agents.tools.sampling import make_sample_exploration_tools
-from agents.tools.validation import (
+from agents.tools.file_tools import make_filesystem_tools
+from agents.tools.inspect_tools import list_skills, make_list_code_nodes, read_skill
+from agents.tools.pattern_mining import make_structure_candidate_tool
+from agents.tools.sample_tools import make_sample_exploration_tools
+from agents.tools.verify_tools import (
     make_verify_external_rule_tool,
     make_verify_table_regex_tool,
 )

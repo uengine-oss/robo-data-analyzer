@@ -42,11 +42,11 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
 
     def test_removed_freeform_synthesis_contracts_do_not_reappear(self) -> None:
         for path in (
-            ROOT / "pipeline/semantic_tasks/common/domain_terms_contract.md",
-            ROOT / "pipeline/semantic_tasks/common/semantic_text_contract.md",
-            ROOT / "pipeline/semantic_tasks/common/glossary_synthesis_contract.md",
-            ROOT / "pipeline/semantic_tasks/framework/glossary_synthesis.yaml",
-            ROOT / "pipeline/semantic_tasks/dbms/glossary_synthesis.yaml",
+            ROOT / "pipeline/meaning/common/domain_terms_contract.md",
+            ROOT / "pipeline/meaning/common/semantic_text_contract.md",
+            ROOT / "pipeline/meaning/common/glossary_synthesis_contract.md",
+            ROOT / "pipeline/meaning/framework/glossary_synthesis.yaml",
+            ROOT / "pipeline/meaning/dbms/glossary_synthesis.yaml",
         ):
             with self.subTest(path=path):
                 self.assertFalse(path.exists())
@@ -146,7 +146,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         )
         for relative in retired:
             with self.subTest(relative=relative):
-                self.assertFalse((ROOT / "pipeline/semantic_tasks" / relative).exists())
+                self.assertFalse((ROOT / "pipeline/meaning" / relative).exists())
 
     def test_summary_and_table_usage_keep_distinct_input_scopes(self) -> None:
         summary = self._expanded(load_semantic_rule("framework", "code_summary"))

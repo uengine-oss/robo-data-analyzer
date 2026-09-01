@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shared.config.settings import (
+from shared.config.app_settings import (
     AnalysisLlmSettings,
     AnalysisRunOutputSettings,
     EmbeddingSettings,
@@ -174,10 +174,8 @@ class RuntimeOutputContractTest(unittest.TestCase):
             "step7.analyze_code",
             "step7.analyze_code.batch",
             "step7.analyze_code.three_split",
-            "step8.build_module_summary_rollups",
-            "step8.build_components",
             "step8.enrich_table_description",
-            "step8.build_search_segments",
+            "step8.build_search_embeddings",
         }
         removed = {
             "step5.link_calls_by_name",
@@ -185,6 +183,9 @@ class RuntimeOutputContractTest(unittest.TestCase):
             "step8.summarize_module",
             "step8.enrich_lineage_from_catalog",
             "step8.embed",
+            "step8.build_module_summary_rollups",
+            "step8.build_components",
+            "step8.build_search_segments",
         }
 
         self.assertTrue(current.issubset(_COMPONENT_LABELS))

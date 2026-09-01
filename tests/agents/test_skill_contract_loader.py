@@ -4,20 +4,20 @@
 계약 (FR-4~FR-6):
 - matched SKILL 의 fence 절은 LLM 산출과 무관하게 파싱값으로 주입된다.
 - fence 부재/스킬 미매칭이면 기존 산출 유지.
-- 깨진 fence YAML 은 조용히 넘기지 않고 SkillCatalogError.
+- 깨진 fence YAML 은 조용히 넘기지 않고 SkillLoadError.
 """
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from agents.contracts import ScanProposal, ScanResult
+from agents.agent_contracts import ScanProposal, ScanResult
 from agents.rule_compiler import compile_exclusion_rules, compile_rules, split_rules
-from agents.scan import _finalize, _hydrate_skill_contract, _proposal_to_scan_result
-from agents.skills.catalog import SkillCatalogError, load_skill_contract
-from agents.tools.inspection import read_skill
+from agents.scan_agent import _finalize, _hydrate_skill_contract, _proposal_to_scan_result
+from agents.skills.skill_loader import SkillLoadError, load_skill_contract
+from agents.tools.inspect_tools import read_skill
 from graph.schema.graph_nodes import CodeNode, Table
-from pipeline.steps.step5_linking.link_tables.regex_table_linker import PatternVerdict
+from pipeline.stages.links.tables.regex_table_linker import PatternVerdict
 
 
 def _draft(matched_skill: str | None, **overrides) -> ScanResult:
@@ -35,7 +35,7 @@ class LoadSkillContractTest(unittest.TestCase):
 
     def test_proframe_real_skill_parses_expected_contract(self):
         # 실물 SKILL.md 고정 — 받아쓰기 없이 파싱만으로 계약 전체가 나온다.
-        contract = load_skill_contract("proframe-c-pfm-dbio")
+        contract = load_skill_contract("proframe")
         self.assertEqual(
             ["proframe_mpfmdbio"],
             [r["id"] for r in contract["table_access_rules"]],
@@ -78,7 +78,7 @@ class LoadSkillContractTest(unittest.TestCase):
                 "# SKILL: broken\n\n```yaml\ntable_access_patterns: [unclosed\n```\n",
                 encoding="utf-8",
             )
-            with self.assertRaises(SkillCatalogError):
+            with self.assertRaises(SkillLoadError):
                 load_skill_contract("broken", skills_dir=skills)
 
 
@@ -86,7 +86,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
 
     def test_hydrates_before_final_validation_without_llm_copy(self):
         result = _hydrate_skill_contract(_draft(
-            "proframe-c-pfm-dbio",
+            "proframe",
             ddl_transform={"ddl_naming_rule": "snake_to_camel", "fallback_prefixes": []},
         ))
 
@@ -114,7 +114,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
                 '}\n',
                 encoding="utf-8",
             )
-            hydrated = _hydrate_skill_contract(_draft("proframe-c-pfm-dbio"))
+            hydrated = _hydrate_skill_contract(_draft("proframe"))
             result = await _finalize(
                 hydrated,
                 Path(td),
@@ -131,7 +131,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_table_verification_failure_isolates_only_table_access_facet(self):
         """An unrelated R/W rule failure must not erase handler/API/call facts."""
-        hydrated = _hydrate_skill_contract(_draft("proframe-c-pfm-dbio"))
+        hydrated = _hydrate_skill_contract(_draft("proframe"))
         verdict = PatternVerdict(
             ok=False,
             resolved_ratio=0.48,
@@ -142,7 +142,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "agents.scan.verify_table_patterns",
+            "agents.scan_agent.verify_table_patterns",
             new=AsyncMock(return_value=verdict),
         ):
             result = await _finalize(hydrated, Path("."), [], [])
@@ -153,7 +153,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], result.table_access_patterns)
         self.assertEqual([], result.table_access_exclusion_rules)
         self.assertIn("proframe_mpfmdbio_sequence", result.no_match_reason or "")
-        self.assertEqual("proframe-c-pfm-dbio", result.matched_skill)
+        self.assertEqual("proframe", result.matched_skill)
         self.assertEqual(["PFM_CATCH"], result.handler_markers)
         self.assertEqual("RC_NRM", result.api_contracts[0].success_value)
         self.assertEqual("mpfm_dlcall", result.call_wrappers[0].wrapper)
@@ -165,7 +165,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
 
     def test_unknown_matched_skill_fails_instead_of_using_empty_contract(self):
         with self.assertRaisesRegex(ValueError, "contract가 없음"):
-            _hydrate_skill_contract(_draft("not-in-catalog"))
+            _hydrate_skill_contract(_draft("missing"))
 
     def test_absent_skill_keys_clear_agent_injections(self):
         injected = _draft(
@@ -180,7 +180,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
             api_contracts=[{"name": "invented_api", "arg_roles": {}}],
         )
         with patch(
-            "agents.scan.load_skill_contract",
+            "agents.scan_agent.load_skill_contract",
             return_value={"handler_markers": []},
         ):
             result = _hydrate_skill_contract(injected)
@@ -236,7 +236,7 @@ class HydrateSkillContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("id", proposal.table_access_patterns[0].model_dump())
 
     def test_scan_agent_skill_view_omits_internal_rule_ids(self):
-        document = read_skill.invoke({"name": "proframe-c-pfm-dbio"})
+        document = read_skill.invoke({"name": "proframe"})
 
         self.assertNotIn("id: proframe_mpfmdbio", document)
         self.assertNotIn("id: proframe_mpfmdbio_sequence", document)

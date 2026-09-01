@@ -3,15 +3,17 @@ from __future__ import annotations
 import copy
 import tempfile
 import unittest
+import json
+from pathlib import Path
 from pathlib import Path
 from unittest.mock import patch
 
-from pipeline import languages
-from pipeline.steps.step3_load_external.parsers import key_roles
-from pipeline.steps.step4_scan_project.scanner_input_collector import (
+from pipeline import source_languages as languages
+from pipeline.stages.external.parsers import key_roles
+from pipeline.stages.scan.scanner_input_collector import (
     collect_scanner_input,
 )
-from pipeline.steps.step5_linking.link_external import linker
+from pipeline.stages.links.external import external_linker as linker
 
 
 _CACHED_POLICIES = (
@@ -25,6 +27,27 @@ _CACHED_POLICIES = (
 
 
 class OntologyIntegrationContractsTest(unittest.TestCase):
+    def test_dbms_extensions_match_parser_catalog(self) -> None:
+        from pipeline.source_languages import DBMS_SUFFIXES
+
+        catalog_path = (
+            Path(__file__).resolve().parents[3]
+            / "antlr-code-parser"
+            / "src"
+            / "main"
+            / "resources"
+            / "languages"
+            / "language-catalog.json"
+        )
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        parser_extensions = {
+            extension
+            for language in catalog["languages"]
+            if language["family"] == "dbms"
+            for extension in language["parseExtensions"]
+        }
+        self.assertEqual(parser_extensions, set(DBMS_SUFFIXES))
+
     def tearDown(self) -> None:
         for function in _CACHED_POLICIES:
             function.cache_clear()
@@ -112,7 +135,7 @@ class OntologyIntegrationContractsTest(unittest.TestCase):
             for index in range(55):
                 (root / f"sample-{index}.zz").write_text("content", encoding="utf-8")
             with patch(
-                "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
+                "pipeline.stages.scan.scanner_input_collector.scanner_hints",
                 return_value=(("custom.manifest",), {"Custom": frozenset({".zz"})}),
             ):
                 result = collect_scanner_input(root)
@@ -127,7 +150,7 @@ class OntologyIntegrationContractsTest(unittest.TestCase):
             for index in range(25):
                 (root / f"source.x{index:02d}").write_text("content", encoding="utf-8")
             with patch(
-                "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
+                "pipeline.stages.scan.scanner_input_collector.scanner_hints",
                 return_value=((), {}),
             ):
                 result = collect_scanner_input(root)
@@ -142,7 +165,7 @@ class OntologyIntegrationContractsTest(unittest.TestCase):
             selected.write_text("selected", encoding="utf-8")
             outside.write_text("outside", encoding="utf-8")
             with patch(
-                "pipeline.steps.step4_scan_project.scanner_input_collector.scanner_hints",
+                "pipeline.stages.scan.scanner_input_collector.scanner_hints",
                 return_value=((), {
                     "Selected": frozenset({".zz"}),
                     "Outside": frozenset({".yy"}),

@@ -5,7 +5,7 @@
 
 **부수**: run 디렉터리의 ``tool_events.jsonl`` 적재 (사후 분석).
 
-도구 이름 → 친화 메시지 template 는 ``llm/tools/messages.py`` 가 정의.
+도구 이름 → 친화 메시지 template 는 ``agents/tools/tool_messages.py`` 가 정의.
 
 ★ LangChain 1.x AgentMiddleware 의 도구 hook = ``wrap_tool_call(request, handler)``.
    ``before_tool`` / ``after_tool`` 는 존재 X — 안 부르면 jsonl 0 줄.
@@ -21,8 +21,8 @@ from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
-from llm.messages import content_to_text
-from agents.middleware.diagnostics import (
+from llm.prompt_messages import content_to_text
+from agents.middleware.model_diagnostics import (
     append_optional_diagnostic_event,
 )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from llm.runners.prompt_rules import _load_rule
-from pipeline.semantic_tasks.prompt_assets import semantic_prompt_dir
+from pipeline.meaning.prompt_assets import semantic_prompt_dir
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,4 +29,4 @@ def load_semantic_rule(strategy: str, rule_name: str) -> dict:
 
 
 def contract_path(family: str, name: str) -> Path:
-    return ROOT / "pipeline" / "semantic_tasks" / family / "prompts" / "common" / name
+    return ROOT / "pipeline" / "meaning" / family / "prompts" / "common" / name

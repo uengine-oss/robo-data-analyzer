@@ -17,8 +17,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from search.corpus.corpus import SearchUnavailable
-from search.service import run_search
+from search.corpus.search_corpus import SearchUnavailable
+from search.search_service import run_search
 from shared.events.runtime_logger import log_error, log_info
 from shared.events.ndjson_event_stream import NDJSONStream
 from graph.connection_context import Neo4jOverride, set_override
@@ -28,7 +28,6 @@ router = APIRouter(prefix="/robo")
 
 class SearchRequest(BaseModel):
     query: str
-    analysis_scope_id: Optional[str] = None
     top_n: Optional[int] = Field(default=None, ge=1, le=100)
 
 
@@ -58,7 +57,6 @@ async def search_semantic(req: SearchRequest, request: Request) -> StreamingResp
                 query,
                 on_progress,
                 top_n=req.top_n,
-                analysis_scope_id=req.analysis_scope_id,
             )
             log_info("api.search", "done", query=query,
                      nodes=sum(len(c["nodes"]) for c in clusters))

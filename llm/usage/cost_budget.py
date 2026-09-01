@@ -11,7 +11,7 @@ import math
 import threading
 from dataclasses import dataclass, field
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 
 
 class BudgetExceededError(RuntimeError):

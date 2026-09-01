@@ -20,7 +20,7 @@ LangGraph step 안 "지금 누구를 처리 중" (코드노드 / 모듈 / 테이
 contextvars 안전성
 ──────────────────
 - Python 3.7+ 표준 + asyncio 친화 (gather / create_task / as_completed 모두 컨텍스트 복제 → task 격리)
-- 같은 패턴이 ``llm/tracing.py`` 의 ``_invoke_var`` 에 이미 사용 — 코드베이스 일관
+- 같은 패턴이 ``llm/request_tracing.py`` 의 ``_invoke_var`` 에 이미 사용 — 코드베이스 일관
 - ``step_processing_scope`` 의 ``try/finally`` 가 Token reset 보장 — 다음 run 잔재 0
 - stream 미연결 (CLI 단독) 시 ``_current_stream.get() = None`` → emit no-op (안전)
 

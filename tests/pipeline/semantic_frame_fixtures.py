@@ -9,7 +9,7 @@ from pipeline.models.semantic_frame import (
     SemanticFrame,
     SemanticSlot,
 )
-from pipeline.semantic_tasks.semantic_frame_planner import build_code_semantic_plan
+from pipeline.meaning.semantic_frame_planner import build_code_semantic_plan
 
 
 def semantic_frame_for_node(

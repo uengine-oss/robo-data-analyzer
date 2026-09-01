@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import unittest
-from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,17 +10,14 @@ from pydantic import ValidationError
 from starlette.requests import Request
 
 from api.search_router import SearchRequest, search_semantic
-from search import service
+from search import search_service as service
 
 
 class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
     async def test_rest_top_n_reaches_shared_service(self) -> None:
         captured: list[int | None] = []
 
-        def fake_search(
-            query, on_progress=None, *, top_n=None, analysis_scope_id=None,
-        ):
-            del analysis_scope_id
+        def fake_search(query, on_progress=None, *, top_n=None):
             captured.append(top_n)
             return [{"score": 1.0, "nodes": [{"id": "n1"}]}], {"ok": True}
 
@@ -62,36 +58,20 @@ class SearchRequestContractTest(unittest.IsolatedAsyncioTestCase):
                 observed.append(cfg.cluster_top_n)
                 return []
 
-        @contextmanager
-        def scoped_session(_driver, _database, *, analysis_scope_id=None):
-            del analysis_scope_id
-            yield SimpleNamespace(
-                analysis_scope_id="scope:1",
-                generation_id="generation:1",
-                quality_status="completed_with_findings",
-                call_resolution={"total": 2, "unresolved": 1},
-                import_resolution={"total": 3, "unresolved": 2},
-            )
-
         default_limit = service.DEFAULT.cluster_top_n
         with (
             patch.object(
                 service, "load_corpus",
-                return_value=SimpleNamespace(
-                    ids=[], analysis_scope_id="scope:1", generation_id="generation:1",
-                ),
+                return_value=SimpleNamespace(ids=[]),
             ),
             patch.object(service, "read_driver", return_value=(Driver(), "neo4j")),
             patch.object(service, "Retriever", Retriever),
-            patch.object(service, "completed_generation_session", scoped_session),
         ):
             _clusters, meta = service.run_search("inventory", top_n=3)
 
         self.assertEqual([3], observed)
         self.assertEqual(default_limit, service.DEFAULT.cluster_top_n)
-        self.assertEqual("completed_with_findings", meta["quality_status"])
-        self.assertEqual(1, meta["call_resolution"]["unresolved"])
-        self.assertEqual(2, meta["import_resolution"]["unresolved"])
+        self.assertEqual({"corpus_nodes": 0}, meta["coverage"])
 
     def test_top_n_boundary_is_explicit(self) -> None:
         self.assertEqual(1, SearchRequest(query="q", top_n=1).top_n)

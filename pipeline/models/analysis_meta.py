@@ -3,15 +3,12 @@
 분석 1회의 입력 단위. 디렉토리 경로 + strategy (+ 옵션 datasource).
 
 ★ 가공 식별자(``name``) 폐기. 진실은 ``root`` 경로.
-catalog **접속 설정**(``base_url`` / ``enabled``)은 운영 영역 (``shared.config.settings`` 의 ``ROBO_CATALOG_*``) —
+catalog **접속 설정**(``base_url`` / ``enabled``)은 운영 영역 (``shared.config.app_settings`` 의 ``ROBO_CATALOG_*``) —
 분석기는 URL 호출·응답 처리만 책임진다. 단 ``datasource`` ("이번 분석에서 어느 DB 를 샘플링")는
 분석 1회의 **입력값** 이라 여기 둔다 ("접속 설정"=SETTINGS / "어느 DB"=입력 으로 구분).
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -19,46 +16,7 @@ from typing import Literal, Optional
 from uuid import uuid4
 
 
-ANALYSIS_SCOPE_ID_SCHEME = "analysis-scope/v2"
 _SHA256_HEX = frozenset("0123456789abcdef")
-
-
-def _canonical_source_root(root: Path) -> str:
-    """Return the host-canonical source-root identity used by graph generations.
-
-    A scope must survive repeated runs of the same source population, so it
-    cannot contain a run ID or a source-content hash.  Resolving aliases and
-    applying the host filesystem's case rules makes the root identity
-    deterministic without inventing a second project name.
-    """
-    return os.path.normcase(str(root.expanduser().resolve())).replace("\\", "/")
-
-
-def analysis_scope_id_for(
-    *,
-    root: Path,
-    strategy: str,
-    selected_source_ids: tuple[str, ...] = (),
-) -> str:
-    """Build the stable graph scope ID for one exact source population."""
-    selected = normalize_selected_source_ids(selected_source_ids)
-    source_population: dict[str, object] = (
-        {"mode": "selected", "source_ids": list(selected)}
-        if selected
-        else {"mode": "complete"}
-    )
-    payload = json.dumps(
-        {
-            "scheme": ANALYSIS_SCOPE_ID_SCHEME,
-            "source_root": _canonical_source_root(root),
-            "source_population": source_population,
-            "strategy": strategy,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return f"{ANALYSIS_SCOPE_ID_SCHEME}:{hashlib.sha256(payload).hexdigest()}"
 
 
 def normalize_selected_source_ids(values: object) -> tuple[str, ...]:
@@ -110,7 +68,7 @@ class Codebase:
         root: 실제로 분석할 소스 디렉토리.
         corpus_root: 그 소스와 Parser 산출물을 함께 담은 corpus 디렉토리.
             둘을 명시해야 다른 실행의 source/AST가 섞이지 않는다.
-        strategy: ``"framework"`` 또는 ``"dbms"`` — ``pipeline/strategies.py`` 의
+        strategy: ``"framework"`` 또는 ``"dbms"`` — ``pipeline/pipeline_strategies.py`` 의
             ``FRAMEWORK_PIPELINE`` / ``DBMS_PIPELINE`` 과 매칭.
         ddl_dir: 별도 DDL 디렉토리 (None 이면 root 안에서 자동 탐색).
         locale: LLM 응답 언어 (``"ko"`` / ``"en"``).
@@ -151,16 +109,6 @@ class Codebase:
             field_name="validation_answer_key",
         )
 
-    @property
-    def analysis_scope_id(self) -> str:
-        """Stable scope shared by runs of this exact source population."""
-        return analysis_scope_id_for(
-            root=self.root,
-            strategy=self.strategy,
-            selected_source_ids=self.selected_source_ids,
-        )
-
-
 @dataclass(frozen=True)
 class AnalysisRun:
     """한 번의 분석 실행을 식별하고 산출물 위치를 고정한다."""
@@ -169,11 +117,6 @@ class AnalysisRun:
     codebase: Codebase
     started_at: datetime
     run_dir: Path
-
-    @property
-    def analysis_scope_id(self) -> str:
-        """Stable codebase scope; unlike ``run_id`` this does not change per run."""
-        return self.codebase.analysis_scope_id
 
     @classmethod
     def now(cls, codebase: Codebase, run_output_root: Path) -> "AnalysisRun":

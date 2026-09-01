@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from llm import tracing
+from llm import request_tracing as tracing
 from pipeline.execution.run_executor import (
     _reset_run_output_root,
     _write_initial_manifest,
@@ -185,7 +185,6 @@ class ImmutableRunEvidenceTest(unittest.TestCase):
 
             manifest = json.loads((run.run_dir / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(run.run_id, manifest["run_id"])
-            self.assertEqual(run.analysis_scope_id, manifest["analysis_scope_id"])
             self.assertEqual(str(corpus.resolve()), manifest["corpus_root"])
             self.assertEqual("en-US", manifest["locale"])
             self.assertEqual("a" * 64, manifest["sealed_analysis_inputs"]["sha256"])

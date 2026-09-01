@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from graph.connection_context import get_override
 
 

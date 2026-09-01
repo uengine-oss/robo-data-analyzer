@@ -17,7 +17,7 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 
-from llm.filters import move_volatile_to_end
+from llm.prompt_filters import move_volatile_to_end
 
 
 class CacheFriendlyOrderMiddleware(AgentMiddleware):

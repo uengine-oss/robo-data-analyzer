@@ -26,7 +26,7 @@ import asyncio
 import json
 from typing import AsyncIterator
 
-from shared.config.settings import SETTINGS
+from shared.config.app_settings import SETTINGS
 from shared.events.runtime_logger import log_info, log_warning
 
 

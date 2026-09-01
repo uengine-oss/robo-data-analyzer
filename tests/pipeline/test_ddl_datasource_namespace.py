@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from pipeline.steps.step1_parse_ddl.ddl_parser import DDLParseResult
-from pipeline.steps.step1_parse_ddl import parse_ddl_step as subject
+from pipeline.stages.ddl.ddl_parser import DDLParseResult
+from pipeline.stages.ddl import parse_ddl_step as subject
 
 
 class DdlDatasourceNamespaceTest(unittest.IsolatedAsyncioTestCase):

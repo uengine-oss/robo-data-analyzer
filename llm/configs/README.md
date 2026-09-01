@@ -5,8 +5,8 @@
 이 폴더의 YAML 1개 = **모델 + 배포 환경 1개의 설정 묶음**.
 
 예시:
-- `qwen36_sglang_local.yaml` — Qwen3.6 모델을 사내 SGLang 으로 배포한 환경
-- `qwen36_openrouter.yaml` — 같은 모델을 OpenRouter 로 호출하는 환경
+- `qwen38_sglang_local.yaml` — Qwen3.8 모델을 사내 SGLang으로 배포한 환경
+- `qwen36_openrouter.yaml` — Qwen3.6 모델을 OpenRouter로 호출하는 환경
 - `gpt4o_openai.yaml` (예시) — OpenAI 직접 gpt-4o
 - `claude4_anthropic.yaml` (예시) — Anthropic 직접 Claude
 
@@ -14,7 +14,7 @@
 
 ```bash
 # .env
-ROBO_LLM_CONFIG=qwen36_sglang_local    # llm/configs/qwen36_sglang_local.yaml 사용
+ROBO_LLM_CONFIG=qwen38_sglang_local    # llm/configs/qwen38_sglang_local.yaml 사용
 ROBO_LLM_API_KEY=<secret>               # 비밀만 별도 (secret manager 친화)
 ```
 
@@ -103,7 +103,7 @@ YAML 에 API key 박지 **X**. `.env` 의 `ROBO_LLM_API_KEY` 만 사용.
 ```bash
 # 새 config 작성 후
 python -c "
-from llm.configs.loader import load_llm_config
+from llm.configs.config_loader import load_llm_config
 cfg = load_llm_config('<your_config_name>')
 print(cfg)
 "

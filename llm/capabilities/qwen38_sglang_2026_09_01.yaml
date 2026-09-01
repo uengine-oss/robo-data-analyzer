@@ -1,0 +1,31 @@
+sealed_model_runtime_capabilities:
+  runtime_kind: provider_managed
+  provider_id: internal-sglang
+  model_id: Qwen/Qwen3.8-27B-FP8
+  model_revision: default
+  serving_runtime:
+    runtime_id: sglang
+    runtime_version: provider_managed_undisclosed
+    runtime_config_sha256: b20304c4dd903454c6e64e94e47982df527da8ff902b7ae9e924e65be30b57a1
+  provider_hard_limits:
+    context_tokens: 262144
+    max_output_tokens: 30000
+  profile_version: model-info-2026-09-01
+  provider_managed_disclosure:
+    tokenizer_identity: provider_managed_undisclosed
+    quantization: provider_managed_undisclosed
+    infrastructure: provider_managed_undisclosed
+  deployment_identity:
+    api_model_alias: frentis-ai-model
+    model_path: Qwen/Qwen3.8-27B-FP8
+    tokenizer_path: Qwen/Qwen3.8-27B-FP8
+    weight_version: default
+    model_type: qwen3_5
+    architectures:
+      - Qwen3_5ForConditionalGeneration
+    is_generation: true
+  provenance:
+    model_info_endpoint: http://ai-server.dream-flow.com:30000/model_info
+    model_page: https://huggingface.co/Qwen/Qwen3.8-27B-FP8
+    verified_at: 2026-09-01
+    note: runtime_config_sha256 is the canonical deployment_identity snapshot hash; the server runtime version and infrastructure are undisclosed

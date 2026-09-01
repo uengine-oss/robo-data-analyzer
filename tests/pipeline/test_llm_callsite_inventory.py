@@ -43,46 +43,45 @@ class ProductionLlmCallsiteInventoryTest(unittest.TestCase):
         actual = _named_calls(ROOT / "agents", "run_yaml_rule")
         actual.update(_named_calls(ROOT / "pipeline", "run_yaml_rule"))
         self.assertEqual(Counter({
-            ("agents/residual.py", "<_RESIDUAL_RULE>"): 1,
+            ("agents/residual_agent.py", "<_RESIDUAL_RULE>"): 1,
             (
-                "pipeline/semantic_tasks/batch_analyze.py",
+                "pipeline/meaning/batch_analyze.py",
                 "code_summary_node",
             ): 1,
             (
-                "pipeline/semantic_tasks/batch_analyze.py",
+                "pipeline/meaning/batch_analyze.py",
                 "<rule_name>",
             ): 1,
             (
-                "pipeline/semantic_tasks/batch_analyze.py",
+                "pipeline/meaning/batch_analyze.py",
                 "code_rule_meanings_batch",
             ): 1,
             (
-                "pipeline/semantic_tasks/three_split_llm_fanout.py",
+                "pipeline/meaning/three_split_llm_fanout.py",
                 "code_summary",
             ): 1,
             (
-                "pipeline/semantic_tasks/three_split_llm_fanout.py",
+                "pipeline/meaning/three_split_llm_fanout.py",
                 "code_rule_meanings",
             ): 1,
             (
-                "pipeline/semantic_tasks/three_split_llm_fanout.py",
+                "pipeline/meaning/three_split_llm_fanout.py",
                 "code_table_usage_meanings",
             ): 1,
             (
-                "pipeline/steps/step8_post_processing/enrich_table_description_step.py",
+                "pipeline/stages/output/enrich_table_description_step.py",
                 "table_description",
             ): 1,
         }), actual)
 
     def test_tool_using_agent_entrypoints_are_exactly_scan_and_external(self) -> None:
         self.assertEqual(Counter({
-            ("agents/external.py", "<agent>"): 1,
-            ("agents/scan.py", "<agent>"): 1,
+            ("agents/external_agent.py", "<agent>"): 1,
+            ("agents/scan_agent.py", "<agent>"): 1,
         }), _named_calls(ROOT / "agents", "run_structured_agent"))
 
     def test_search_has_one_reviewed_structured_model_boundary(self) -> None:
         self.assertEqual(Counter({
-            ("search/query/rewrite.py", "<agent>"): 1,
         }), _named_calls(ROOT / "search", "invoke_structured"))
 
 

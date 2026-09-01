@@ -1,6 +1,6 @@
 """Materialize canonical Rule leaves from parser-owned branch evidence.
 
-Rule conditions, effects, coordinates, ownership, and Examples are structural facts.
+Rule conditions, effects, coordinates, and ownership are structural facts.
 They must not pass through a model response before graph/API/MCP consumers can use
 them.  This module is the single conversion boundary from ``rule_evidence`` to the
 product ``RuleItem`` projection.
@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from pipeline.models.code_analysis_output import RuleItem
-from pipeline.quality_gates.rule_condition_rendering import (
+from pipeline.checks.rule_condition_rendering import (
     render_projected_row_condition,
 )
 

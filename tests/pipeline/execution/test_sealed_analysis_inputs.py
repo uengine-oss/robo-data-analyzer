@@ -15,11 +15,11 @@ from pipeline.execution.sealed_analysis_inputs import (
     write_sealed_analysis_inputs,
 )
 from pipeline.models.analysis_meta import Codebase
-from shared.files.cache import SourceFileCache
+from shared.files.source_cache import SourceFileCache
 
 
 REAL_REPOSITORY = Path(__file__).resolve().parents[3]
-CONFIG_NAME = "qwen36_sglang_local"
+CONFIG_NAME = "qwen38_sglang_local"
 
 
 @dataclass(frozen=True)
@@ -122,12 +122,13 @@ class SealedAnalysisInputsTest(unittest.TestCase):
         (prompts / "summary.yaml").write_text("system: stable\n", encoding="utf-8")
         for relative in (
             ".specify/memory/constitution.md",
-            "specs/131-cross-node-semantic-grounding/README.md",
-            "specs/131-cross-node-semantic-grounding/spec.md",
-            "specs/131-cross-node-semantic-grounding/plan.md",
-            "specs/131-cross-node-semantic-grounding/tasks.md",
-            "specs/131-cross-node-semantic-grounding/contracts/parser-structural-facts-v2.md",
-            "specs/131-cross-node-semantic-grounding/contracts/analyzer-meaning-and-publication-v2.md",
+            "specs/001-analyzer-redesign/README.md",
+            "specs/001-analyzer-redesign/spec.md",
+            "specs/001-analyzer-redesign/plan.md",
+            "specs/001-analyzer-redesign/tasks.md",
+            "specs/001-analyzer-redesign/contracts/parser-contract.md",
+            "specs/001-analyzer-redesign/contracts/graph-contract.md",
+            "specs/001-analyzer-redesign/contracts/service-contract.md",
         ):
             path = repository / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,7 +192,7 @@ class SealedAnalysisInputsTest(unittest.TestCase):
                 write_sealed_analysis_inputs(target, first)
 
         self.assertEqual(first.sha256, second.sha256)
-        self.assertEqual(2, first.payload["analysis_scope_files"]["file_count"])
+        self.assertEqual(2, first.payload["source_files"]["file_count"])
         self.assertEqual(1, first.payload["ddl_files"]["file_count"])
         self.assertTrue(first.payload["validation_baseline"]["supplied"])
         self.assertTrue(first.payload["validation_answer_key"]["supplied"])
