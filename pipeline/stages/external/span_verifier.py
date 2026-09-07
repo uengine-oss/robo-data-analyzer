@@ -1,4 +1,4 @@
-"""Deterministic span verification (spec 078).
+"""Deterministic span verification.
 
 The single gate every semantic span must pass before it may become a chunk:
 bounds, ordering, no overlap, non-empty slice.  Verified chunks are produced

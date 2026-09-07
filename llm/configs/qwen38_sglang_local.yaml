@@ -26,6 +26,10 @@ timeout_seconds: 600
 # 더 실행되는 것이 아니라 SGLang 내부 대기열만 늘어난다.
 max_concurrency: 16
 
+# 44,143 LOC 실측에서 173개 이상 effect 응답이 정체됐고 128 이하는 완료됐다.
+# Rule 행은 쪼개지 않으며, 한 행이 이 한도를 넘으면 분석을 명시적으로 중단한다.
+max_rule_effects_per_request: 128
+
 # 사내 자체 인증서 환경이 아니면 true. http endpoint 라 SSL 무관.
 verify_ssl: true
 

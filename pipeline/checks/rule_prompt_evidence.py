@@ -144,17 +144,21 @@ def _condition_path(
             if isinstance(guard, int) and _has_condition(inventory, guard):
                 references[guard] = False
 
-    # 평면 대안 절 사슬 보정 (spec 118 §2.3). 자기와 조상 각각에 대해, 그것이 대안 절이면
+    # 평면 대안 절 사슬 보정. 자기와 조상 각각에 대해, 그것이 대안 절이면
     # 부모 판정과 앞선 형제 대안 절을 **부정**으로 확정한다. 위 계산이 부모 조건을
     # "성립"으로 상속했다면 여기서 뒤집힌다 — 좌표(키) 순서는 그대로라 표기만 정정된다.
     # 대안 절 타입이 없는 언어(C/Java/Python)는 이 루프가 아무것도 하지 않는다.
     owner = inventory.at_line(int(row["line"]))
     if owner is not None:
         for node in [owner, *owner.ancestors()]:
-            for guard in node.sequence_guard_lines:
-                guard_line = guard + inventory.line_offset
-                if _has_condition(inventory, guard_line):
-                    references[guard_line] = False
+            # A complement arm is selected by its paired decision, not by
+            # sequential fall-through from controls in the opposite arm.  Its
+            # complement_of/negated_arms facts already contain the complete path.
+            if node.prompt_role() != "complement":
+                for guard in node.sequence_guard_lines:
+                    guard_line = guard + inventory.line_offset
+                    if _has_condition(inventory, guard_line):
+                        references[guard_line] = False
             for arm in inventory.negated_arms(node):
                 arm_line = arm.start + inventory.line_offset
                 if _has_condition(inventory, arm_line):

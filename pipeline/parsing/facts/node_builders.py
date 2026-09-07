@@ -38,7 +38,7 @@ _DBMS_VAR_TYPES: frozenset[str] = frozenset({
 
 # (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
 #  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
-#  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
+#  따로 들어 실제로 갈라졌다. batch_analyze 쪽에는 METHOD가 빠져 있었다.
 
 
 @dataclass
@@ -114,7 +114,7 @@ def _make_code_node(
         comment=node.get("comment") or "",
         return_type=node.get("returnType") or "",
         params=node.get("parameters") or "",
-        # 구조 statement/제어 조건 표현 — parser listener 가 소유한 원문 (spec 016).
+        # 구조 statement/제어 조건 표현 — parser listener 가 소유한 원문.
         expression=node.get("expression") or "",
         condition_timing=node.get("conditionTiming") or "",
         target=node.get("target") or "",
@@ -247,7 +247,7 @@ def _make_data_type(
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
 def _node_id(node: dict, ctx: _FwCtx, container_id: str) -> str:
-    """Framework 노드 → 고유 id = ``<컨테이너>:<이름>`` (spec 047).
+    """Framework 노드 → 고유 id = ``<컨테이너>:<이름>``.
 
     ``container_id`` 는 **직접 담고 있는 것**이다 — 파일이면 파일 id, 구조체 멤버면
     **구조체 id**. 종전엔 항상 모듈 id 를 넘겨서 구조체 이름이 id 에서 사라졌고,
@@ -327,7 +327,7 @@ def _absolute_source_path(
 
 
 def _file_module_id(file_path: str) -> str:
-    """소스 상대경로 → file-level module id — ``code:<경로(확장자 포함)>`` (spec 047).
+    """소스 상대경로 → file-level module id — ``code:<경로(확장자 포함)>``.
 
     예: ``"sub/dir/foo.c"`` → ``"code:sub/dir/foo.c"``.
 
@@ -346,7 +346,7 @@ def _clean_signature(sig: str | None) -> str:
 
 
 def _unique_id(base: str, start_line: int, seen: set[str]) -> str:
-    """동명 충돌 방지 — 중복 시 ``@<startLine>`` 접미 (Java 오버로드 등, spec 047).
+    """동명 충돌 방지 — 중복 시 ``@<startLine>`` 접미(Java 오버로드 등).
 
     접미 구분자는 ``@`` 다 — 경로 구분자 ``:`` 와 **달라야** 경로 해석이 흐려지지 않는다
     (종전엔 둘 다 ``:`` 라 ``code:foo.c:bar:12`` 가 "bar 안의 12" 처럼 보였다).

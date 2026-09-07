@@ -1,4 +1,4 @@
-"""XML span adapter (spec 078): stdlib expat, exact element spans, fail-closed.
+"""XML span adapter : stdlib expat, exact element spans, fail-closed.
 
 Semantic unit = outermost element carrying an identifier; nested identifier
 elements are absorbed into the outer chunk's key list.  An identifier is an

@@ -1,11 +1,10 @@
 """단순 LLM 호출 (Agent 아닌 것) 의 Pydantic 출력 스키마.
 
-3 분할 fan-out + 모듈 요약 + 테이블 description 등.
+Summary/Rule fan-out + 모듈 요약 + 테이블 description 등.
 각 yaml 의 ``response_format`` 으로 강제 — 자유 텍스트 응답 X.
 
 사용처:
-- ``pipeline/meaning``: SummaryOutput / FunctionTableUsagesOutput 및
-  결정론 Rule projection
+- ``pipeline/meaning``: SummaryOutput 및 결정론 Rule projection
 - ``pipeline/stages/output``: TableDescription
 
 호출 모드 (단일 진실):
@@ -33,7 +32,6 @@ from pydantic import (
 
 from pipeline.models.rule_expression import RULE_LEAF_PATTERN
 from pipeline.models.semantic_frame import SemanticFrame
-from pipeline.meaning.table.table_usage import FunctionTableUsage
 
 
 def _normalize_summary_format(v: str) -> str:
@@ -45,7 +43,7 @@ def _normalize_summary_format(v: str) -> str:
     return "\n".join(lines)
 
 
-# ── 3 분할 #1: code_summary ───────────────────────────
+# ── code_summary ───────────────────────────
 
 EvidenceStatus = Literal["sufficient", "partial", "insufficient"]
 
@@ -109,9 +107,6 @@ class SummaryOutput(BaseModel):
         return self
 
 
-# ── 3 분할 #2: function-table access meaning ───────────────
-
-
 class GroundedColumnDescription(BaseModel):
     """Final catalog column meaning with an explicit evidence-sufficiency outcome."""
     model_config = ConfigDict(extra="forbid")
@@ -131,15 +126,6 @@ class GroundedColumnDescription(BaseModel):
         if self.evidence_status == "insufficient" and (has_meaning or not self.missing_context):
             raise ValueError("insufficient column meaning must stay empty and name missing context")
         return self
-
-
-class FunctionTableUsagesOutput(BaseModel):
-    """Access-specific function-to-table meanings projected from one response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    function_table_usages: list[FunctionTableUsage] = Field(default_factory=list)
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
 
 
 # ── 결정론 Rule 구조와 모델 의미 projection ──
@@ -188,9 +174,9 @@ class RuleCollectionOutput(BaseModel):
     rules: list[RuleItem] = Field(default_factory=list)
 
 
-# ── DBMS 3분할 결과 ──
-# Summary는 정확한 노드 원문마다 한 번 생성한다. Rule과 TABLE 의미만 같은 부모의 형제를
-# 평탄한 node_key map으로 묶으며, 세 관심사를 한 응답에 합치지 않는다.
+# ── DBMS 결과 ──
+# Summary는 정확한 노드 원문마다 한 번 생성한다. Rule 의미는 같은 부모의 형제를 평탄한
+# node_key map으로 묶으며, 두 관심사를 한 응답에 합치지 않는다.
 
 
 class BatchSummaryItem(BaseModel):
@@ -234,22 +220,6 @@ class BatchRulesItem(BaseModel):
     rules: list[RuleItem] = Field(default_factory=list)
 
 
-class BatchFunctionTableUsagesItem(BaseModel):
-    """One DBMS node's access-specific function-to-table meanings."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    node_key: str = Field(..., description="Analyzer가 배정한 request-local N 순번")
-    function_table_usages: list[FunctionTableUsage] = Field(default_factory=list)
-    semantic_frame: SemanticFrame | None = Field(default=None, exclude=True)
-
-
-class BatchFunctionTableUsagesOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    nodes: list[BatchFunctionTableUsagesItem] = Field(default_factory=list)
-
-
 # ── 테이블 description 통합 (enrich_table_description_step) ──
 
 
@@ -259,7 +229,7 @@ class TableDescription(BaseModel):
     db: str
     schema_: str = Field(..., alias="schema")
     name: str
-    logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값) — spec 025
+    logical_name: str = Field(...)   # 짧은 도메인 표시명(물리명과 별개, 근거없으면 빈값)
     description: str
     evidence_status: Literal["sufficient", "insufficient"]
     missing_context: list[str] = Field(default_factory=list)
@@ -280,4 +250,4 @@ class TableDescription(BaseModel):
         return self
 
 # (옛 ``TableDescriptionsOutput`` 삭제 — 참조 0건. 실제 response_model 은 단수형
-#  ``TableDescription`` (enrich_table_description_step). spec 046 FR-010.)
+#  ``TableDescription`` (enrich_table_description_step).

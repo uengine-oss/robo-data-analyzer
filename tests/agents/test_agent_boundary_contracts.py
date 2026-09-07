@@ -129,8 +129,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
         for relative_path in (
             "agents/residual_agent.py",
             "pipeline/meaning/step_entry.py",
-            "pipeline/meaning/table/prompt_values.py",
-            "pipeline/meaning/three_split_llm_fanout.py",
+            "pipeline/meaning/meaning_fanout.py",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(
@@ -209,7 +208,20 @@ class LlmBoundaryContractTest(unittest.TestCase):
         self.assertEqual(config.provider, "sglang")
         self.assertTrue(config.model)
         self.assertEqual(16, config.max_concurrency)
+        self.assertEqual(128, config.max_rule_effects_per_request)
         self.assertEqual("json_schema", config.structured_output_method)
+
+    def test_invalid_rule_effect_limit_is_rejected(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "max_rule_effects_per_request"):
+            _build_llm_config(
+                {
+                    "provider": "openai",
+                    "model": "test-model",
+                    "api_base": "https://provider.invalid/v1",
+                    "max_rule_effects_per_request": 0,
+                },
+                "test-config",
+            )
 
     def test_quoted_false_is_not_misread_as_true(self) -> None:
         with self.assertRaises(RuntimeError):

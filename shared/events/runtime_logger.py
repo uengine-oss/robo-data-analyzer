@@ -109,7 +109,7 @@ _COMPONENT_LABELS: dict[str, str] = {
     "step6.build_context":       "6️⃣  분석 컨텍스트",
     "step7.analyze_code":        "7️⃣  코드노드 분석",
     "step7.analyze_code.batch":  "7️⃣  DBMS 묶음 분석",
-    "step7.analyze_code.three_split": "7️⃣  3분할 의미 분석",
+    "step7.analyze_code.meanings": "7️⃣  함수 의미 분석",
     "step8.enrich_table_description": "8️⃣  테이블 설명",
     "step8.build_search_embeddings": "8️⃣  검색 벡터 구성",
     "llm.call":                  "🤖 LLM 호출",
@@ -490,7 +490,7 @@ def log_error(
 
     Args:
         component: 모듈 경로 (예: ``"pipeline.meaning"``).
-        operation: 함수/작업 이름 (예: ``"analyze_code_three_split"``).
+        operation: 함수/작업 이름 (예: ``"analyze_code_meanings"``).
         error: Exception 또는 메시지 문자열.
         stream_emit: NDJSON 스트림 emit 함수 (없으면 file handler / stderr 만).
         **context: 추가 컨텍스트 (run_id / code_id 등).

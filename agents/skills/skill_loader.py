@@ -1,6 +1,6 @@
 """Analyzer LLM 스킬 목록과 계약을 결정론적으로 읽고 검증한다.
 
-목록화(build_skill_list)와 YAML fence 계약 파싱(load_skill_contract, spec 079)을
+목록화(build_skill_list)와 YAML fence 계약 파싱(load_skill_contract)을
 담당한다. SKILL.md 가 단일 진실이며, 여기서 읽은 값은 LLM 을 거치지 않는다.
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ def build_skill_list(skills_dir: Path, *, prefix: str = "") -> str:
 _YAML_FENCE_RE = re.compile(r"```yaml\s*\n(.*?)```", re.DOTALL)
 
 # ScanResult 로 주입하는 계약 키 (fence 에 존재하는 것만 담는다).
-# table_access_rules = 구조화 DSL (spec 108, 우선) / table_access_patterns = raw 탈출구.
+# table_access_rules = 구조화 DSL  / table_access_patterns = raw 탈출구.
 SKILL_CONTRACT_KEYS = (
     "table_access_rules",
     "table_access_exclusion_rules",
@@ -101,7 +101,7 @@ def load_skill_contract(
     반환: ``SKILL_CONTRACT_KEYS`` 중 fence 에 있는 키만 담은 dict.
     문서가 없으면 빈 dict (스킬 미매칭과 동일 취급 — 호출측 판단).
     fence YAML 이 깨져 있으면 ``SkillLoadError`` — 스킬 문서 결함은 데이터
-    결함이므로 조용히 넘기지 않는다 (spec 079 FR-6).
+    결함이므로 조용히 넘기지 않는다.
     """
     document = skills_dir / skill_name / "SKILL.md"
     if not document.is_file():

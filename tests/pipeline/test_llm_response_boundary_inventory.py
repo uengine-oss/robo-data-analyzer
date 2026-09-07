@@ -7,10 +7,7 @@ import unittest
 from pydantic import ValidationError
 
 from agents.agent_contracts import ResidualPatternResult, ScanProposal
-from graph.schema.graph_nodes import CodeNode
-from pipeline.models.analysis_context import AnalysisContext
 from pipeline.models.code_analysis_output import RuleItem
-from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.meaning.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     rule_meaning_response_model,
@@ -25,15 +22,7 @@ from pipeline.meaning.table.description_frame import (
     build_table_description_plans,
     table_description_frame_response_model,
 )
-from pipeline.meaning.table.response_schema import (
-    batch_function_table_usages_response_model,
-    function_table_usages_response_model,
-)
 from pipeline.stages.scan.external_skills import ExternalFormatProposal
-from pipeline.meaning.semantic_frame_planner import (
-    build_code_semantic_plan,
-    semantic_concern_slots,
-)
 
 
 def _assert_closed_required(case: unittest.TestCase, model, required: set[str]) -> None:
@@ -68,33 +57,6 @@ def _assert_no_schema_titles(
             _assert_no_schema_titles(case, item)
 
 
-def _table_usage_plan():
-    node = CodeNode(
-        id="code:orders", name="select_orders", signature="select_orders",
-        file_path="orders.sql", start_line=1, end_line=1, label="SELECT",
-    )
-    context = AnalysisContext(
-        id=node.id, signature=node.signature, file_path=node.file_path,
-        start_line=1, end_line=1,
-        reads=["db:orders"], direct_reads=["db:orders"],
-        data_object_usages=(DataObjectUsageEvidence(
-            source_id=node.id,
-            raw_reference="orders",
-            name="orders",
-            access="READ",
-            evidence_file=node.file_path,
-            evidence_line=1,
-            table_id="db:orders",
-            resolution="exact",
-        ),),
-        extra={
-            "ast_statements": (),
-        },
-    )
-    profile, specs = build_code_semantic_plan(node, context)
-    return profile, semantic_concern_slots(specs)["table_usage_meanings"]
-
-
 class LlmResponseBoundaryInventoryTest(unittest.TestCase):
     def test_non_semantic_simple_outputs_require_every_prompt_owned_key(self) -> None:
         boundaries = (
@@ -123,7 +85,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             target_ref="EV:target",
             evidence_refs=("EV:target",),
         ),)
-        usage_profile, usage_slots = _table_usage_plan()
         boundaries = (
             (frame_summary_response_model("framework", summary_slots), {
                 "summary", "stereotype",
@@ -131,17 +92,6 @@ class LlmResponseBoundaryInventoryTest(unittest.TestCase):
             (frame_summary_response_model("dbms", summary_slots), {
                 "summary", "stereotype",
             }),
-            (function_table_usages_response_model(
-                usage_profile, usage_slots, ("db:orders",), (),
-            ), {"FT1"}),
-            (batch_function_table_usages_response_model({
-                "N1": {
-                    "profile": usage_profile,
-                    "slot_specs": usage_slots,
-                    "reads": ("db:orders",),
-                    "writes": (),
-                },
-            }), {"nodes"}),
             (table_description_frame_response_model(
                 column_plans,
             ), {"logical_name", "description", "columns"}),

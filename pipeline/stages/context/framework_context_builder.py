@@ -4,7 +4,7 @@
 
 Framework 는 strategy 별 추가 컨텍스트가 없다 — prompt 수신자의 callee summary 의존은
 base ``ctx.callees``(routine→routine)로 이미 표현되고, callee의 summary는 step7 진행 중
-``contexts`` dict 라이브 조회(``three_split_llm_fanout._format_callee_summaries``)로
+``contexts`` dict 라이브 조회(``meaning_fanout._format_callee_summaries``)로
 가져온다. 따라서 ``augment`` 는 항등(ctx 무변경) — 모든 strategy 가 context_builder 를
 제공한다는 DI 계약을 지키기 위한 구현체.
 """

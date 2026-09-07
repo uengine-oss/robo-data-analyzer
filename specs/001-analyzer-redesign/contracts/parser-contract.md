@@ -16,7 +16,7 @@
 - 내부 호출 대상과 외부·표준·동적 호출 분류
 - 코드와 테이블의 읽기·쓰기 관계
 - 변수·상수 참조와 초기화 의존 관계
-- Summary, Table Usage, Rule 업무 의미
+- Summary와 Rule 업무 의미
 - 제품 identity, 공개 transaction, 검색 embedding
 
 ## 불변식

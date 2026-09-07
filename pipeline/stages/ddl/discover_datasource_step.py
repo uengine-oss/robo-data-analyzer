@@ -1,4 +1,4 @@
-"""데이터소스 테이블 발견 — 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합 (spec 107).
+"""데이터소스 테이블 발견 — 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합.
 
 데이터소스 HTTP 접점은 **이 step 한 곳**이다 (구 step6 ``fetch_table_samples_step`` 흡수):
 catalog ``GET /tables/discovery`` 의 단일 snapshot 전체 page를 닫은 뒤 테이블·컬럼·샘플을 받아

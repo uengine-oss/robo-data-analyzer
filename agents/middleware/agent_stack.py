@@ -44,7 +44,7 @@ def build_standard_stack(
     return [
         # 탐색 transcript와 tool evidence는 원문 그대로 보존한다. 컨텍스트 초과는
         # 명시적 실패로 드러내며, 과거 evidence 삭제/LLM 요약으로 성공처럼 바꾸지 않는다.
-        # 큰 탐색의 무손실 분할·exact-once closure는 spec 131 C-017/C-018 책임이다.
+        # 큰 탐색의 무손실 분할·exact-once closure는  C-017/C-018 책임이다.
         # Tool event — 프론트 NDJSON 스트림 push (부수: jsonl 적재)
         ToolEventEmitterMiddleware(
             agent_name=agent_name,

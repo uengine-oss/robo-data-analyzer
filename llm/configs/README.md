@@ -43,6 +43,7 @@ api_base: http://my-server:8000/v1
 model: Qwen/Qwen3-72B-Instruct
 max_tokens: 8192
 timeout_seconds: 300
+max_rule_effects_per_request: 128 # 실측된 배포만 설정. 행 하나는 분할하지 않음
 verify_ssl: true                # 사내 자체 인증서면 false
 sampling:
   temperature: 0.0
@@ -71,6 +72,8 @@ ROBO_LLM_CONFIG=myco_vllm_qwen
 | `model` | ✅ | 기본 모델 이름 (provider 형식 그대로). |
 | `max_tokens` | ✅ | 최대 output 토큰. |
 | `timeout_seconds` | ✅ | LLM 호출 타임아웃. |
+| `max_concurrency` |  | 배포가 동시에 실제 처리할 수 있는 요청 수. |
+| `max_rule_effects_per_request` |  | 해당 배포에서 검증한 Rule effect 응답 한도. 미설정 시 인위적 한도를 두지 않으며, 한 행은 절대 분할하지 않는다. |
 | `verify_ssl` | ✅ | SSL 검증 (사내 자체 인증서면 `false`). |
 | `sampling.temperature` | ✅ | 표준 sampling — 모든 provider 공통. |
 | `sampling.top_p` | ✅ | 표준 sampling — 모든 provider 공통. |

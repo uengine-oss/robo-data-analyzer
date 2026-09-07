@@ -1,4 +1,4 @@
-"""뷰 펼치기 (spec 112) — VIEW 를 향한 R/W 엣지에 기저 테이블 엣지를 추가한다.
+"""뷰 펼치기  — VIEW 를 향한 R/W 엣지에 기저 테이블 엣지를 추가한다.
 
 코드가 뷰를 읽으면 지금은 "뷰까지만" 기록된다. 이 모듈은 step1이 CREATE VIEW
 AST scope에서 보존한 ``Table.view_dependency_ids``를 따라 기저 테이블 READS를

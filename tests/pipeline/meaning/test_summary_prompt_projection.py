@@ -10,9 +10,7 @@ from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
-from pipeline.meaning.three_split_llm_fanout import (
-    _summary_prompt_values,
-)
+from pipeline.meaning.meaning_requests import summary_prompt_values
 
 
 def test_summary_packet_replaces_fact_dump_with_compact_source_outline() -> None:
@@ -48,7 +46,7 @@ def test_summary_packet_replaces_fact_dump_with_compact_source_outline() -> None
     profile, specs = build_code_semantic_plan(fn, context)
     summary_specs = semantic_concern_slots(specs)["summary"]
 
-    values = _summary_prompt_values(
+    values = summary_prompt_values(
         profile,
         summary_specs,
         {

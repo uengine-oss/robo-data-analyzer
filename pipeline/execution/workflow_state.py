@@ -127,7 +127,7 @@ class WorkflowState(TypedDict, total=False):
     # ── step6_build_context 결과 ──────────────────
     analysis_contexts: dict[str, AnalysisContext]   # code_id → ctx
 
-    # ── 데이터소스 발견 산출 (step1 discover_datasource — 옵션·전략독립, spec 107) ───
+    # ── 데이터소스 발견 산출(step1 discover_datasource — 옵션·전략 독립) ───
     # catalog sample-context로 받은 테이블별 실제 샘플행 — step7 분석 입력값.
     # {table_fqn: {columns, sample_rows}}. 토글 off / datasource 미지정 / 미매칭 → 키 없음.
     table_sample_data: dict[str, dict]
@@ -135,7 +135,7 @@ class WorkflowState(TypedDict, total=False):
 
     # ── step7 Rule 결과 (analyze_code 함수 단위 누적) ──
     # 구조화된 Rule과 관련 엣지.
-    # Rule 노드 id = "<function id>::R<anchor>" (anchor 좌표 정체성, spec 116).
+    # Rule 노드 id = "<function id>::R<anchor>"이며 anchor 좌표가 정체성이다.
     # Rule builder가 owner·anchor·ordinal identity의 누락·중복을 DB 쓰기 전에 검증한다.
     rules: list[Rule]
     has_rule_edges: list[HasRule]

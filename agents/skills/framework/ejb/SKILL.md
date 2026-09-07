@@ -10,7 +10,7 @@
 - 호출 패턴: ``EntityHome.findByPrimaryKey(...)`` / ``create(...)`` / ``remove()``
 - getter/setter 가 DB 컬럼 직접 매핑
 
-## 접근 규칙 (DSL — spec 108)
+## 접근 규칙
 
 `op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림). entity 는 리시버
 이름에서 (`orderHome` → `order` → ddl_transform).

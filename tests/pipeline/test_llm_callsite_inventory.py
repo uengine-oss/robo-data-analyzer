@@ -50,23 +50,15 @@ class ProductionLlmCallsiteInventoryTest(unittest.TestCase):
             ): 1,
             (
                 "pipeline/meaning/batch_analyze.py",
-                "<rule_name>",
-            ): 1,
-            (
-                "pipeline/meaning/batch_analyze.py",
                 "code_rule_meanings_batch",
             ): 1,
             (
-                "pipeline/meaning/three_split_llm_fanout.py",
+                "pipeline/meaning/meaning_requests.py",
                 "code_summary",
             ): 1,
             (
-                "pipeline/meaning/three_split_llm_fanout.py",
+                "pipeline/meaning/meaning_requests.py",
                 "code_rule_meanings",
-            ): 1,
-            (
-                "pipeline/meaning/three_split_llm_fanout.py",
-                "code_table_usage_meanings",
             ): 1,
             (
                 "pipeline/stages/output/enrich_table_description_step.py",

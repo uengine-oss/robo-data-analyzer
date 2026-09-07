@@ -1,4 +1,4 @@
-# DML 문법 의미표 — R/W 판정의 단일 진실 (spec 106).
+# DML 문법 의미표 — R/W 판정의 단일 진실.
 #
 # 표가 담는 것: 구문 데이터만 (키워드·relation·dml_type·감지 구문·대상 추출 구문).
 # 정규식 조립·판정 로직은 pipeline/dml_semantics.py 의 단일 빌더만 수행한다 (research D7).

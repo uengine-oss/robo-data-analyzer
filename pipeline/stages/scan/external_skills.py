@@ -108,7 +108,7 @@ class ExternalSkill(_ExternalRuleSet):
 
 @dataclass(frozen=True)
 class ExternalRuleMatch:
-    """One proposed span over the original text — never generated content (spec 078)."""
+    """One proposed span over the original text — never generated content."""
     key: str
     start: int                               # char offset of the full match in the source
     end: int                                 # exclusive char offset

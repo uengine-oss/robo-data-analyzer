@@ -4,7 +4,7 @@
 효과)를 알아야 한다. 이 모듈은 그것만 만들고 판정은 하지 않는다.
 
 좌표 계약: ``control_subtree`` 노드의 start/end 는 ``code_body``
-기준 1-based 줄번호다(spec 069).
+기준 1-based 줄번호다.
 """
 from __future__ import annotations
 
@@ -174,14 +174,14 @@ class Branch:
 
         ``control_roles`` 는 **의미 축**만 선언한다(decision = 조건으로 갈리는 자리).
         조건이 실제로 있는지는 데이터가 아니라 노드의 사실이므로, 조건이 빈 decision 은
-        약속할 조건이 없어 ``controller`` 로 내린다 (spec 118 §2.1). 언어별 특례가 아니라
+        약속할 조건이 없어 ``controller`` 로 내린다. 언어별 특례가 아니라
         규칙 하나다 — 같은 결함이 sql ``LOOP``·c ``for(;;)``·java ``FINALLY`` 에 함께 있었다
         (실측: DBMS findings 5 + framework findings 1 이 전부 이 사유였다).
         """
         role = control_role_of(self.ntype)
         if role != "decision":
             return role
-        # grammar 사실: caseless 라벨(default)만 expression 이 없다 (spec 016).
+        # grammar 사실: caseless 라벨(default)만 expression 이 없다.
         if self.ntype.upper() == "CASE" and not self.condition.strip():
             return "complement"
         if not self.condition.strip():
@@ -239,7 +239,7 @@ class BranchInventory:
     # 값도 담지만, 창작 검사는 대소문자와 전체 토큰을 보존한 이 집합을 사용한다.
     declared_values: frozenset[str] = frozenset()
     line_offset: int = 0
-    # 종료문·핸들러 행 (상대 줄, "exit"|"handler", 한 줄 문장) — spec 116 1단계.
+    # 종료문·핸들러 행 (상대 줄, "exit"|"handler", 한 줄 문장) —  1단계.
     # 분기 노드가 아니라 문장이지만, 종료 계약(default 반환·조기 return·오류 경로)이
     # 행으로 실체화돼야 절단·누락을 뺄셈으로 잡을 수 있다.
     termination_rows: tuple[tuple[int, str, str], ...] = ()
@@ -248,12 +248,12 @@ class BranchInventory:
     return_expressions: frozenset[str] = frozenset()
     # [entry] 행 (상대 줄) — 분기 밖 최상위 **효과문**(대입·종결된 호출)의 첫 줄.
     # when=함수 실행이므로 "도달하면 항상"도 계약(cond=null 규칙 1개 의무)이다.
-    # 선언·시그니처뿐이면 약속할 효과가 없으므로 None (spec 116).
+    # 선언·시그니처뿐이면 약속할 효과가 없으므로 None.
     entry_line: "int | None" = None
     source_lines: tuple[str, ...] = ()
-    # parser AST statement 계약 (spec 016) — 행별 직접 증거의 유일한 원천.
+    # parser AST statement 계약  — 행별 직접 증거의 유일한 원천.
     ast_statements: tuple[StatementFact, ...] = ()
-    # DBMS DML 효과 좌표 (routine 상대 줄, op, 테이블) — step5 링커 정본 (spec 119).
+    # DBMS DML 효과 좌표 (routine 상대 줄, op, 테이블) — step5 링커 정본.
     # framework 는 제공하지 않으므로 빈 튜플이고 증거가 달라지지 않는다.
     ast_table_ops: tuple[tuple[int, str, str], ...] = ()
     effect_call_positions: tuple[tuple[int, str], ...] = ()
@@ -533,7 +533,7 @@ class BranchInventory:
         return self._paired_decision(branch)
 
     def negated_arms(self, branch: Branch) -> list[Branch]:
-        """이 노드가 **대안 절**일 때, 도달하려면 부정돼야 하는 같은 층 판정들 (spec 118 §2.3).
+        """이 노드가 **대안 절**일 때, 도달하려면 부정돼야 하는 같은 층 판정들.
 
         평면 형상(PL/SQL `IF … ELSIF … ELSE`)에서 `ELSIF`/`ELSE` 는 부모 `IF` 의 본문이
         아니라 **대안**이다. 따라서 부모 판정과 자기보다 앞선 대안 절 전부가 부정이어야
@@ -566,7 +566,7 @@ class BranchInventory:
 
         ``else`` 는 외곽 decision 을 **어느 팔로 지나왔는가**에 따라 그 조건이 성립(본문
         중첩)일 수도, 부정(else 팔 경유)일 수도 있다. else-if 사슬에서 외곽 조건을
-        "상속"으로 표기하면 정반대다(실측 결함 — spec 116 1단계): 사슬의 바깥 decision
+        "상속"으로 표기하면 정반대다(실측 결함 —  1단계): 사슬의 바깥 decision
         들은 전부 **부정**이다. 조상 사슬을 올라가며 complement 조상의 짝 decision 은
         부정으로, else 팔이 아닌 body 중첩의 decision 조상은 성립으로 기록한다.
         """
@@ -690,7 +690,7 @@ class BranchInventory:
            (실측: `cF10` 의 `cms_fb_req_yn` 안에 있는 `gc_send_ex_bank` 를 형제로 봄).
            들여쓰기로 소속을 드러내고, 조건식이 없는 분기(`else`)는 여집합임을 명시한다.
         4. **부정 보존** — else 행은 직접 decision 의 부정과 외곽 decision 별 성립/부정을
-           명시한다. else-if 사슬을 "조건 상속"으로 쓰면 정반대가 된다(spec 116 1단계).
+           명시한다. else-if 사슬을 "조건 상속"으로 쓰면 정반대가 된다.
         5. **종료문 행** — return/핸들러 진입 줄을 [exit]/[handler] 행으로 싣는다. 종료
            계약이 행이어야 절단·누락이 뺄셈으로 드러난다(48상한 절단 사고의 방어).
         """
@@ -775,7 +775,7 @@ class BranchInventory:
 
         ``branch_index()`` 와 같은 행 선택(줄번호 유일)에서 나오며, 채점기가 프롬프트
         문자열을 재파싱하지 않도록 조건원문·코드값(+수치 병기)·직접호출·효과원자·
-        complement 의 부정/성립 좌표를 그대로 싣는다 (spec 116 1단계).
+        complement 의 부정/성립 좌표를 그대로 싣는다.
         """
         chosen = self._chosen_by_line()
         rows: list[dict] = []
@@ -788,7 +788,7 @@ class BranchInventory:
                 "ntype": branch.ntype,
                 "condition": " ".join(branch.condition.split()),
                 "condition_timing": branch.condition_timing or "pre",
-                # parser LOOP expression 은 이미 판정절만이라(spec 016) 조건과 동일하다.
+                # parser LOOP expression 은 이미 판정절만이라 조건과 동일하다.
                 # 키는 소비자(rule_prompt_evidence) 계약 보존을 위해 유지한다.
                 "test_condition": " ".join(branch.condition.split()),
                 "cond_values": sorted(branch.cond_values),
@@ -863,7 +863,7 @@ class BranchInventory:
                 "role": kind,
                 "text": text,
                 # 분기 안 종료문은 소속 분기 규칙의 then 이 담는다 — 규칙 의무는
-                # 분기 밖(최상위·핸들러 경로)의 종료문 행에만 있다 (spec 116 §18-6).
+                # 분기 밖(최상위·핸들러 경로)의 종료문 행에만 있다.
                 "in_branch": any(
                     branch.start <= line <= branch.end
                     for branch in self.all_branches
@@ -898,7 +898,7 @@ def _symbol_like(values: set[str], body: str, lang: str) -> set[str]:
     return {v for v in values if v.lower() not in names}
 
 
-# AST statement label → 의미 축 (parser spec 016). 언어별 라벨 차이는 ontology roles 가
+# AST statement label → 의미 축. 언어별 라벨 차이는 ontology roles 가
 # 소유하고, 여기는 언어 중립 canonical 라벨만 안다.
 _AST_EXIT_LABELS = frozenset({"RETURN", "THROW", "RAISE"})
 _AST_ASSIGN_LABEL = "ASSIGNMENT"
@@ -1021,7 +1021,7 @@ def _ast_line_facts(
         if fact.label in effect_ops and owned(fact.start)
         and not (fact.label == "RETURN" and fact.expression)
     )
-    # DBMS DML 효과 (spec 119) — step5 링커가 이미 결정론으로 만든 (줄, op, 테이블).
+    # DBMS DML 효과  — step5 링커가 이미 결정론으로 만든 (줄, op, 테이블).
     # statement 효과와 같은 (op, 대상) 모양이라 렌더·채점 경로를 그대로 공유한다.
     effects += tuple(
         (op, table) for line, op, table in table_ops if owned(line)
@@ -1039,7 +1039,7 @@ def _ast_entry_line(
     """분기 밖 최상위 효과문(대입·호출·DML)의 첫 줄 — AST/링커 정본.
 
     DBMS 는 최상위 효과가 대입이 아니라 DML 인 경우가 흔하다(rwis 트리거의 본문 첫 줄이
-    ``INSERT INTO …``). DML 을 후보에서 빼면 그 효과를 약속할 행이 사라진다(spec 119).
+    ``INSERT INTO …``). DML 을 후보에서 빼면 그 효과를 약속할 행이 사라진다.
     """
     termination_lines = {line for line, _, _ in termination_rows}
     candidates = [
@@ -1277,8 +1277,8 @@ def build_inventory(
 ) -> BranchInventory:
     """분기 대장을 만든다. ``control_subtree`` 가 없으면 분기 0으로 본다.
 
-    구조 구문 사실(종료행·반환식·대입·entry·직접호출·조건식)의 생산자는 parser AST 다
-    (spec 016). ``statements`` 는 필수다 — statement 가 없는 routine 도 "없음"을 빈
+    구조 구문 사실(종료행·반환식·대입·entry·직접호출·조건식)의 생산자는 parser AST다.
+    ``statements`` 는 필수다 — statement 가 없는 routine 도 "없음"을 빈
     시퀀스로 명시해야 하며, 이 함수는 source 를 재탐색하는 폴백을 갖지 않는다.
 
     ``declared_values`` 는 함수 **본문 밖**에서 선언된 상수의 값이다(``#define`` 등).
@@ -1343,7 +1343,7 @@ def build_inventory(
             )
             if not any(start <= line_number <= end for start, end in child_ranges)
         )
-        # parser 소유 조건식 (spec 016) — LOOP expression 은 이미 판정절만이고,
+        # parser 소유 조건식  — LOOP expression 은 이미 판정절만이고,
         # grammar 가 조건을 두지 않는 노드(ELSE/default/TRY/CATCH)는 빈 조건이다.
         condition = node.expression or ""
         cond_values = _symbol_like(literal_values(condition, lang), body, lang)
@@ -1400,7 +1400,7 @@ def build_inventory(
     )
     # Direct effects are owned by linear sequence regions, not by a whole routine/branch.
     # This prevents one entry/controller Rule from merging effects that occur before and
-    # after nested controls (spec 128).
+    # after nested controls.
     effect_ops = statement_effect_ops()
     labels_by_name: dict[str, list[StatementFact]] = {}
     for fact in ast_statements:

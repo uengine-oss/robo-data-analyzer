@@ -48,7 +48,7 @@
   evidence 복창, question처럼 모델의 의미 판정을 개선하지 않는 내부 정보는 모델에 보내지 않는다.
 - 같은 사실을 source·structure·symbol·table·callee section에 반복하지 않는다. 빈 선택 section도
   보내지 않는다.
-- 같은 정적 지시도 system·user·공통 contract 중 한 정본에만 둔다. Summary·FunctionTableUsage·Rule의
+- 같은 정적 지시도 system·user·공통 contract 중 한 정본에만 둔다. Summary·Rule의
   system prompt는 하나의 정본에서 읽어 실제 전송 바이트가 같아야 한다.
 - 짧게 만들기 위해 이름을 암호처럼 축약하거나 의미를 생략하지 않는다. 제거 기준은 오직
   `없어도 정확성·완전성·재현성이 변하지 않고 다른 권위 값에서 완전히 복원되는가`다.
@@ -61,14 +61,14 @@
 2. 알려지지 않은 외부 문서 형식의 adapter 후보
 3. 기존 패턴으로 연결되지 않은 table 접근 후보
 4. 함수 Summary
-5. 직접 FunctionTableUsage
-6. Rule atom 업무 의미와 row 분류
-7. 최종 Table·Column 설명
+5. Rule atom 업무 의미와 row 분류
+6. 최종 Table·Column 설명
 
 - 예시 문장, Module, Component, Glossary, search segment, graph projection과 모든 ledger를 위한
   별도 LLM 호출은 만들지 않는다. 현행 제품 graph에서 제거된 객체는 생성·저장하지 않는다.
-- Summary·FunctionTableUsage·Rule은 같은 함수 입력에서 concern별 projection을 만들고 서로의
-  자연어 결과나 완료를 기다리지 않는다. 승인된 3분할 외에 같은 함수를 다른 의미로 다시 묻지 않는다.
+- Summary·Rule은 같은 함수 입력에서 concern별 projection을 만들고 서로의 자연어 결과나 완료를
+  기다리지 않는다. 직접 table 사용은 결정론적 `READS`·`WRITES`로 공개하고 소비되지 않는 별도
+  자연어 결과를 만들지 않는다. 같은 함수를 다른 의미로 다시 묻지 않는다.
 - hidden judge, repair, second meaning pass, dummy warm-up, 자동 follow-up/tool loop, content retry는
   금지한다. 서버가 request bytes를 받지 않았음이 증명된 transport 실패만 같은 invocation identity로
   재전송할 수 있다. 현재 runner와 provider SDK의 자동 재시도는 0이며, `deadline`·`length`·`repetition`·
@@ -91,9 +91,9 @@
   exact-once 검증을 유지하면서 실측 이득이 충분할 때만 허용한다.
 - Summary 모델은 함수 전체 흐름의 `summary`와 허용된 `stereotype`을 한 번만 만든다. 세부 문장을
   따로 생성해 기계적으로 이어 붙인 것을 최종 Summary로 승격하지 않는다.
-- Table 모델은 Analyzer가 확정한 직접 `(function, table, access mode)`만 설명한다. 하위 함수의 table
-  사용을 caller에 복사하지 않고 Summary나 FunctionTableUsage의 생성 문장을 다시 입력으로 사용하지
-  않는다. TABLE/COLUMN 의미는 자기 source 설명과 결정론 직접 사용 사실만 소비한다.
+- TABLE/COLUMN 설명 모델은 자기 source 설명과 Analyzer가 확정한 결정론 직접 사용 사실만 소비한다.
+  하위 함수의 table 사용을 caller의 직접 사용으로 복사하지 않고 Summary·Rule 생성 문장을 입력으로
+  재사용하지 않는다.
 - Rule 모델은 Analyzer가 확정한 condition/effect atom key마다 의미 문자열 하나와 row의
   `business_rule|implementation_detail|insufficient` 분류 문자열 하나만 한 응답에서 채운다. atom이
   비면 Analyzer가 해당 row를 `insufficient`로 닫는다. 새 row·symbol·effect,
@@ -192,13 +192,13 @@
   않는다.
 - 원칙을 바꿀 때는 이 문서의 major/minor version을 올리고 변경 이유를 기록한다.
 
-**Version**: 2.2.0
+**Version**: 3.0.0
 
 **Ratified**: 2026-06-15
 
-**Last Amended**: 2026-09-07
+**Last Amended**: 2026-09-08
 
-**Amendment**: 기존 공개·정확도 경계를 유지하면서 함수 의미 3분할의 system prompt를 한 정본·동일
-바이트로 고정했다. 정적 지시 중복과 입출력 wire 비용은 실제 token으로 분리 측정하되, 의미 누락·위치
-배열·암호식 약어로 정확성과 exact-once 귀속을 교환하지 않도록 성능 판정 기준을 강화했다. 큰 Rule은
-완전한 row 단위로 결정론 분할하고, client 동시성은 배포 서버의 실측 처리 상한에 맞추도록 명시했다.
+**Amendment**: 제품 소비자가 없는 FunctionTableUsage 자연어 호출을 제거하고 함수 의미 요청을 Summary와
+Rule 두 책임으로 정리했다. 직접 table 사용은 기존 결정론적 `READS`·`WRITES`와 `operations`가 계속
+소유한다. graph commit 뒤 증거 봉인, 명시적 stop, model/runtime 기반 Rule 용량, 의존성 재현성과 사람
+직접 의미 판정을 완료 경계에 추가했다.

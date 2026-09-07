@@ -1,4 +1,4 @@
-"""Markdown span adapter (spec 078): heading-partitioned sections.
+"""Markdown span adapter : heading-partitioned sections.
 
 markdown-it-py (CommonMark) decides heading positions, so a ``#`` line inside
 a fenced code block never splits a section and fences with blank lines stay

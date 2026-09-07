@@ -9,7 +9,7 @@
 - 핵심 wrapper: ``delegator.findOne(...)`` / ``delegator.findList(...)`` / ``delegator.store(...)``
 - Entity 정의: ``entitymodel.xml`` 의 ``<entity entity-name="..." table-name="...">``
 
-## 접근 규칙 (DSL — spec 108)
+## 접근 규칙
 
 entity 는 첫 문자열 인자(엔티티명). 긴 prefix 우선 정렬은 코드가 보장한다
 (findOne 이 find 에 잡아먹히지 않음).

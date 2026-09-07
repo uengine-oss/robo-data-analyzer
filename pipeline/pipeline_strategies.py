@@ -16,7 +16,7 @@
 - 스트림: ``astream(stream_mode="updates")`` 단일 채널.
 
 8단계 흐름은 ``pipeline/stages/step1~step8/`` 폴더 구조로 그대로 드러난다.
-step3 external loader는 spec 075에서 두 전략의 공통 step으로 삽입된다.
+step3 external loader는 에서 두 전략의 공통 step으로 삽입된다.
 """
 from __future__ import annotations
 
@@ -96,10 +96,10 @@ class Strategy:
     Fields:
         name: 식별자 (``"framework"`` / ``"dbms"``).
         context_builder: ``build_context_step`` 이 주입받는 컨텍스트 빌더 인스턴스.
-        code_analyzer: ``analyze_code_step`` 이 주입받는 **분석 엔진** (per-node 3분할 /
+        code_analyzer: ``analyze_code_step`` 이 주입받는 **분석 엔진** (per-node 관심사 /
             형제 배치). 두 구현체는 **동일 시그니처** — step 은 어느 쪽인지 모른다.
-            (헌법 II "분기 0" — 종전엔 step 안에 ``strategy.name == "dbms"`` 하드분기가
-            있었다. spec 046 FR-001.)
+            헌법 II의 "분기 0" 원칙을 지킨다. 종전에는 step 안에
+            ``strategy.name == "dbms"`` 하드 분기가 있었다.
         analysis_targets: ``code_nodes`` → 그 엔진이 실제로 분석할 노드 id 집합.
             엔진과 ``build_context_step`` 이 같은 답을 봐야 하는 단일 진실 —
             대상 밖 노드는 어느 렌더에도 등장하지 않으므로 사전 압축 대상도 아니다.
@@ -124,14 +124,14 @@ class Strategy:
 FRAMEWORK_PIPELINE = Strategy(
     name="framework",
     context_builder=FrameworkContextBuilder(),    # build_context_step 이 주입받음
-    code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 3분할)
+    code_analyzer=run_framework_per_node_analysis,  # analyze_code_step 이 주입받음 (per-node 관심사)
     analysis_targets=framework_analysis_targets,    # routine 만 — 위 엔진의 필터와 같은 함수
     prompts_dir="pipeline/meaning",
     call_classification_context=_framework_call_classification_context,
     steps=(
         parse_ddl_step,
         # discover: 단어장 이원화(DDL ∪ 실DB) + 샘플 수집 통합 — 데이터소스 HTTP 접점은
-        # 이 step 한 곳 (spec 107, 구 step6 fetch_table_samples 흡수). tables 키는 이
+        # 이 step 한 곳. tables 키는 이
         # step 만 쓰므로 load_ast 와 병렬 안전.
         (load_ast_step, load_external_step, discover_datasource_step),
         scan_codebase_step,                # ★ Framework 만 — Scan Agent 1회
@@ -142,7 +142,7 @@ FRAMEWORK_PIPELINE = Strategy(
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
 
-        # ★ 후처리는 step7 과 **같은 superstep**에서 돈다 (spec 096). 노드 간 배리어를 두면
+        # ★ 후처리는 step7 과 **같은 superstep**에서 돈다. 노드 간 배리어를 두면
         #   후처리가 step7 의 마지막 콜까지 기다리는데, 실제로 후처리가 읽는 값은 step7 의
         #   일부 분할에서만 나온다. 각 step 이 ``AnalysisHandoff`` 로 자기 의존이 풀리는
         #   시점을 스스로 기다리고, 남는 LLM 슬롯을 낮은 우선순위로 채운다.
@@ -171,7 +171,7 @@ DBMS_PIPELINE = Strategy(
         parse_ddl_step,
         (load_ast_step, load_external_step),
         # parser object evidence dedup → Catalog/Fabric exact batch → confirmed sample.
-        # 전체 datasource eager discovery는 DBMS production 경로에서 제거한다(spec 126).
+        # 전체 datasource eager discovery는 DBMS production 경로에서 제거한다.
         resolve_data_objects_step,
         scan_external_step,                # unknown text만 — external skill reload/agent
         # scan_codebase_step 없음 — DBMS 는 Scan Agent 안 씀 (Plan §6)
@@ -183,7 +183,7 @@ DBMS_PIPELINE = Strategy(
         link_external_step,                   # 외부 파일 key/FQN/SQL→DDL 결정론 연결
         build_context_step,
 
-        # ★ Framework 와 같은 겹치기 (spec 096) — 각 step 이 ``AnalysisHandoff`` 로 자기
+        # ★ Framework 와 같은 겹치기  — 각 step 이 ``AnalysisHandoff`` 로 자기
         #   의존 해제를 기다린다. DBMS 배치 엔진은 summary 와 rules 가 한 콜에서 같이
         #   확정되므로 #1 게이트와 완료 게이트가 사실상 같은 시점이다.
         (

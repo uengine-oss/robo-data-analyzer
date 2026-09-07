@@ -6,10 +6,8 @@ from pathlib import Path
 
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
-from pipeline.meaning.three_split_llm_fanout import (
-    _prepare_analysis_inputs,
-    _summary_prompt_values,
-)
+from pipeline.meaning.meaning_fanout import _prepare_analysis_inputs
+from pipeline.meaning.meaning_requests import summary_prompt_values
 from shared.files.source_cache import SourceFileCache
 
 
@@ -40,10 +38,10 @@ class ModelSourceFidelityContractTest(unittest.TestCase):
             source_text, node, context = self._target(directory)
             values, _inventory = _prepare_analysis_inputs(
                 context, node, {node.id: context}, {node.id: node},
-                SourceFileCache(),
+                SourceFileCache(), {},
             )
             profile, _specs, concerns = context.extra["_semantic_frame_plan"]
-            summary_values = _summary_prompt_values(
+            summary_values = summary_prompt_values(
                 profile, concerns["summary"], values,
             )
 

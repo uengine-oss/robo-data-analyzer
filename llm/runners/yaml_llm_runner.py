@@ -2,8 +2,7 @@
 
 용도: ``pipeline/meaning/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/meaning`` (code_summary /
-  code_table_usage_meanings)
+- ``pipeline/meaning`` (code_summary / code_rule_meanings)
 - ``pipeline/stages/output`` (module_summary / table_description)
 
 yaml 형식 (단순)::
@@ -16,13 +15,13 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `pipeline/meaning/prompts/common_system.yaml` — 함수 의미 3분할 system 단일 진실
+    # `pipeline/meaning/prompts/common_system.yaml` — 함수 의미 system 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
-    # `pipeline/meaning/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    # `pipeline/meaning/<family>/prompts/<strategy>/<concern_name>.yaml` — 관심사 고유만
     extends: ../../../prompts/common_system
     user_template_specific: |
       <이 분할 고유 user_template 지침>
@@ -347,7 +346,7 @@ async def run_yaml_rule(
         )
         log_info("llm.call", "cache_hit", agent=f"rule:{rule_name}", elapsed_ms=lookup_ms)
         return cached
-    # 반복 폭주 실시간 차단(spec 080) — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
+    # 반복 폭주 실시간 차단 — 감지기가 켜져 있으면 스트리밍 수신으로 전환.
     llm = build_llm_client(
         model=model, max_tokens=rule.get("max_tokens"), streaming=guard_on
     )
@@ -437,7 +436,7 @@ async def run_yaml_rule(
         parsed = result.get("parsed")
         # include_raw=True 는 파싱·검증 실패를 raise 하지 않고 parsing_error 로 돌려준다.
         # 이 사유를 기록·전파하지 않으면 실패 record 가 성공 모양(parsed=None)이 되고,
-        # 재시도 계층은 무엇이 틀렸는지 모른 채 동일 요청만 반복한다(spec 116 0단계).
+        # 재시도 계층은 무엇이 틀렸는지 모른 채 동일 요청만 반복한다.
         parsing_error = result.get("parsing_error")
         try:
             raw_content = getattr(raw_msg, "content", None)

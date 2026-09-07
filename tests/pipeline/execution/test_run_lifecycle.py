@@ -22,7 +22,7 @@ from pipeline.models.external_reference_resolution import ResolvedExternalRefere
 from pipeline.models.external_source import ExternalSourceFile, ExternalSourceRecord
 from pipeline.models.analysis_meta import AnalysisRun, Codebase
 from pipeline.models.semantic_frame import SemanticFrame, SlotSpec, StructuralProfile
-from pipeline.execution import run_executor, run_registry
+from pipeline.execution import run_executor, run_publication, run_registry
 from pipeline.execution.pause_controller import PauseController
 from pipeline.execution.sealed_analysis_inputs import SealedAnalysisInputs
 from shared.events.ndjson_event_stream import NDJSONStream
@@ -327,7 +327,7 @@ class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
         state["call_resolution_ledger"] = [row]
 
         with self.assertRaisesRegex(ValueError, "differs from its sole streamed"):
-            run_executor._build_product_graph_input(
+            run_publication.build_product_graph_input(
                 final_state=state,
                 call_resolution_ledger=[],
                 import_resolution_ledger=[],
@@ -341,10 +341,10 @@ class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
                 "prepublish_wall_time_ms": 123,
             }
 
-            first = run_executor._write_content_addressed_performance_artifact(
+            first = run_publication.write_performance_artifact(
                 root, payload,
             )
-            second = run_executor._write_content_addressed_performance_artifact(
+            second = run_publication.write_performance_artifact(
                 root, payload,
             )
 
@@ -442,7 +442,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
             )
             strategy = SimpleNamespace(name="framework", prompts_dir="pipeline/meaning/framework")
 
-            with patch.object(run_executor, "Neo4jClient") as neo4j_client:
+            with patch.object(run_publication, "Neo4jClient") as neo4j_client:
                 with self.assertRaisesRegex(ValueError, "missing.c"):
                     await run_executor.execute_run(
                         strategy=strategy,
@@ -477,7 +477,7 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     "load_model_runtime_capabilities",
                     side_effect=ValueError("runtime capability is not sealed"),
                 ),
-                patch.object(run_executor, "Neo4jClient") as neo4j_client,
+                patch.object(run_publication, "Neo4jClient") as neo4j_client,
             ):
                 with self.assertRaisesRegex(ValueError, "runtime capability"):
                     await run_executor.execute_run(
@@ -533,9 +533,9 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     return_value=(Path(temporary), Path(temporary)),
                 ),
                 patch.object(
-                    run_executor, "Neo4jClient", return_value=neo,
+                    run_publication, "Neo4jClient", return_value=neo,
                 ) as neo4j_client,
-                patch.object(run_executor, "replace_product_graph", new=publish),
+                patch.object(run_publication, "replace_product_graph", new=publish),
                 patch.object(run_executor, "build_langgraph_workflow", return_value=FailingApp()),
                 patch.object(run_executor.response_cache, "sweep"),
             ):
@@ -611,17 +611,17 @@ class RunInitializationContractTest(unittest.IsolatedAsyncioTestCase):
                     run_executor, "ast_and_source_roots",
                     return_value=(Path(temporary), Path(temporary)),
                 ),
-                patch.object(run_executor, "Neo4jClient", return_value=neo),
+                patch.object(run_publication, "Neo4jClient", return_value=neo),
                 patch.object(
                     run_executor, "build_langgraph_workflow",
                     return_value=SuccessfulApp(),
                 ),
                 patch.object(
-                    run_executor,
+                    run_publication,
                     "build_product_graph",
                     return_value=product_graph,
                 ),
-                patch.object(run_executor, "replace_product_graph", side_effect=publish),
+                patch.object(run_publication, "replace_product_graph", side_effect=publish),
                 patch.object(run_executor.response_cache, "sweep"),
             ):
                 await run_executor.execute_run(

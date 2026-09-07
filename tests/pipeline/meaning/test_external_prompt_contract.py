@@ -19,18 +19,14 @@ RULES = (
     ("dbms", "code_summary_node"),
     ("framework", "code_rule_meanings"),
     ("dbms", "code_rule_meanings_batch"),
-    ("framework", "code_table_usage_meanings"),
-    ("dbms", "code_table_usage_meanings_batch"),
 )
 
 
 class ExternalPromptContractTest(unittest.TestCase):
     def test_linked_external_sources_live_only_in_user_template(self) -> None:
         summary = load_semantic_rule("framework", "code_summary")
-        table = load_semantic_rule("framework", "code_table_usage_meanings")
         self.assertNotIn("{summary_context}", summary.get("system", ""))
         self.assertIn("{summary_context}", summary.get("user_template", ""))
-        self.assertNotIn("{summary_context}", table.get("user_template", ""))
 
     def test_system_prefix_is_static_and_byte_identical_across_loads(self) -> None:
         systems = []
@@ -48,8 +44,6 @@ class ExternalPromptContractTest(unittest.TestCase):
         for relative in (
             "summary/prompts/framework/_common.yaml",
             "rule/prompts/framework/_common.yaml",
-            "table/prompts/framework/_common.yaml",
-            "table/prompts/dbms/_common.yaml",
         ):
             with self.subTest(relative=relative):
                 self.assertFalse(

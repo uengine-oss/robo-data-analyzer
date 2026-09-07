@@ -2,49 +2,23 @@
 
 ## 완료
 
-- [x] 최소 제품 그래프와 단일 transaction writer 구현
-- [x] 함수별 Summary, Table Usage, Rule 독립 호출 구현
-- [x] routine 직접 embedding과 검색 구현
-- [x] 중복 원문 조회 경로와 검색 중간 노드 우회 제거
-- [x] 모든 source 기반 제품 노드 `code_text` 보존
-- [x] Parser 식별자 occurrence와 Analyzer `REFERENCES`·`INIT_BY` 구현
-- [x] Analyzer source 재토큰화 제거
-- [x] Analyzer 폴더·파일·스크립트·리소스 구조 정리
-- [x] Catalog, Fabric, Gateway, Frontend, Workspace 계약 동기화
-- [x] Architect label·property·relationship·UI 소비 계약 별도 동기화
-- [x] 전체 서비스 테스트·build·type-check
-- [x] 허용된 `playground` DB transaction·readback 검증
-- [x] OpenAI 실제 3분할 확인
-- [x] GPU 44,143 LOC 실제 1회 실행과 실패 지점 수정
+- [x] 소비되지 않던 Function Table Usage LLM 경로와 옛 이름 제거
+- [x] 직접 Table Usage를 확정된 `READS`·`WRITES`·operation에서 결정론으로 투영
+- [x] graph commit 뒤 receipt·성능 증거·terminal manifest 봉인 실패를 `published_unsealed`로 분리
+- [x] 정상 `RunStopped`와 실제 workflow 오류 경합 분리
+- [x] Rule 분할 용량을 model/runtime 설정으로 이동하고 atomic row oversize 검증
+- [x] runtime/test 의존성 분리, exact lock 생성, 실행환경 identity 봉인
+- [x] 소비자 없는 모듈·설정·ontology 값·모순 주석 제거
+- [x] 최대 Summary·Rule 입력을 실제 요청 section별로 재검토하고 정확도를 해치지 않는 선에서 종료
+- [x] publication·semantic plan·meaning fanout 책임 분리
+- [x] 현재 SDD·공용 Analyzer skill·작업보고 동기화
+- [x] 전체 비DB 회귀와 exact-once 회계 통과
+- [x] 봉인된 최종 GPU 결과에서 Function·Rule·Table·Column 41개 표본 직접 판정
+- [x] Analyzer와 관련 서비스에서 제거된 제품 이름·숨은 소비자 0건 확인
+- [x] diff·WIP·옛 이름·비밀·공용 skill 연결 마감 감사
 
-## LLM 입력·성능 정리
+## 검증 경계
 
-- [x] Summary 입력을 전체 원문 + 들여쓰기 구조 트리 + 직접 R/W + 원문 밖 필수 문맥으로 축소
-- [x] 빈 선택 section과 전체 callee Summary 전달 제거
-- [x] Rule의 source 중복 condition/effect와 누적 row 경로 제거
-- [x] Table Usage를 직접 접근 관련 source projection으로 축소
-- [x] Summary·Rule·Table Usage prompt 문구 중복 정리와 계약 테스트 동기화
-- [x] 요청별 queue·first-chunk·generation·validation 지연 기록 및 감사 보고 구현
-- [x] 실제 작은 source로 prompt 문자·Qwen token·의미 필수 정보 회귀 검증
-
-## 이전 최종 정리
-
-- [x] 최종 레거시 문자열·diff 감사
-- [x] 보호된 사용자 WIP를 제외한 저장소별 commit과 push
-
-GPU 실행은 사용자의 1회 제한에 따라 수정 후 반복하지 않는다. Neo4j `test` DB는 접근하지 않는다.
-
-## 현재 재검증
-
-- [x] 세 함수 의미 concern의 system prompt를 하나의 byte-identical 정본으로 통합
-- [x] system·user·공통 contract의 중복 정적 지시 제거와 의미 계약 회귀 추가
-- [x] 변경 전후 실제 정적 prompt token 비교
-- [x] Rule complete-row 결정론 분할과 partial unavailable exact-once 구현
-- [x] Neo4j labeled endpoint lookup과 labeled readback 구현
-- [x] 출력 간결화 A/B와 자연어 귀속·빈 의미 검증
-- [x] Qwen client 동시성 8/16/24/32 처리량 비교 후 16 확정
-- [x] focused 검사와 Analyzer 전체 회귀 통과
-- [x] Analyzer 헌법과 Claude/Codex 공용 skill에 재발 방지 기준 동기화
-- [x] 새로 승인된 GPU 전체 실행 1회와 함수·조건별 병목 분석
-
-재검증은 44,143 LOC 전체 20분 27.4초, 934/934 LLM 요청 성공으로 끝났다. 기존 `test` DB는 접근하지 않았다.
+- 최종 GPU 전체 실행은 약속한 1회만 수행했다. 이후 변경은 결정론 로직과 검증·구조 정리이며 GPU를 재호출하지 않았다.
+- Neo4j `test`, Architect, goal-verify와 사용자 WIP에는 접근·변경·stage하지 않았다.
+- `scripts/recompute_strategy_a_notation.py`는 보호된 사용자 파일로 읽기·실행·stage하지 않았다.

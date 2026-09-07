@@ -32,7 +32,7 @@ _COMPONENT = "pipeline.stages.ast.antlr_json_reader"
 
 # (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
 #  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
-#  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
+#  따로 들어 실제로 갈라졌다. batch_analyze 쪽에는 METHOD가 빠져 있었다.
 
 
 from pipeline.parsing.facts.node_builders import (
@@ -47,7 +47,7 @@ class _DbmsCtx:
     """한 DBMS 파일을 순회하는 동안 고정인 값."""
     module_id: str           # 이 파일의 모듈(그릇) id — code:<경로>. 담긴 값과 이름을 일치시킴
                              # (옛 이름 `file_stem` 은 "파일명 어간"인데 실제론 모듈 id 를 담아
-                             #  이름이 거짓말을 했다 — spec 047)
+                             #  이름이 실제 값과 달랐던 과거 결함을 방지한다.
     package: str             # 파일이 든 폴더 id (최상위면 "")
     src_path: str
     result: ParseResult
@@ -71,7 +71,7 @@ def _read_dbms(raw: dict, source_root: Path, json_path: Path) -> ParseResult:
         result.packages.append(package)
 
     # 파일 자체가 컨테이너 Module (PL/SQL 스크립트 / 패키지 파일). 라벨 = raw["type"] = FILE.
-    # id = code:<경로(확장자 포함)> — Framework 와 동일 규칙 (spec 047).
+    # id = code:<경로(확장자 포함)> — Framework 와 동일 규칙.
     module_id = code_file_id(rel)
     result.modules.append(_make_module(raw, module_id, file_stem, src_path, 0, 0))
 
@@ -115,7 +115,7 @@ def _walk_dbms(node: dict, ctx: _DbmsCtx, parent_id: str | None) -> str | None:
     ntype = node.get("type", "")
     role = role_of(ntype, "sql")
 
-    # 변수·상수 id = <파일 모듈>:<이름> — Framework 와 동일 규칙 (spec 047).
+    # 변수·상수 id = <파일 모듈>:<이름> — Framework 와 동일 규칙.
     if role == "variable":
         vid = _unique_id(
             child_id(ctx.module_id, node.get("name") or ntype),

@@ -35,7 +35,7 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
     code_nodes_in = state.get("code_nodes") or []
     tables_in = state.get("tables") or []
     patterns = scan.table_access_patterns
-    # embedded_sql 규칙 (spec 115) — 정규식으로 컴파일되지 않는 울타리 블록.
+    # embedded_sql 규칙  — 정규식으로 컴파일되지 않는 울타리 블록.
     # 링커가 블록을 추출해 DML 의미표로 직접 판정한다.
     _, embedded = split_rules(list(scan.table_access_rules))
     exclusions = compile_exclusion_rules(scan.table_access_exclusion_rules)
@@ -57,7 +57,7 @@ async def link_deterministic_step(state: dict, config: Optional[RunnableConfig] 
         exclusion_patterns=exclusions,
     )
 
-    # 뷰 펼치기 (spec 112) — VIEW 엣지에 기저 테이블 엣지 추가 (원본 유지).
+    # 뷰 펼치기  — VIEW 엣지에 기저 테이블 엣지 추가 (원본 유지).
     view_edges = expand_view_edges(outcome.edges, tables_in)
     if view_edges:
         log_info(_STEP, "view_expansion", added=len(view_edges))

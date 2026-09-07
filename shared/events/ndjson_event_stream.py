@@ -33,7 +33,7 @@ from shared.events.runtime_logger import log_info, log_warning
 # 합성 그래프 이벤트 실측: Python retained memory 약 983 bytes/event. 1,024건은 약 1MiB이며,
 # 현재 14,128건 무소비 burst(13.21MiB)를 13분의 1 수준으로 제한한다. 물리 queue를 bounded로
 # 만들면 동기 제어/로그 emit이 QueueFull에서 유실되므로, await 가능한 대량 생산자만 이 경계에서
-# drain을 기다린다(spec 062 T019).
+# drain을 기다린다.
 ASYNC_EVENT_HIGH_WATER_MARK = 1024
 
 

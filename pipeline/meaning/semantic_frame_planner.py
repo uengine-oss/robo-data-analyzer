@@ -12,29 +12,16 @@ from pipeline.models.analysis_context import (
 )
 from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.source_languages import callsite_labels, control_structure_labels
-from pipeline.models.rule_condition_ir import attach_rule_condition_projection
 from pipeline.models.semantic_frame import (
     EvidenceFact,
     SlotSpec,
     StructuralProfile,
     StructuralTarget,
-    evidence_id,
-    slot_id,
 )
 from pipeline.checks.branch_inventory import BranchInventory
-from pipeline.checks.rule_prompt_evidence import rule_evidence
-from pipeline.checks.rule_condition_rendering import (
-    render_projected_row_condition,
-)
+from pipeline.meaning.rule_plan import append_rule_facts
+from pipeline.meaning.semantic_facts import add_fact, add_slot, make_fact
 
-
-_WRITE_FAMILY = {
-    "INSERT": "INSERT",
-    "UPDATE": "UPDATE",
-    "DELETE": "DELETE",
-    "TRUNCATE": "DELETE",
-    "MERGE": "UPSERT",
-}
 
 _EXPRESSION_ROLES = frozenset({
     "condition", "case_value", "return_value", "assignment_target",
@@ -44,51 +31,6 @@ _EXPRESSION_KINDS = frozenset({
     "reference", "literal", "group", "member", "subscript", "call", "unary",
     "binary", "conditional", "assignment", "cast", "sequence",
 })
-
-
-def _fact(
-    *, target_id: str, kind: str, identity: object, owner_id: str,
-    file: str = "", start_line: int = 0, end_line: int = 0,
-    attributes: Mapping[str, Any] | None = None,
-) -> EvidenceFact:
-    return EvidenceFact(
-        id=evidence_id(target_id, kind, identity),
-        kind=kind,
-        owner_id=owner_id,
-        file=file,
-        start_line=start_line,
-        end_line=end_line,
-        attributes=dict(attributes or {}),
-    )
-
-
-def _add_fact(evidence: dict[str, EvidenceFact], fact: EvidenceFact) -> str:
-    existing = evidence.get(fact.id)
-    if existing is not None and existing != fact:
-        raise ValueError(f"semantic evidence id collision: {fact.id}")
-    evidence[fact.id] = fact
-    return fact.id
-
-
-def _add_slot(
-    slots: dict[str, SlotSpec], *, target_id: str, family: str, role: str,
-    anchor: object, target_ref: str, evidence_refs: Iterable[str],
-) -> None:
-    refs = tuple(dict.fromkeys(str(ref) for ref in evidence_refs if str(ref)))
-    if not refs:
-        raise ValueError(f"semantic slot requires evidence: {family}.{role}")
-    sid = slot_id(target_id, family, role, anchor)
-    spec = SlotSpec(
-        slot_id=sid,
-        family=family,
-        role=role,
-        target_ref=target_ref,
-        evidence_refs=refs,
-    )
-    existing = slots.get(sid)
-    if existing is not None and existing != spec:
-        raise ValueError(f"semantic slot id collision: {sid}")
-    slots[sid] = spec
 
 
 def build_code_semantic_plan(
@@ -126,9 +68,7 @@ def build_code_semantic_plan(
     symbol_refs: list[str] = []
     expression_refs: list[str] = []
     expression_refs_by_node: dict[str, list[str]] = {}
-    planned_rows: list[dict[str, Any]] = []
-
-    target_ref = _add_fact(evidence, _fact(
+    target_ref = add_fact(evidence, make_fact(
         target_id=fn.id,
         kind="TARGET",
         identity=0,
@@ -180,7 +120,7 @@ def build_code_semantic_plan(
             raise TypeError(f"routine expression range/value is invalid: {fact_id!r}")
         if str(expression.get("kind") or "") not in _EXPRESSION_KINDS:
             raise ValueError(f"unsupported routine expression kind: {fact_id!r}")
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="EXPRESSION",
             identity={"fact_id": fact_id},
@@ -229,7 +169,7 @@ def build_code_semantic_plan(
                 },
             }
         )
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="CONTROL" if is_control else "STATEMENT",
             identity={"child": child.id},
@@ -248,7 +188,7 @@ def build_code_semantic_plan(
         absolute_start = fn.start_line + statement.start - 1
         absolute_end = fn.start_line + statement.end - 1
         effects = _statement_effects(statement)
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="STATEMENT",
             identity={"node": statement.node_id, "line": absolute_start},
@@ -300,7 +240,7 @@ def build_code_semantic_plan(
             if occurrence.callee_id:
                 attributes["callee_id"] = occurrence.callee_id
                 attributes["recursive"] = occurrence.callee_id == fn.id
-            ref = _add_fact(evidence, _fact(
+            ref = add_fact(evidence, make_fact(
                 target_id=fn.id,
                 kind="CALL",
                 identity={"occurrence_id": occurrence.call_id},
@@ -337,7 +277,7 @@ def build_code_semantic_plan(
         dependency_status = (
             "unavailable_cycle" if callee_id in unavailable_callees else "linked"
         )
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="CALL",
             identity={"callee_id": callee_id},
@@ -353,7 +293,7 @@ def build_code_semantic_plan(
             unavailable_callee_refs.append(ref)
 
     for symbol in ctx.referenced_symbols:
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="SYMBOL",
             identity={"symbol": symbol.id},
@@ -371,7 +311,7 @@ def build_code_semantic_plan(
         symbol_refs.append(ref)
 
     for external in ctx.external_evidence:
-        external_refs.append(_add_fact(evidence, _fact(
+        external_refs.append(add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="EXTERNAL",
             identity={"chunk": external.id},
@@ -394,7 +334,7 @@ def build_code_semantic_plan(
             raise TypeError(f"unexpected data object usage: {type(usage).__name__}")
         table_id = usage.table_id or usage.raw_reference
         operation = str((ctx.extra.get("table_op") or {}).get(table_id) or usage.access)
-        ref = _add_fact(evidence, _fact(
+        ref = add_fact(evidence, make_fact(
             target_id=fn.id,
             kind="DATA_OBJECT",
             identity={
@@ -421,169 +361,21 @@ def build_code_semantic_plan(
         data_refs.append(ref)
         data_refs_by_line.setdefault(usage.evidence_line, []).append(ref)
         ordered.append(ref)
-        family = "SELECT" if usage.access == "READ" else _WRITE_FAMILY.get(
-            operation.upper(), "UPDATE",
-        )
-        role = "PURPOSE" if family == "SELECT" else "TARGET"
-        _add_slot(
-            slots,
-            target_id=fn.id,
-            family=family,
-            role=role,
-            anchor={"table": table_id, "line": usage.evidence_line, "access": usage.access},
-            target_ref=target_ref,
-            evidence_refs=(target_ref, ref),
-        )
 
     if inventory is not None:
-        allowed_rule_rows = (
-            {int(line) for line in rule_rows}
-            if rule_rows is not None else None
+        append_rule_facts(
+            fn=fn,
+            inventory=inventory,
+            rule_rows=rule_rows,
+            rule_owner_id=rule_owner_id,
+            evidence=evidence,
+            ordered=ordered,
+            statement_refs=statement_refs,
+            call_refs_by_line=call_refs_by_line,
+            data_refs_by_line=data_refs_by_line,
+            expression_refs_by_node=expression_refs_by_node,
+            condition_call_refs_by_fact=condition_call_refs_by_fact,
         )
-        planned_rows = [
-            row for row in inventory.table_rows()
-            if allowed_rule_rows is None or int(row["line"]) in allowed_rule_rows
-        ]
-        canonical_rule_evidence = attach_rule_condition_projection(
-            rule_evidence(
-                inventory, [int(row["line"]) for row in planned_rows],
-            ),
-            fn.extra.get("_resolved_rule_condition_bundle"),
-        )
-        canonical_effects = canonical_rule_evidence["effects"]
-        canonical_rows = canonical_rule_evidence["rows"]
-        for row in planned_rows:
-            line = int(row["line"])
-            role = str(row.get("role") or "")
-            branch = inventory.at_line(line)
-            condition = str(row.get("condition") or "")
-            canonical_row = canonical_rows[f"R{line}"]
-            projected_condition = render_projected_row_condition(
-                canonical_row, canonical_rule_evidence,
-            )
-            direct_effect_refs = tuple(canonical_row.get("direct") or ())
-            effects = [dict(canonical_effects[ref]) for ref in direct_effect_refs]
-            owned_lines = set(inventory.direct_evidence_lines(line))
-            owned_statement_refs = tuple(
-                item for item in statement_refs if item[2] in owned_lines
-            )
-            direct_refs = tuple(
-                ref for _statement, ref, _start, _end in owned_statement_refs
-            ) + tuple(
-                ref
-                for owned_line in sorted(owned_lines)
-                for ref in call_refs_by_line.get(owned_line, ())
-            ) + tuple(
-                ref
-                for owned_line in sorted(owned_lines)
-                for ref in data_refs_by_line.get(owned_line, ())
-            )
-            direct_expression_refs = tuple(
-                expression_ref
-                for evidence_ref in direct_refs
-                for expression_ref in expression_refs_by_node.get(
-                    str(evidence[evidence_ref].attributes.get("node_id") or ""),
-                    (),
-                )
-            )
-            # A controller with no direct statement still has one exact outcome:
-            # control enters its immediate parser-owned child branches.  Preserve
-            # child ownership by projecting only child CONTROL coordinates and
-            # conditions here; never copy their statements/calls/effects upward.
-            nested_control_refs: tuple[str, ...] = ()
-            if branch is not None and row.get("nested_control"):
-                nested_control_refs = tuple(
-                    _add_fact(evidence, _fact(
-                        target_id=fn.id,
-                        kind="CONTROL",
-                        identity={
-                            "nested_child": child.node_id,
-                            "parent": branch.node_id,
-                        },
-                        owner_id=rule_owner_id or owner_id,
-                        file=fn.file_path,
-                        start_line=child.start + inventory.line_offset,
-                        end_line=child.end + inventory.line_offset,
-                        attributes={
-                            "node_id": child.node_id,
-                            "type": child.ntype,
-                            "role": "nested_child",
-                            "condition": child.condition,
-                            "condition_timing": child.condition_timing,
-                            "parent_ref": branch.node_id,
-                            "complement_of": None,
-                            "implicit_false": False,
-                        },
-                    ))
-                    for child in branch.children
-                )
-                ordered.extend(nested_control_refs)
-            branch_expression_refs: tuple[str, ...] = ()
-            if branch is not None:
-                own_expression_refs = tuple(
-                    expression_refs_by_node.get(branch.node_id, ())
-                )
-                # A case-value expression has meaning only in relation to its
-                # structurally owning controller subject.  Use Parser roles and the
-                # parent edge; do not reparse a switch keyword or infer from source.
-                owns_case_value = any(
-                    evidence[ref].attributes.get("role") == "case_value"
-                    for ref in own_expression_refs
-                )
-                parent_condition_refs = (
-                    tuple(
-                        ref
-                        for ref in expression_refs_by_node.get(
-                            branch.parent.node_id, (),
-                        )
-                        if evidence[ref].attributes.get("role") == "condition"
-                    )
-                    if owns_case_value and branch.parent is not None else ()
-                )
-                branch_expression_refs = tuple(dict.fromkeys((
-                    *parent_condition_refs, *own_expression_refs,
-                )))
-            branch_condition_call_refs = tuple(
-                call_ref
-                for expression_ref in branch_expression_refs
-                for call_ref in condition_call_refs_by_fact.get(
-                    str(evidence[expression_ref].attributes.get("fact_id") or ""),
-                    (),
-                )
-            )
-            supporting_refs = (
-                *direct_refs,
-                *direct_expression_refs,
-                *branch_expression_refs,
-                *branch_condition_call_refs,
-                *nested_control_refs,
-            )
-            ref = _add_fact(evidence, _fact(
-                target_id=fn.id,
-                kind="RULE",
-                identity={"line": line, "role": role, "type": row.get("ntype")},
-                owner_id=rule_owner_id or owner_id,
-                file=fn.file_path,
-                start_line=line,
-                end_line=int(row.get("end_line") or line),
-                attributes={
-                    "anchor_line": line,
-                    "role": role,
-                    "condition": projected_condition or "",
-                    "effects": effects,
-                    "when": list(canonical_row.get("when") or ()),
-                    "source_refs": list(dict.fromkeys(supporting_refs)),
-                    "type": str(row.get("ntype") or ""),
-                    "condition_timing": str(row.get("condition_timing") or ""),
-                    "complement_of": row.get("complement_of"),
-                    "implicit_false": bool("implicit_false" in condition),
-                    "nested_control": bool(row.get("nested_control")),
-                    "fallthrough_to": row.get("fallthrough_to"),
-                    "at_label": str(row.get("at_label") or ""),
-                    "after_control": str(row.get("after_control") or ""),
-                },
-            ))
-            ordered.append(ref)
 
     ordered = sorted(
         dict.fromkeys(ordered),
@@ -603,7 +395,7 @@ def build_code_semantic_plan(
             *unavailable_callee_refs,
             *external_refs,
         )))
-        _add_slot(
+        add_slot(
             slots,
             target_id=fn.id,
             family="FUNCTION",
@@ -617,7 +409,7 @@ def build_code_semantic_plan(
         # as exact structural evidence above.  DBMS CALL is an actual analysis CodeNode,
         # so only that target owns a CALL meaning.  Treating every Framework occurrence
         # as a prose owner inflated one APAS run by 4,349 low-level CALL.PURPOSE slots.
-        _add_slot(
+        add_slot(
             slots,
             target_id=fn.id,
             family="CALL",
@@ -627,7 +419,7 @@ def build_code_semantic_plan(
             evidence_refs=(target_ref, *unavailable_callee_refs),
         )
     else:
-        _add_slot(
+        add_slot(
             slots,
             target_id=fn.id,
             family="STATEMENT",
@@ -655,22 +447,17 @@ def build_code_semantic_plan(
 def semantic_concern_slots(
     slot_specs: Iterable[SlotSpec],
 ) -> dict[str, tuple[SlotSpec, ...]]:
-    """Assign every applicable slot to exactly one existing parallel concern."""
-    result: dict[str, list[SlotSpec]] = {
-        "summary": [],
-        "table_usage_meanings": [],
-    }
-    for spec in slot_specs:
-        if spec.family in {"SELECT", "INSERT", "UPDATE", "DELETE", "UPSERT"}:
-            concern = "table_usage_meanings"
-        else:
-            concern = "summary"
-        result[concern].append(spec)
-    assigned = [spec.slot_id for specs in result.values() for spec in specs]
-    expected = [spec.slot_id for spec in slot_specs]
+    """Assign every model-owned slot to the single Summary concern.
+
+    Table access and column occurrences stay as deterministic evidence.  They do not
+    create prose obligations or a second copy of the same meaning.
+    """
+    specs = tuple(slot_specs)
+    assigned = [spec.slot_id for spec in specs]
+    expected = [spec.slot_id for spec in specs]
     if len(assigned) != len(set(assigned)) or set(assigned) != set(expected):
         raise ValueError("semantic concern partition lost or duplicated a slot")
-    return {name: tuple(specs) for name, specs in result.items()}
+    return {"summary": specs}
 
 
 def _statement_effects(statement: StatementFact) -> list[dict[str, str]]:

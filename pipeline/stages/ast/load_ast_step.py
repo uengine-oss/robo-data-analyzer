@@ -66,7 +66,7 @@ def _with_code_text(nodes: list[_N], cache: SourceFileCache) -> list[_N]:
 
 
 def _assert_unique_ids(*node_lists: list) -> None:
-    """**id 전역 유일성 가드** (spec 047 FR-005) — 중복이면 즉시 raise.
+    """**id 전역 유일성 가드**  — 중복이면 즉시 raise.
 
     왜 필요한가: 이 불변식이 깨지면 무라벨 ``MATCH (n {id: …})`` 가 **두 노드를 모두** 잡아
     엣지·라벨이 엉뚱한 곳에 박힌다 (실제로 테이블에 코드 구조 관계가 연결되고
@@ -88,14 +88,14 @@ def _assert_unique_ids(*node_lists: list) -> None:
     if dups:
         err = ValueError(
             f"노드 id 중복 {len(dups)}건 — 서로 다른 노드가 같은 식별자를 갖는다 "
-            f"(spec 047 불변식 위반): {dups[:5]}"
+            f": {dups[:5]}"
         )
         log_error(_STEP, "duplicate_node_id", err, count=len(dups))
         raise err
 
 
 def _code_text_missing(*node_lists: list) -> int:
-    """**불변식 감시** (spec 045 FR-005): file_path 가 있는데 원문이 빈 노드 수.
+    """**불변식 감시** : file_path 가 있는데 원문이 빈 노드 수.
 
     0 이 아니면 소스를 못 읽었다는 뜻 — ``SourceFileCache`` 가 남긴 ``source_read_failed``
     경고와 짝을 이룬다. file_path 가 **없는** 노드(외부 stub 등)는 "원래 본문이 없는 것"이라
@@ -324,7 +324,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     references, init_by = await link_references(
         code_nodes, variables, constants,
         checkpoint=pause.gate,
-        modules=modules,        # 상속 조상 매칭 (spec 111 — Java extends / Python bases)
+        modules=modules,        # 상속 조상 매칭
     )
     import_binding_environment = build_import_binding_environment(
         evidence_sources, modules,
@@ -343,7 +343,7 @@ async def load_ast_step(state: dict, config: Optional[RunnableConfig] = None) ->
     constants = _with_code_text(constants, source_cache)
     data_types = _with_code_text(data_types, source_cache)
 
-    # ★ id 전역 유일성 가드 (spec 047) — 깨지면 그래프가 조용히 거짓말을 하므로 즉시 실패.
+    # ★ id 전역 유일성 가드  — 깨지면 그래프가 조용히 거짓말을 하므로 즉시 실패.
     #   (DB 노드는 step1 이 만들지만 네임스페이스가 달라(`db:`) 코드 노드와 겹칠 수 없다.)
     _assert_unique_ids(code_nodes, modules, packages, variables, constants, data_types)
 

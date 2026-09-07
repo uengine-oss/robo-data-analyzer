@@ -12,7 +12,6 @@ langgraph-checkpoint>=2.1.0
 
 # 데이터 검증
 pydantic>=2.10.0
-pydantic-settings>=2.7.0
 
 # SQL 파싱
 sqlglot>=27.0.0
@@ -20,11 +19,9 @@ sqlglot>=27.0.0
 # Neo4j 그래프 DB
 neo4j>=5.27.0
 
-# 컴포넌트 군집화 (build_components_step — Leiden community detection)
-leidenalg>=0.10.0
-igraph>=0.11.0
-
 # 검색 결과 벡터 생성 + 검색 재채점 크로스인코더(search/ranking/rerank — CE 게이트)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
 sentence-transformers>=3.3.0
 
 # 검색 리콜 희소채널 — BM25 키워드 매칭 (search/ranking/recall)
@@ -36,16 +33,13 @@ uvicorn>=0.34.0
 # 2.x removed ``mcp.server.fastmcp`` used by api/mcp_app.py.
 mcp>=1.0.0,<2.0.0
 
-# 외부 파일 결정론 파싱/안전 경계 (spec 078 — span 어댑터)
+# 외부 파일 결정론 파싱/안전 경계
 charset-normalizer>=3.4.9
-javaproperties>=0.8.2
 regex>=2026.7.19
-lxml>=6.1.1
 json-source-map>=1.0.5
 markdown-it-py>=4.2.0
 
-# YAML / .env / 재시도 / HTTP
+# YAML / .env / HTTP
 pyyaml>=6.0.0
 python-dotenv>=1.0.0
-tenacity>=9.0.0
 httpx>=0.28.0

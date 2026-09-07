@@ -54,24 +54,24 @@ roles:
     java:    [FILE, FUNCTION_CALL, NEW_INSTANCE, IMPORT]
     c:       [FUNCTION_CALL, INCLUDE, TYPEDEF, ENUM_CONSTANT]
     python:  [FUNCTION_CALL, IMPORT]
-  control_structure:         # 제어 흐름 의미 AST 뼈대 (spec 007, parser 007 emit).
+  control_structure:         # 제어 흐름 의미 AST 뼈대
                              # 그래프에 CodeNode 로 보존(기본 숨김)하되 routine 이 아니므로
                              # LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 폴백 분할용.
                              # CALLS/READS/WRITES 는 이 노드가 아니라 소유 routine 에 귀속(reader).
     c:       [IF, ELSE, LOOP, SWITCH, CASE]
     java:    [IF, ELSE, LOOP, SWITCH, CASE, TRY, CATCH, FINALLY]  # FINALLY: 2026-08-05 emit 추가
     python:  [IF, ELSE, LOOP, TRY, CATCH, WITH]           # WITH: 2026-08-05 emit 추가. SWITCH/CASE 없음, match 는 범위 밖(계약 §1)
-    # PL/SQL (spec 118, 2026-08-08). rwis AST 전수 조사에서 **실측한 라벨만** 선언한다.
+    # PL/SQL은 rwis AST 전수 조사에서 **실측한 라벨만** 선언한다.
     #   TRY       = BEGIN…END 블록,  EXCEPTION = 그 블록의 EXCEPTION WHEN … THEN 핸들러 섹션
     #               (framework TRY/CATCH 쌍의 PL/SQL 철자다 — 원문 대조로 확인)
     #   ELSIF     = ELSIF <조건> THEN. parser 가 조건식을 정상 보존한다
     #   EXIT      = EXIT WHEN <조건>. 조건 없는 `LOOP` 은 자기 조건이 없고 반복 종료 판정이
     #               오직 여기 있다 — C 의 `if (cond) break;` 에 해당한다. parser 가 조건을
-    #               보존하도록 2026-08-08 수리했다(spec 118 §1.4). 무조건 EXIT 는 조건이
+    #               보존하도록 2026-08-08 수리했다. 무조건 EXIT 는 조건이
     #               없는 것이 사실이므로 controller 로 내려간다.
     # 문법에는 있으나 이 코퍼스에서 emit 을 확인하지 못한 라벨(CASE 문 등)은 넣지 않는다.
     sql:     [IF, ELSE, ELSIF, LOOP, TRY, EXCEPTION, EXIT]
-  statement:                 # 구조 statement (parser spec 016 emit — RETURN/대입/종료 이동).
+  statement:                 # 구조 statement
                              # 그래프에 CodeNode 로 보존(routine 아님 — LLM 분석 제외)하고
                              # branch_inventory 가 종료행·반환식·대입·entry 의 AST 정본으로 소비.
     c:       [RETURN, BREAK, CONTINUE, GOTO, LABEL, ASSIGNMENT]
@@ -101,8 +101,7 @@ statement_effect_ops:
 # rule 효과 어휘로 옮기는 유일한 지점이며, **미선언 dml_type 은 조용히 버리지 않고 좌표와
 # 함께 실패한다**(헌법 IV). 새 DML 지원 = 여기 한 줄.
 # 근거: rwis 의무 행 59개 중 효과 증거가 있는 행이 19개(32%)뿐이었다 — framework 는 83%.
-# 원인은 효과 축이 ASSIGNMENT/RETURN 만 보고 INSERT/UPDATE/MERGE/SELECT 347개를 못 본 것
-# (spec 119).
+# 원인은 효과 축이 ASSIGNMENT/RETURN만 보고 INSERT/UPDATE/MERGE/SELECT 347개를 못 본 것이다.
 # rule 증거의 **호출 좌표**를 제공하는 CodeNode 라벨 (언어별).
 # framework 는 parser 가 FUNCTION_CALL 을 노드가 아닌 call_site 로 내보내 reader 가 좌표를
 # 싣지만, DBMS `CALL` CodeNode는 구조 표시용이다. CALLS는 Parser call fact를 언어 adapter와
@@ -110,7 +109,7 @@ statement_effect_ops:
 # — 생산자를 둘로 만들지 않기 위해 reader 에 call_site 를 추가하지 않고 여기서 선언한다.
 # 이 표가 비면 그 언어는 이 경로를 쓰지 않는다는 뜻이다(framework 동작 불변).
 # 근거: rwis 의 CALL 59개가 효과 축에 없어 handler 20행·decision 일부가 `then` 을 만들 사실이
-# 없었다(spec 119).
+# 없었다.
 callsite_labels:
   sql: [CALL]
 
@@ -144,13 +143,13 @@ unsupported_constructs:
 # 이 표는 **의미 축**만 선언한다 — decision = 조건으로 갈리는 자리, controller = 감싸는
 # 자리, complement = 여집합. 어떤 노드에 조건이 실제로 있는지는 데이터가 아니라 그 노드의
 # 사실이므로, 조건이 빈 decision 은 ``Branch.prompt_role()`` 이 controller 로 내린다
-# (spec 118 §2.1 — sql bare LOOP · c `for(;;)` · java FINALLY 가 같은 결함이었다).
+# SQL bare LOOP와 Java FINALLY가 같은 결함이었다.
 control_roles:
   controller: [SWITCH, TRY, WITH]      # WITH: 감싸는 자원 블록 — 자원 식은 문맥, 조건 아님
   complement: [ELSE]
   # 오류 경로 진입 행. framework 는 skill 이 선언한 handler 마커(PFM_CATCH)로 같은 축의
   # 행 67개를 만든다 — PL/SQL 은 그 자리가 AST 노드(EXCEPTION 섹션)다. 조건 없이도 의무
-  # 행이며 cond·then 을 요구하지 않는다(spec 118 §2.4, 사용자 확정 2026-08-08).
+  # 행이며 cond·then 을 요구하지 않는다.
   # controller 로 두면 의무에서 빠져 오류 처리 블록 28개가 규칙 0건이 된다 — framework
   # 동급 완료 기준과 어긋나므로 이 축을 별도로 둔다.
   handler: [EXCEPTION]
@@ -184,11 +183,11 @@ symbol_kinds:
     parameter: [PARAMETER]
     constant: [CONSTANT_FIELD]
 
-# (옛 `paradigm:` 섹션 삭제 — ontology.paradigm() 만 읽던 죽은 데이터였고
-#  그 함수도 호출부 0건이라 함께 제거. spec 046 FR-010.)
+# 옛 `paradigm:` 섹션은 ontology.paradigm()만 읽던 죽은 데이터였고,
+# 그 함수도 호출부가 없어 함께 제거했다.
 
 # ───────────────────────────────────────────────
-# 2. source_lexicon — 언어별 어휘 구문 (spec 101 근거성 게이트)
+# 2. source_lexicon — 언어별 어휘 구문
 # ───────────────────────────────────────────────
 # 게이트 로직은 언어를 모른다. "활성 코드 / 주석 / 비활성 블록"을 가르는 데 필요한
 # **구문 표(데이터)** 만 여기서 받는다. 새 언어 = 아래 표 한 줄.
@@ -213,8 +212,8 @@ symbol_kinds:
 #                      상속해 경로가 정반대가 된다(실측: `FN_EDIT_YN.sql:41,50,52`).
 #                      C/Java/Python 은 `else { if … }` 중첩이라 조상 사슬이 이미
 #                      담당하므로 빈 목록이다 — 빈 목록은 "해당 없음"의 명시다.
-# 종료문·반환식·대입쌍·CASE 라벨·반복문 머리·조건 괄호는 **parser AST 가 소유**한다
-# (spec 016 구조 구문 계약). analyzer 는 좌표와 expression 을 소비만 하며 원문을
+# 종료문·반환식·대입쌍·CASE 라벨·반복문 머리·조건 괄호는 **parser AST가 소유**한다.
+# Analyzer는 좌표와 expression을 소비만 하며 원문을
 # 정규식·첫 토큰으로 재탐색하지 않는다 — 그래서 그 어휘 키들은 이 표에서 삭제됐다.
 source_lexicon:
   c:
@@ -224,7 +223,7 @@ source_lexicon:
     string_quotes: ["\"", "'"]
     inactive:      ['^#\s*if\s+0\b', '^#\s*if', '^#\s*endif']
     # 컴파일러가 인접 문자열 리터럴("a" "b")을 이어붙이는 언어 — 링킹이 이어붙인
-    # 논리 문자열 뷰를 추가로 스캔한다 (regex_table_linker, spec 108 감시항목 표화).
+    # 논리 문자열 뷰를 추가로 스캔한다(regex_table_linker가 감시).
     adjacent_string_concat: true
     case_fallthrough: true
     control_keywords: [if, else, for, while, do, switch, case, default, return, sizeof]
@@ -384,7 +383,7 @@ external_file_categories:
 #    LLM 이 자유롭게 작성 X. 이 풀에서만 선택. 풀에 없으면 빈 문자열로 강제.
 # ───────────────────────────────────────────────
 
-# stereotype 결정 보조 (spec 116 7단계) — 정의 중복으로 정답이 미결정일 때의 계약.
+# stereotype 결정 보조  — 정의 중복으로 정답이 미결정일 때의 계약.
 #   priority       : 복수 정의가 동시에 성립할 때의 동점 해소 순서(상위 우선) —
 #                    프롬프트에 데이터로 주입된다({stereotype_priority}).
 #   write_forbidden: 결정론 쓰기(writes) 근거가 있는 함수에 붙을 수 없는 값 —
@@ -413,7 +412,6 @@ framework:
   Controller: HTTP·RPC·API 같은 외부 요청의 진입점에서 입력과 응답 흐름을 조정한다.
   Initializer: 시작·로딩 시점에 한 번 수행되는 설정이나 상태 구성을 책임진다.
   Unclassified: 현재 근거로 위 역할 중 하나를 모순 없이 확정할 수 없다.
-
 dbms:
   # PL/SQL 전용
   DataMutator: 데이터 삽입·변경·삭제가 주된 책임이다.
@@ -429,31 +427,3 @@ dbms:
   PackageInitializer: 패키지 로딩 시 한 번 수행되는 상태나 설정 구성을 책임진다.
   Helper: 상위 프로시저 흐름에 종속된 좁은 보조 단계를 수행한다.
   Unclassified: 현재 근거로 위 역할 중 하나를 모순 없이 확정할 수 없다.
-
-# 모듈·파일·클래스 종합 역할. 함수 역할과 의미 축이 다르므로 별도 폐쇄 목록이지만,
-# prompt와 parser가 이 파일 하나를 함께 읽는다.
-module_framework:
-  - Module
-  - Service
-  - Repository
-  - Controller
-  - Util
-  - Config
-  - Scheduler
-  - Client
-  - Gateway
-  - Entity
-  - DTO
-  - DataStructure
-  - Enum
-
-module_dbms:
-  - BatchProcessing
-  - MetadataService
-  - TriggerLogic
-  - ReportGenerator
-  - DataMigration
-  - Validation
-  - Aggregation
-  - Cleanup
-  - Utility

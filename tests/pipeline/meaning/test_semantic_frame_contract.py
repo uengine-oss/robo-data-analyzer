@@ -37,9 +37,7 @@ from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
-from pipeline.meaning.three_split_llm_fanout import (
-    _run_frame_summary,
-)
+from pipeline.meaning.meaning_requests import run_frame_summary
 from tests.pipeline.parser_call_fixtures import parser_call_occurrences
 
 
@@ -123,6 +121,42 @@ class StableIdentityTest(unittest.TestCase):
             )
 
 class SemanticFramePlannerTest(unittest.TestCase):
+    def test_outer_else_does_not_inherit_inner_if_condition(self):
+        source = "\n".join((
+            "int load(int rc) {",
+            "  if (rc != RC_NRM) {",
+            "    if (rc != RC_NFD) {",
+            "      return rc;",
+            "    } else {",
+            "      recover();",
+            "    }",
+            "  } else {",
+            "    use_result();",
+            "  }",
+            "}",
+        ))
+        tree = [ControlSubtreeNode(
+            "if@2", "IF", 2, 10, expression="rc != RC_NRM",
+            children=[
+                ControlSubtreeNode(
+                    "if@3", "IF", 3, 7, expression="rc != RC_NFD",
+                    children=[ControlSubtreeNode("else@5", "ELSE", 5, 7)],
+                ),
+                ControlSubtreeNode("else@8", "ELSE", 8, 10),
+            ],
+        )]
+        inventory = build_inventory(
+            source,
+            tree,
+            "c",
+            statements=(StatementFact("return@4", "RETURN", 4, 4, expression="rc"),),
+        )
+
+        evidence = rule_evidence(inventory, (8,))
+
+        self.assertEqual(["!C2"], evidence["rows"]["R8"]["when"])
+        self.assertEqual({"C2": "rc != RC_NRM"}, evidence["conditions"])
+
     def test_rule_fact_links_owned_effects_and_structural_relations(self):
         fn = CodeNode(
             id="code:f", signature="f(int rc)", file_path="src/f.c",
@@ -250,7 +284,7 @@ return rc;
         ))
         self.assertNotIn(("CALL", "PURPOSE"), roles)
         self.assertTrue(any(fact.kind == "CALL" for fact in profile.evidence.values()))
-        self.assertIn(("SELECT", "PURPOSE"), roles)
+        self.assertNotIn(("SELECT", "PURPOSE"), roles)
         self.assertNotIn(("CALL", "ARGUMENT_ROLE"), roles)
         self.assertNotIn(("CALL", "RESULT_USE"), roles)
 
@@ -629,7 +663,7 @@ END;"""
             }
             return response_model.model_validate(response)
 
-        asyncio.run(_run_frame_summary(
+        asyncio.run(run_frame_summary(
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
@@ -679,7 +713,7 @@ END;"""
             }
             return response_model.model_validate(payload)
 
-        result = asyncio.run(_run_frame_summary(
+        result = asyncio.run(run_frame_summary(
             profile=profile,
             slot_specs=summary_specs,
             strategy_name="framework",
@@ -867,7 +901,7 @@ return RC_NRM;
             )
 
         with self.assertRaises(ModelOutputError):
-            asyncio.run(_run_frame_summary(
+            asyncio.run(run_frame_summary(
                 profile=profile,
                 slot_specs=summary_specs,
                 strategy_name="framework",
@@ -893,7 +927,7 @@ return RC_NRM;
             )
 
         with self.assertRaises(ModelOutputError):
-            asyncio.run(_run_frame_summary(
+            asyncio.run(run_frame_summary(
                 profile=profile,
                 slot_specs=summary_specs,
                 strategy_name="framework",

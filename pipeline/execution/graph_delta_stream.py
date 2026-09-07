@@ -160,7 +160,7 @@ async def emit_nodes(stream: Optional[NDJSONStream], nodes: Iterable) -> int:
         await stream.emit_async({
             "type": "node_event", "op": "merge",
             # label = 단일 타입(back-compat=labels[0]). labels = 전체 라벨(타입+stereotype)
-            # → 프론트가 역할을 라이브로 받는다(spec 034).
+            # → 프론트가 역할을 라이브로 받는다.
             "label": label, "labels": _node_labels(node), "id": nid, "props": _node_props(node),
         })
         count += 1
@@ -187,8 +187,8 @@ async def emit_edges(stream: Optional[NDJSONStream], edges: Iterable) -> int:
     return count
 
 
-# (옛 ``emit_graph_delta`` 삭제 — 호출부 0건. 소비처는 ``emit_nodes``/``emit_edges`` 를
-#  직접 호출한다. spec 046 FR-010.)
+# 옛 ``emit_graph_delta``는 호출부가 없어 삭제했다. 소비처는
+# ``emit_nodes``/``emit_edges``를 직접 호출한다.
 
 
 def emit_message(stream: Optional[NDJSONStream], content: str) -> None:

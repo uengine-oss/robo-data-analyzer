@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
 
-# dml_type 표준화는 ``pipeline.dml_semantics.dml_type_of`` — 의미표가 단일 진실 (spec 106).
+# dml_type 표준화는 ``pipeline.dml_semantics.dml_type_of`` — 의미표가 단일 진실이다.
 # 호출자 전원이 pipeline 계층이라 본체를 그쪽으로 이사했다 (graph→pipeline 역참조 방지).
 
 
@@ -135,7 +135,6 @@ class StatementNext:
 class References:
     """CodeNode → Variable / Constant (본문이 참조하는 변수·상수). source=function, target=var/const.
 
-    MATCH 는 ``:ANALYZER_OWNED`` + ``id`` (변수/상수 종류 라벨이 열린집합이라 마커로 시크).
     정체성 = (source_id, target_id). evidence_line 은 부속.
     """
     source_id: str

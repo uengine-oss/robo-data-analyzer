@@ -14,13 +14,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import BaseModel, Field, create_model
 
 from pipeline.models.analysis_context import ReferencedSymbolContext
 from llm.structured_schema import CompactLlmResponse
+from llm.configs.config_loader import load_llm_config
 from pipeline.models.rule_materialization import validate_structural_effect
+from shared.config.app_settings import SETTINGS
 
 
 RuleRowDispositionValue = Literal[
@@ -30,10 +33,14 @@ RuleProjectionStatus = Literal[
     "sufficient", "partial", "insufficient", "not_business", "unavailable",
 ]
 
-# A response-obligation budget, not a target-name exception or retry threshold.
-# In the sealed 44,143 LOC run every request below 150 effects completed, while
-# all three stalls were in the 173+ effect group. A row remains atomic.
-RULE_MEANING_EFFECT_BUDGET = 128
+@lru_cache(maxsize=8)
+def _configured_rule_effect_limit(config_name: str) -> int | None:
+    return load_llm_config(config_name).max_rule_effects_per_request
+
+
+def configured_rule_effect_limit() -> int | None:
+    """Return the deployment profile's measured Rule response limit, if any."""
+    return _configured_rule_effect_limit(SETTINGS.analysis_llm.config)
 
 
 def rule_meaning_response_model(
@@ -360,10 +367,12 @@ def _project_row(
 def partition_rule_meaning_evidence(
     evidence: Mapping[str, object],
     *,
-    max_effects: int = RULE_MEANING_EFFECT_BUDGET,
+    max_effects: int | None,
 ) -> tuple[dict[str, object], ...]:
     """Partition whole rows by response obligations without retry or loss."""
-    if isinstance(max_effects, bool) or max_effects < 1:
+    if max_effects is not None and (
+        isinstance(max_effects, bool) or max_effects < 1
+    ):
         raise ValueError("Rule meaning max_effects must be a positive integer")
     conditions, effects, rows = _evidence_maps(evidence)
     if not rows:
@@ -374,12 +383,16 @@ def partition_rule_meaning_evidence(
     current_effects: set[str] = set()
     for row_key, row in rows.items():
         row_effects = {str(value) for value in row.get("direct") or ()}
-        if len(row_effects) > max_effects:
+        if max_effects is not None and len(row_effects) > max_effects:
             raise ValueError(
                 f"{row_key}: one Rule row exceeds the atomic effect budget: "
                 f"{len(row_effects)} > {max_effects}"
             )
-        if current and len(current_effects | row_effects) > max_effects:
+        if (
+            max_effects is not None
+            and current
+            and len(current_effects | row_effects) > max_effects
+        ):
             grouped_rows.append(current)
             current = []
             current_effects = set()

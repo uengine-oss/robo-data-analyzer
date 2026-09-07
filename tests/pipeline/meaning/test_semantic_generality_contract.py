@@ -120,8 +120,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
         # RadixAttention은 첫 변동 지점까지만 재사용한다. 같은 concern의 모든 대상이 긴 고정
         # 계약을 공유하도록 분할 계약을 TARGET/SOURCE보다 앞에 두고, 동적 증거는 맨 뒤에 둔다.
         for strategy, names in (
-            ("framework", ("code_summary", "code_table_usage_meanings")),
-            ("dbms", ("code_summary_node", "code_table_usage_meanings_batch")),
+            ("framework", ("code_summary", "code_rule_meanings")),
+            ("dbms", ("code_summary_node", "code_rule_meanings_batch")),
         ):
             for name in names:
                 with self.subTest(strategy=strategy, name=name):
@@ -132,15 +132,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                         expanded = expanded.replace("{" + key + "}", value)
                     self.assertTrue(template.lstrip().startswith("# [TASK"))
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
-                    for contract_marker in ("[OUTPUT CONTRACT", "[DECISION"):
-                        self.assertIn(contract_marker, expanded)
-                    if "summary" not in name:
-                        self.assertEqual(
-                            1,
-                            expanded.count(
-                                "response_format의 모든 `FT` key를 정확히 한 번"
-                            ),
-                        )
+                    self.assertIn("[OUTPUT CONTRACT", expanded)
+                    if "summary" in name:
+                        self.assertIn("[DECISION", expanded)
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
 
         self.assertFalse(
@@ -252,9 +246,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
 
     def test_every_semantic_prompt_pairs_bad_and_good_examples(self) -> None:
         cases = (
-            ("framework", "code_table_usage_meanings"),
             ("framework", "table_description"),
-            ("dbms", "code_table_usage_meanings_batch"),
             ("dbms", "table_description"),
         )
         for strategy, rule_name in cases:

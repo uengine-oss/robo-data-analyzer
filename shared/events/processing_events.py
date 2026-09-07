@@ -88,7 +88,7 @@ async def track_processing(entity_kind: str, entity_id: str, *, sub_action: str 
     Usage::
 
         async with track_processing("CodeNode", fn_id):
-            return await analyze_code_three_split(...)
+            return await analyze_code_meanings(...)
 
         async with track_processing("CodeNode", fn_id, sub_action="split_rules"):
             return await run_yaml_rule(...)

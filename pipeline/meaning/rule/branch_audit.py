@@ -1,4 +1,4 @@
-"""분기표·커버리지 감사 산출물의 단일 소유자 (spec 117).
+"""분기표·커버리지 감사 산출물의 단일 소유자.
 
 `branch-tables`는 원 분기표를, `rule-structures`는 그 분기표에서 물질화한 exact
 condition/effects와 evidence를 보존한다. 종전에 이 감사 기록은 framework 엔진 안에만

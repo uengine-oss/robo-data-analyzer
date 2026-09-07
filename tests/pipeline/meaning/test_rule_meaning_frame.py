@@ -179,6 +179,10 @@ class RuleMeaningFrameTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "atomic effect budget"):
             partition_rule_meaning_evidence(evidence, max_effects=2)
 
+        unlimited = partition_rule_meaning_evidence(evidence, max_effects=None)
+        self.assertEqual(1, len(unlimited))
+        self.assertEqual({"E1", "E2", "E3"}, set(unlimited[0]["effects"]))
+
     def test_rule_table_effect_gets_only_the_existing_table_meaning(self) -> None:
         evidence = {
             "conditions": {"C1": "ready"},

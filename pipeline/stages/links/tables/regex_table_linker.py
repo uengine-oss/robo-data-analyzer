@@ -35,7 +35,7 @@ from pipeline.source_languages import ROUTINE_LABELS, lang_of, source_lexicon
 from pipeline.checks.source_lexing import split_source_for_linking
 from shared.files.run_cache_context import read_run_text
 
-# DML 키워드·판정 정규식은 전부 의미표 파생 (spec 106 — 단일 진실, 하드코딩 재도입 금지).
+# DML 키워드·판정 정규식은 전부 의미표 파생.
 
 
 @dataclass
@@ -260,7 +260,7 @@ def _c_sql_semantic_edges(
         )
         if semantics.first_statement(content) is None or not offsets:
             continue
-        # write 대상 → 그 구문의 dml_type (DBMS 경로와 동일 판정 — spec 106 SC-005).
+        # write 대상 → 그 구문의 dml_type (DBMS 경로와 동일 판정 —  SC-005).
         write_matches = list(semantics.iter_write_targets(content))
         write_entity_spans = {match.span("entity") for match, _ in write_matches}
         accesses = [
@@ -454,7 +454,7 @@ class RegexTableLinker:
 
         ``restrict_to_files`` 가 주어지면 전체 rglob 대신 그 파일들만 스캔한다 —
         잔여 패턴 루프가 새 패턴을 잔여 케이스 파일에만 재적용할 때 (전체 재스캔 회피).
-        ``embedded_rules`` 는 울타리 블록 SQL (spec 115) — 블록을 추출해 DML 의미표로
+        ``embedded_rules`` 는 울타리 블록 SQL  — 블록을 추출해 DML 의미표로
         직접 판정한다 (정규식 패턴과 같은 LinkOutcome·검문소 지표 공유).
         """
         if not patterns and not embedded_rules and not exclusion_patterns:
@@ -502,7 +502,7 @@ class RegexTableLinker:
             scan_text = prepared.scan_text
             views = prepared.views
             # 언어 특성은 어휘표(ontology_roles.yaml source_lexicon)가 단일 정의처 —
-            # 하드코딩 확장자 나열 금지 (헌법 II, spec 108 감시항목 표화).
+            # 하드코딩 확장자 나열 금지. 헌법 II의 감시 항목이다.
             is_c_family = prepared.adjacent_string_concat
             excluded_spans: list[tuple[int, int, str]] = []
             seen_exclusion_sites: set[tuple[str, int, int]] = set()
@@ -569,7 +569,7 @@ class RegexTableLinker:
                                 for exclusion_id in overlapping_exclusions
                             )
                             continue
-                        # 검문소 3지표 (spec 114) — 판정 재료만 계수, 엣지 동작은 불변.
+                        # 검문소 3지표  — 판정 재료만 계수, 엣지 동작은 불변.
                         if entity_complete and not hits:
                             outcome.unresolved_table_names += 1
                             stats.unresolved_table_names += 1
@@ -839,10 +839,10 @@ def _embedded_sql_edges(
     rules,
     outcome: LinkOutcome,
 ) -> None:
-    """울타리 블록 SQL → 엣지 (spec 115). 판정은 전부 DML 의미표 — R/W 로직 중복 0.
+    """울타리 블록 SQL → 엣지. 판정은 전부 DML 의미표 — R/W 로직 중복 0.
 
     블록마다: 첫 토큰이 DML 인지 의미표로 확인 → write 대상(그 구문의 dml_type) +
-    read 절(FROM/JOIN/USING) 추출 → 단어장 해소. 검문소 3지표(spec 114)를 패턴과
+    read 절(FROM/JOIN/USING) 추출 → 단어장 해소. 검문소 3지표를 패턴과
     동일하게 계수한다. 잔여 큐(unresolved_cases)는 정규식 패턴 영역 — 여기선 계수만.
     """
     semantics = dml_semantics()
@@ -1031,7 +1031,7 @@ def _resolve_table_hits(
     """entity 의 단어장 해석 **전부** (``ddl_transform`` 규칙 적용, 순서 보존).
 
     복수 해석(fallback prefix 로 T_X 와 TB_X 둘 다 존재 등)은 검문소 ambiguity
-    지표의 재료다 (spec 114). 엣지 생성은 종전대로 첫 해석을 쓴다 — 판정만 강화.
+    지표의 재료다. 엣지 생성은 종전대로 첫 해석을 쓴다 — 판정만 강화.
     """
     rule = getattr(transform, "ddl_naming_rule", "as_is")
     candidates = [entity]

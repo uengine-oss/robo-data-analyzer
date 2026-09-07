@@ -1,4 +1,4 @@
-"""생성 중 반복 폭주 실시간 차단 — 스트리밍 청크의 결정론 주기성 검사 (spec 080).
+"""생성 중 반복 폭주 실시간 차단 — 스트리밍 청크의 결정론 주기성 검사.
 
 배경: 약한 모델 + 탐욕 디코딩에서 "비슷한 항목의 긴 목록 + 끝점 없는 출력" 이
 공백/문구 반복 루프로 폭주한다(사건 A·B·C 실측). 기존 방어는 사후(상한·품질 게이트)라
@@ -61,7 +61,7 @@ class RepetitionLoopAborted(RuntimeError):
 
     ``partial_text`` 는 중단 시점까지 수신한 출력의 접미 tail(최대 ``TAIL_KEEP`` 자)이다.
     이것이 없으면 에러 기록이 response=None 이 되어 폭주 내용(반복 패턴)을 사후 진단할 수
-    없다(spec 116 0단계 — raw 보존).
+    없다.
     """
 
     def __init__(
@@ -73,7 +73,7 @@ class RepetitionLoopAborted(RuntimeError):
         self.partial_text = partial_text
         super().__init__(
             f"repetition loop aborted: {label} — period={period} chars, "
-            f"chars_seen={chars_seen} (spec 080)"
+            f"chars_seen={chars_seen} "
         )
 
 

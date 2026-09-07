@@ -18,18 +18,11 @@ from agents.scan_agent import _build_scan_tools, _build_user_message as scan_use
 from agents.tools.pattern_mining import make_structure_candidate_tool
 from agents.tools.sample_tools import make_sample_exploration_tools
 from agents.tools.verify_tools import make_verify_external_rule_tool
-from graph.schema.graph_nodes import CodeNode
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
 from tests.pipeline.semantic_prompt_paths import prompt_dir
 from llm.structured_output import (
     STRUCTURED_RESPONSE_NAME,
     provider_structured_output_binding_schema,
-)
-from pipeline.models.analysis_context import AnalysisContext
-from pipeline.models.data_object_usage import DataObjectUsageEvidence
-from pipeline.meaning.table.response_schema import (
-    batch_function_table_usages_response_model,
-    function_table_usages_response_model,
 )
 from pipeline.meaning.rule.meaning_frame import (
     batch_rule_meaning_response_model,
@@ -42,10 +35,6 @@ from pipeline.meaning.table.description_frame import (
     table_description_frame_response_model,
 )
 from pipeline.stages.scan.external_skills import ExternalFormatProposal
-from pipeline.meaning.semantic_frame_planner import (
-    build_code_semantic_plan,
-    semantic_concern_slots,
-)
 from pipeline.execution.run_output_context import (
     reset_response_locale,
     set_response_locale,
@@ -116,26 +105,6 @@ def _provider_tools(tools: list) -> tuple[dict, ...]:
     return tuple(convert_to_openai_tool(tool, strict=True) for tool in tools)
 
 
-def _table_usage_plan():
-    node = CodeNode(
-        id="code:orders", name="select_orders", signature="select_orders",
-        file_path="orders.sql", start_line=1, end_line=1, label="SELECT",
-    )
-    context = AnalysisContext(
-        id=node.id, signature=node.signature, file_path=node.file_path,
-        start_line=1, end_line=1,
-        reads=["db:orders"], direct_reads=["db:orders"],
-        data_object_usages=(DataObjectUsageEvidence(
-            source_id=node.id, raw_reference="orders", name="orders",
-            access="READ", evidence_file=node.file_path, evidence_line=1,
-            table_id="db:orders", resolution="exact",
-        ),),
-        extra={"ast_statements": ()},
-    )
-    profile, specs = build_code_semantic_plan(node, context)
-    return profile, semantic_concern_slots(specs)["table_usage_meanings"]
-
-
 def _summary_model(strategy: str):
     slots = (SlotSpec(
         slot_id="SL:0123456789ab:FUNCTION:WHOLE_FUNCTION:root",
@@ -194,17 +163,6 @@ def _schema_annotations(
 
 class ProductionProviderRequestInventoryTest(unittest.TestCase):
     def _inventory(self) -> tuple[ProviderRequest, ...]:
-        profile, usage_slots = _table_usage_plan()
-        usage_model = function_table_usages_response_model(
-            profile, usage_slots, ("db:orders",), (),
-        )
-        usage_assignments = {"N1": {
-            "profile": profile, "slot_specs": usage_slots,
-            "reads": ("db:orders",), "writes": (),
-        }}
-        batch_usage_model = batch_function_table_usages_response_model(
-            usage_assignments,
-        )
         rule_evidence = {
             "conditions": {"C1": "ready"},
             "effects": {"E1": {
@@ -219,8 +177,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
         }
         framework_summary = prompt_dir("framework", "code_summary")
         dbms_summary = prompt_dir("dbms", "code_summary_node")
-        framework_table = prompt_dir("framework", "code_table_usage_meanings")
-        dbms_table = prompt_dir("dbms", "code_table_usage_meanings_batch")
+        framework_table = prompt_dir("framework", "table_description")
         framework_rule = prompt_dir("framework", "code_rule_meanings")
         dbms_rule = prompt_dir("dbms", "code_rule_meanings_batch")
 
@@ -289,27 +246,6 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                 summary_values, _summary_model("dbms"),
             ),
             _yaml_request(
-                "framework_table_usage", framework_table,
-                "code_table_usage_meanings", {
-                    "assigned_table_usages": (
-                        '{"FT1":{"access_mode":"READ","occurrences":'
-                        '[{"line":1}],"table":"orders"}}'
-                    ),
-                    "code_body": "1 | SELECT * FROM orders",
-                }, usage_model, sealed_skt_calls=4,
-            ),
-            _yaml_request(
-                "dbms_table_usage", dbms_table,
-                "code_table_usage_meanings_batch", {
-                    "table_usage_packets": (
-                        '{"N1":{"assigned_table_usages":{"FT1":'
-                        '{"access_mode":"READ","occurrences":[{"line":1}],'
-                        '"table":"orders"}},"numbered_source":'
-                        '"1 | SELECT * FROM orders"}}'
-                    ),
-                }, batch_usage_model,
-            ),
-            _yaml_request(
                 "framework_rule", framework_rule, "code_rule_meanings", {
                     "rule_packet": json.dumps({
                         "source": "1 | return OK;",
@@ -342,13 +278,12 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
             ),
         )
 
-    def test_exactly_ten_boundaries_serialize_through_production_builders(self):
+    def test_exactly_eight_boundaries_serialize_through_production_builders(self):
         inventory = self._inventory()
-        self.assertEqual(10, len(inventory))
+        self.assertEqual(8, len(inventory))
         self.assertEqual({
             "scan", "external", "residual", "framework_summary",
-            "dbms_summary", "framework_table_usage", "dbms_table_usage",
-            "framework_rule", "dbms_rule", "table_description",
+            "dbms_summary", "framework_rule", "dbms_rule", "table_description",
         }, {item.name for item in inventory})
         for item in inventory:
             with self.subTest(boundary=item.name):
@@ -373,7 +308,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
                     & _FORBIDDEN_RESPONSE_KEYS,
                 )
 
-    def test_sealed_skt_plan_is_only_the_four_framework_families_and_40_calls(self):
+    def test_sealed_skt_plan_is_only_live_framework_families_and_36_calls(self):
         calls = {
             item.name: item.sealed_skt_calls
             for item in self._inventory()
@@ -381,11 +316,10 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
         }
         self.assertEqual({
             "framework_summary": 17,
-            "framework_table_usage": 4,
             "framework_rule": 17,
             "table_description": 2,
         }, calls)
-        self.assertEqual(40, sum(calls.values()))
+        self.assertEqual(36, sum(calls.values()))
 
     def test_agent_prompts_remain_compact_without_dropping_verification_gates(self):
         inventory = {item.name: item for item in self._inventory()}

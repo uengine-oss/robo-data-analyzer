@@ -51,7 +51,7 @@ class ReferencedSymbolContext:
 
 @dataclass(frozen=True)
 class ExternalEvidenceContext:
-    """One REFER_TO-linked external chunk, included whole or not at all (spec 078)."""
+    """One REFER_TO-linked external chunk, included whole or not at all."""
 
     id: str
     file_path: str
@@ -72,7 +72,7 @@ class ControlSubtreeNode:
     start: int
     end: int
     children: list["ControlSubtreeNode"] = field(default_factory=list)
-    # parser 가 소유한 조건식 원문 (spec 016 FR-003). 빈 문자열이면 그 grammar 가
+    # parser가 소유한 조건식 원문. 빈 문자열이면 그 grammar가
     # 조건을 두지 않는 노드(ELSE/default 등)다. analyzer 는 괄호 짝을 재파싱하지 않는다.
     expression: str = ""
     # parser grammar fact. Empty is backward-compatible pre-test; ``post`` is do-while.
@@ -81,7 +81,7 @@ class ControlSubtreeNode:
 
 @dataclass(frozen=True)
 class StatementFact:
-    """Routine-relative structural statement owned by the parser AST (spec 016).
+    """Routine-relative structural statement owned by the parser AST.
 
     RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT 의 좌표와 표현 원문.
     branch_inventory 가 종료행·반환식·대입·entry 의 정본으로 소비하며, analyzer 는

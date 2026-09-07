@@ -19,16 +19,16 @@ class Config:
     fetch_k: int = SETTINGS.semantic_search.fetch_k     # 채널별 후보 수 (실측: 100)
     rrf_k: int = 60                        # RRF 상수
 
-    # ── 요구사항→관련코드 뭉치 (spec 005, CE 게이트) ──
+    # ── 요구사항→관련코드 뭉치  ──
     cluster_top_n: int = 12               # 곁가지 컷: 상위 N만 핵심
     # 후보 합집합 뒤 전역 앵커를 한 번 선별한다. 과거 변형별 합집합 경로는 제거했다.
     cluster_anchor_top_n: int = int(os.environ.get("ROBO_SEARCH_ANCHOR_TOP", "3"))
     cluster_support_root_top_n: int = int(os.environ.get("ROBO_SEARCH_SUPPORT_ROOT_TOP", "12"))
     cluster_evidence_top_n: int = int(os.environ.get("ROBO_SEARCH_EVIDENCE_TOP", "15"))
-    # spec 057: 앵커 점수절벽 게이트 — top1 과의 격차가 gap 초과면 앵커 제외(상한 top_n·하한 1).
+    # : 앵커 점수절벽 게이트 — top1 과의 격차가 gap 초과면 앵커 제외(상한 top_n·하한 1).
     # 동반 입장 정책 — all_candidates(구 동작·롤백) | anchors_only | gated_direct |
     # graph_gated(기본): 비앵커는 [score ≥ top1−direct_gap] OR [앵커와 CALLS 거리 ≤ hop_gate]
-    # 일 때만 입장(이중 신호 — 점수만으로는 신호 .676 < 노이즈 .765 역전이 실측됨).
+    # 일 때만 입장(이중 신호 — 점수만으로는 신호 0.676 < 노이즈 0.765 역전이 실측됨).
     # 값은 검색 회귀 테스트가 고정한다. 새 비교 근거 없이 임의 조정하지 않는다.
     # 채택값 = 2026-07-16 골드 전수 스윕 P5 h3/r2 (research.md 표): recall 29/30(기준선 동률,
     # 유일 미스 release_stock 은 P0 도 미스) · 검증질의 노이즈 14→6 · 평균크기 18.2→15.9.
@@ -50,7 +50,7 @@ class Config:
     cluster_ce_top: int = int(os.environ.get("ROBO_SEARCH_CE_TOP", "15"))
     cluster_type_weight: float = 0.15     # 타입/stereotype 매칭 랭킹 가점 (게이트 불개입)
 
-    # spec 006 용어집 번역 게이트 — off | novel_abbrev. 승자 = novel_abbrev(게이트 실측: skt_now 구제).
+    #  용어집 번역 게이트 — off | novel_abbrev. 승자 = novel_abbrev(게이트 실측: skt_now 구제).
     cluster_rewrite_mode: str = os.environ.get("ROBO_SEARCH_REWRITE", "novel_abbrev")
     # ── CE (cluster core 게이트 재료) ──
     ce_model: str = "dragonkue/bge-reranker-v2-m3-ko"

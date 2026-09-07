@@ -97,7 +97,7 @@ class AnalysisLlmSettings:
     """
     config: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_CONFIG", ""))
     api_key: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_API_KEY", ""))
-    # 생성 중 반복 폭주 실시간 차단 (llm/repetition_guard.py, spec 080). 스트리밍 수신을
+    # 생성 중 반복 폭주 실시간 차단(llm/repetition_guard.py). 스트리밍 수신을
     # 전제하므로 스트리밍/usage 이상 진단 시에만 끄는 킬스위치 — 기본 ON.
     repetition_guard: bool = field(
         default_factory=lambda: _getenv_bool("ROBO_LLM_REPETITION_GUARD", True)
@@ -150,7 +150,7 @@ class AnalysisLlmSettings:
 
 @dataclass(frozen=True)
 class EmbeddingSettings:
-    """ROBO_EMBED_* — 임베딩 공급자 + 전송 규율 (spec 044).
+    """ROBO_EMBED_* — 임베딩 공급자 + 전송 규율.
 
     분석용 생성 LLM(``ROBO_LLM_*``)과 **완전히 분리**한다 — 하나를 바꿀 때 다른 하나가
     조용히 따라 바뀌는 사고를 막는다.
@@ -184,10 +184,9 @@ class EmbeddingSettings:
 
 @dataclass(frozen=True)
 class SemanticSearchSettings:
-    """ROBO_SEARCH_* — 검색용 생성 LLM(질의 번역) + dense 채널 (spec 044).
+    """ROBO_SEARCH_* — 검색용 생성 LLM(질의 번역) + dense 채널.
 
-    분석용 LLM 과 별도 — 검색은 판단 품질이 중요해 gpt-5.4-mini 를 쓴다(사용자 결정).
-    사내 GPU 전환은 TODO(전환 시 심판·번역 승자 구성의 성적 재측정 필수).
+    분석용 LLM 설정과 독립적으로 선택하지만 기본 배포는 같은 사내 Qwen이다.
 
     ``dense_impl`` = ``index``(Neo4j 벡터 인덱스) | ``scan``(전량 코사인). SC-002 리콜 미달 시
     ``scan`` 으로 원복하기 위한 단일 스위치 — 두 경로가 한 곳에서 교체된다.
@@ -222,15 +221,12 @@ class AnalysisRunBudgetSettings:
 
 @dataclass(frozen=True)
 class AnalysisGraphDatabaseSettings:
-    """ROBO_NEO4J_* — 클라이언트 + UNWIND 배치 + 재시도."""
+    """ROBO_NEO4J_* — 분석 결과를 공개할 Neo4j 연결."""
     uri: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_URI", "bolt://localhost:7687"))
     user: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_USER", "neo4j"))
     password: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_PASSWORD", ""))
     database: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_DATABASE", "neo4j"))
-    # (옛 unwind_batch_size 삭제 — 소비처 0건. neo4j_client 는 이 값을 읽지도 강제하지도
-    #  않았다(docstring 에서만 언급) → 설정이 거짓말을 했다. spec 046 FR-010.)
-    retry_max_attempts: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_RETRY_MAX_ATTEMPTS", 5))
-    retry_backoff_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_NEO4J_RETRY_BACKOFF_SECONDS", 2.0))
+    # 옛 unwind_batch_size는 소비처가 없고 실제 연결 경로에서도 사용되지 않아 제거했다.
 
     def __post_init__(self) -> None:
         _require_non_blank("AnalysisGraphDatabaseSettings.uri", self.uri)
@@ -238,15 +234,6 @@ class AnalysisGraphDatabaseSettings:
         _require_non_blank("AnalysisGraphDatabaseSettings.database", self.database)
         if self.database.lower() == "system":
             raise ValueError("AnalysisGraphDatabaseSettings.database cannot be system")
-        _require_positive_int(
-            "AnalysisGraphDatabaseSettings.retry_max_attempts", self.retry_max_attempts
-        )
-        _require_finite_number(
-            "AnalysisGraphDatabaseSettings.retry_backoff_seconds",
-            self.retry_backoff_seconds,
-            minimum=0,
-            inclusive=True,
-        )
 
 
 @dataclass(frozen=True)

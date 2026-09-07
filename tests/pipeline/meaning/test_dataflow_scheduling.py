@@ -18,13 +18,8 @@ from pipeline.meaning.framework_per_node import (
     _dispatch_ranks,
     run_framework_per_node_analysis,
 )
-from pipeline.meaning.batch_analyze import _analyze_batch
-from pipeline.meaning.batch_planner import Batch
 from pipeline.models.analysis_context import AnalysisContext
-from pipeline.models.code_analysis_output import BatchSummaryItem
-from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from graph.schema.graph_nodes import CodeNode
-from tests.pipeline.semantic_frame_fixtures import semantic_frame_for_node
 
 
 @dataclass
@@ -90,7 +85,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             "parent_of_edges": [],
         }
 
-        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+        async def _fake_meanings(code_id, contexts, code_by_id, strategy, **kwargs):
             analyzed = code_by_id[code_id]
             analyzed.meaning_status = "sufficient"
             on_summary_ready = kwargs.get("on_summary_ready")
@@ -103,7 +98,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             return RuleGraphResult()
 
         target = "pipeline.meaning.framework_per_node"
-        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+        with mock.patch(f"{target}.analyze_code_meanings", _fake_meanings), \
              mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             result = await run_framework_per_node_analysis(
@@ -128,7 +123,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
         started: set[str] = set()
         all_nodes_started = asyncio.Event()
 
-        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+        async def _fake_meanings(code_id, contexts, code_by_id, strategy, **kwargs):
             started.add(code_id)
             events.append(f"node:{code_id}")
             if len(started) == 2:
@@ -153,7 +148,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             return RuleGraphResult()
 
         target = "pipeline.meaning.framework_per_node"
-        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+        with mock.patch(f"{target}.analyze_code_meanings", _fake_meanings), \
              mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             await run_framework_per_node_analysis(
@@ -187,7 +182,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
         events: list[str] = []
         callee_rules_hold = asyncio.Event()   # callee 의 #2/#3 를 인위로 붙잡는다
 
-        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+        async def _fake_meanings(code_id, contexts, code_by_id, strategy, **kwargs):
             events.append(f"start:{code_id}")
             on_summary_ready = kwargs.get("on_summary_ready")
             contexts[code_id].summary = f"{code_id} 요약"
@@ -208,7 +203,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             return RuleGraphResult()
 
         target = "pipeline.meaning.framework_per_node"
-        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+        with mock.patch(f"{target}.analyze_code_meanings", _fake_meanings), \
              mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             result = await run_framework_per_node_analysis(
@@ -245,7 +240,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
         events: list[str] = []
         child_tail_hold = asyncio.Event()
 
-        async def _fake_three_split(code_id, contexts, code_by_id, strategy, **kwargs):
+        async def _fake_meanings(code_id, contexts, code_by_id, strategy, **kwargs):
             events.append(f"start:{code_id}")
             contexts[code_id].summary = f"{code_id} summary"
             on_summary_ready = kwargs.get("on_summary_ready")
@@ -266,7 +261,7 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
             return RuleGraphResult()
 
         target = "pipeline.meaning.framework_per_node"
-        with mock.patch(f"{target}.analyze_code_three_split", _fake_three_split), \
+        with mock.patch(f"{target}.analyze_code_meanings", _fake_meanings), \
              mock.patch(f"{target}.finalize_and_emit_code_result", _fake_finalize):
             from pipeline.execution.pause_controller import PauseController
             await run_framework_per_node_analysis(
@@ -281,83 +276,6 @@ class EarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertLess(events.index("summary:child"), events.index("start:parent"))
         self.assertLess(events.index("start:parent"), events.index("done:child"))
 
-
-class BatchEarlySummaryReleaseTest(unittest.IsolatedAsyncioTestCase):
-    async def test_dbms_summary_is_published_while_table_concern_is_running(self):
-        node = CodeNode(
-            id="n", signature="n()", file_path="sample.sql",
-            start_line=1, end_line=3, label="PROCEDURE",
-        )
-        ctx = AnalysisContext(
-            id="n", signature="n()", file_path="sample.sql",
-            start_line=1, end_line=3,
-            direct_reads=("db:APP.ORDERS",),
-            data_object_usages=(DataObjectUsageEvidence(
-                source_id="n",
-                raw_reference="db:APP.ORDERS",
-                name="ORDERS",
-                access="READ",
-                evidence_file="sample.sql",
-                evidence_line=2,
-                producer="linked_edges",
-                table_id="db:APP.ORDERS",
-                resolution="exact",
-            ),),
-        )
-        summary_ready = asyncio.Event()
-        table_hold = asyncio.Event()
-
-        async def _fake_collect(**kwargs):
-            if kwargs["concern"] == "summary":
-                return {
-                    "n": BatchSummaryItem(
-                        node_key="1-3", summary="업무 처리를 수행한다",
-                        stereotype="DataQuery", evidence_status="sufficient",
-                        missing_context=[],
-                        semantic_frame=semantic_frame_for_node(
-                            node, meaning="업무 처리를 수행한다",
-                        ),
-                    )
-                }
-            await table_hold.wait()
-            return {}
-
-        def _on_summaries_ready(node_ids):
-            self.assertEqual(["n"], node_ids)
-            summary_ready.set()
-
-        target = "pipeline.meaning.batch_analyze"
-        strategy = mock.Mock()
-        strategy.prompts_dir = "pipeline/meaning/dbms"
-        strategy.name = "dbms"
-        with mock.patch(f"{target}._collect_keyed_concern", _fake_collect):
-            task = asyncio.create_task(_analyze_batch(
-                Batch(parent_id=None, node_ids=("n",)),
-                {"n": ctx}, {"n": node},
-                strategy,
-                None, {}, mock.Mock(), PrioritySemaphore(64),
-                set(), set(), _on_summaries_ready,
-            ))
-            try:
-                ready_waiter = asyncio.create_task(summary_ready.wait())
-                finished, _ = await asyncio.wait(
-                    {task, ready_waiter}, timeout=1,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if task in finished:
-                    task.result()
-                self.assertIn(ready_waiter, finished, "summary-ready signal timed out")
-                self.assertEqual("업무 처리를 수행한다", node.summary)
-                self.assertEqual(
-                    "accepted",
-                    ctx.extra["summary_status"],
-                )
-                self.assertFalse(task.done(), "table-insight tail should still be running")
-            finally:
-                if 'ready_waiter' in locals() and not ready_waiter.done():
-                    ready_waiter.cancel()
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

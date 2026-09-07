@@ -128,7 +128,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
         column_descriptions=sum(len(v) for v in column_candidates.values()),
     )
     prompts_dir = semantic_prompt_dir(family="table", strategy=strategy.name)
-    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다 (spec 096).
+    # run 공유 슬롯 — step7 과 같은 세마포어를 낮은 우선순위로 쓴다.
     slots = handoff.slots
 
     async def _summarize_one(
@@ -201,7 +201,7 @@ async def enrich_table_description_step(state: dict, config: Optional[RunnableCo
 
     # 분석 합성 설명/논리명은 원본 table id에 결합한다.
     # LLM 이 반환한 db/schema/name 으로 id 를 재조립하면 오파싱(name='TB' 등)으로 불일치·유실
-    # (컬럼 경로와 동일하게 원본 fqn 사용 — spec 024). r 은 설명·논리명 내용만 쓴다.
+    # 컬럼 경로와 동일하게 원본 fqn을 사용한다. r은 설명·논리명 내용만 쓴다.
     successful_by_id = dict(successful)
     table_updates = [
         _data_object_meaning_update(

@@ -1,4 +1,4 @@
-"""wrapper 규칙 DSL → ``call_regex`` 컴파일러 (spec 108).
+"""wrapper 규칙 DSL → ``call_regex`` 컴파일러.
 
 에이전트는 빈칸(규칙 필드)만 채우고, 정규식은 여기서만 기계 생성한다.
 - 산출 정규식은 ``<entity>``·``<op_token>`` named group 을 **구조상 항상** 포함
@@ -66,7 +66,7 @@ def parse_exclusion_rule(raw: dict) -> TableAccessExclusionRule:
 def split_rules(
     rules: list[TableAccessRule],
 ) -> tuple[list[TableAccessRule], list[EmbeddedSqlRule]]:
-    """규칙을 (정규식 컴파일 대상, 임베디드 SQL) 로 분리 (spec 115).
+    """규칙을 (정규식 컴파일 대상, 임베디드 SQL) 로 분리한다.
 
     embedded_sql 은 정규식 하나로 표현되지 않는다 — 블록 추출 후 DML 의미표가
     직접 판정하는 별도 경로 (``RegexTableLinker.link(embedded_rules=…)``).

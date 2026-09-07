@@ -14,13 +14,15 @@ Parser가 만든 구조 사실을 Analyzer가 의미로 해석하여 사람이 �
 
 ## LLM 분석
 
-함수마다 독립된 세 요청을 실행한다.
+함수마다 독립된 두 요청을 실행한다.
 
 - Summary: 함수의 요약과 역할
-- Table Usage: 검증된 직접 테이블 접근의 업무 의미
 - Rule: 구조적으로 결정된 조건과 효과의 자연어 의미
 
-세 응답은 하나로 합치지 않는다. 각 결과를 자신이 소유한 함수·관계·Rule에 적용한다. 입력에는 판단에 필요한 원문과 구조만 넣고 저장 ID, 해시, 경로, byte offset, 실행 상태, 중복 설명은 넣지 않는다.
+두 응답은 하나로 합치지 않는다. 각 결과를 자신이 소유한 함수와 Rule에 적용한다. 직접 테이블 접근은
+Parser·Analyzer가 확정한 `READS`·`WRITES`와 `operations`로만 공개하며, 소비되지 않는 별도 자연어
+Table Usage 결과를 생성하지 않는다. 입력에는 판단에 필요한 원문과 구조만 넣고 저장 ID, 해시, 경로,
+byte offset, 실행 상태, 중복 설명은 넣지 않는다.
 
 ### 요청별 최소 입력
 
@@ -32,8 +34,6 @@ Parser가 만든 구조 사실을 Analyzer가 의미로 해석하여 사람이 �
 - Rule은 의미를 채울 condition·effect·row의 source 위치와 중첩 구조, 관련 source 구간 및 원문 밖
   필수 symbol·callee·Table/API 계약만 받는다. source에 이미 있는 condition/effect 문자열과 부모
   `when` 경로를 각 row에 누적 복제하지 않는다.
-- Table Usage는 확정된 Table·READ/WRITE·Column·발생 위치와 그 접근의 입력 구성·실행 조건·결과
-  소비를 판단하는 source 구간만 받는다. 무관한 함수 본문은 보내지 않는다.
 - 선택 section이 비면 section 이름과 빈 배열·객체를 모두 보내지 않는다.
 
 ### 요청별 성능 증거
@@ -45,7 +45,7 @@ prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 
 
 ### 정적 프롬프트와 출력 효율
 
-- Summary·Table Usage·Rule의 system prompt는 하나의 정본을 공유하며 실제 전송 바이트가 같아야 한다.
+- Summary·Rule의 system prompt는 하나의 정본을 공유하며 실제 전송 바이트가 같아야 한다.
   concern별 의미 지침은 고정 user prefix에 두고, 같은 금지·출력 계약을 system·user·공통 contract에
   반복하지 않는다.
 - 입력 절감은 정적 지침, 동적 evidence, response schema를 분리해 측정한다. 출력 절감은 자연어 의미와
@@ -69,6 +69,8 @@ prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 
 3. 실패하면 기존 그래프를 유지한다.
 4. 다른 서비스가 소유한 데이터는 삭제하지 않는다.
 5. API와 UI는 노드에 저장된 `code_text`를 사용한다.
+6. graph commit 뒤 receipt·성능 증거·terminal manifest까지 기록된 경우에만 `complete`를 알린다.
+7. graph는 commit됐지만 증거 봉인이 실패하면 `published_unsealed`로 명시하고 일반 완료로 숨기지 않는다.
 
 ## 구조와 이름
 
@@ -88,7 +90,11 @@ prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 
 6. GPU 모델로 약 5만 LOC를 정확히 한 번 실행해 시간·토큰·결과를 기록한다.
 7. 최종 문서, 작업 보고, 커밋과 원격 push가 완료된다.
 8. LLM 요청별 queue·first-chunk·generation·validation 지연과 입력 section 크기를 감사할 수 있다.
-9. 세 함수 의미 concern의 system prompt가 byte-identical하고 동일 정적 지시가 한 번만 존재한다.
+9. 두 함수 의미 concern의 system prompt가 byte-identical하고 동일 정적 지시가 한 번만 존재한다.
 10. 큰 Rule은 완전한 row 단위로 분할되고 모든 row·atom이 분할 전후 exact-once다.
 11. client 동시성은 배포 서버 상한과 8/16/24/32 실측 중 가장 빠른 값으로 정한다.
 12. Neo4j endpoint lookup과 readback은 label+`_id` 제약을 사용하며 누락 관계를 조용히 버리지 않는다.
+13. 정상 stop은 명시적인 `RunStopped` 경로만 허용하며 같은 시점의 실제 제품 오류를 숨기지 않는다.
+14. Rule 분할 용량은 실행 model/runtime capability에서 읽고 atomic row를 자르거나 버리지 않는다.
+15. runtime과 검증 의존성은 exact lock으로 고정하고 run seal에 lock과 실제 환경 identity를 남긴다.
+16. 최종 의미 합격은 봉인된 실제 좌표의 사람 직접 판정을 포함한다.

@@ -37,7 +37,7 @@ def rule_table_accesses(
 
     LLM 은 테이블 후보를 별도 필드로 내지 않는다 — then 의
     select/insert/update/delete/upsert("테이블") 호출이 유일한 출처이고, 귀속은 결정론
-    reads/writes 대조가 확정한다(spec 027 원칙 동일). 반환: (transport 목록,
+    reads/writes 대조가 확정한다. 반환: (transport 목록,
     미해석 테이블명 목록 — 호출측이 표면화).
     """
     from pipeline.models.rule_expression import parse_effect

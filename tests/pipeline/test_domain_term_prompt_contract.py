@@ -112,17 +112,13 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
     def test_verified_transport_overrides_are_preserved(self) -> None:
         framework = load_semantic_rule("framework", "code_summary")
         dbms = load_semantic_rule("dbms", "code_summary_node")
-        dbms_table = load_semantic_rule("dbms", "code_table_usage_meanings_batch")
         self.assertEqual("function_calling", framework["structured_output_method"])
         self.assertIsNone(dbms["structured_output_method"])
-        self.assertEqual("function_calling", dbms_table["structured_output_method"])
 
     def test_semantic_prompts_keep_task_contract_decision_and_input_order(self) -> None:
         cases = (
             ("framework", "code_summary"),
             ("dbms", "code_summary_node"),
-            ("framework", "code_table_usage_meanings"),
-            ("dbms", "code_table_usage_meanings_batch"),
             ("framework", "table_description"),
             ("dbms", "table_description"),
         )
@@ -150,52 +146,16 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             with self.subTest(relative=relative):
                 self.assertFalse((ROOT / "pipeline/meaning" / relative).exists())
 
-    def test_summary_and_table_usage_keep_distinct_input_scopes(self) -> None:
+    def test_summary_keeps_external_and_callee_input_scopes(self) -> None:
         summary = self._expanded(load_semantic_rule("framework", "code_summary"))
-        table = self._expanded(load_semantic_rule(
-            "framework", "code_table_usage_meanings",
-        ))
         self.assertIn("DIRECT CALLEE EFFECTS", summary)
         self.assertIn("LINKED PROJECT CONTRACTS", summary)
-        self.assertIn("table_description", table)
-        self.assertNotIn("table_description", summary)
-        self.assertNotIn("DIRECT CALLEE EFFECTS", table)
-        self.assertNotIn("LINKED PROJECT CONTRACTS", table)
 
-    def test_column_meaning_is_deferred_to_final_table_frame(self) -> None:
-        for strategy, name in (
-            ("framework", "code_table_usage_meanings"),
-            ("dbms", "code_table_usage_meanings_batch"),
-        ):
-            text = self._expanded(load_semantic_rule(strategy, name))
-            with self.subTest(strategy=strategy):
-                self.assertIn("COLUMN", text)
-                self.assertIn("만들지 않는다", text)
+    def test_column_meaning_is_owned_by_final_table_frame(self) -> None:
         final_table = self._expanded(load_semantic_rule(
             "framework", "table_description",
         ))
         self.assertIn("한 TABLE과 허용 COLUMN의 최종 의미", final_table)
-
-    def test_table_usage_prompts_match_the_meaning_only_response_schema(self) -> None:
-        cases = (
-            ("framework", "code_table_usage_meanings"),
-            ("dbms", "code_table_usage_meanings_batch"),
-        )
-        retired_response_wrappers = (
-            "`results`",
-            "mapped.function_table_usage_summary",
-            "insufficient.disposition_reason_code",
-            "semantic_not_derivable",
-        )
-        for strategy, name in cases:
-            text = self._expanded(load_semantic_rule(strategy, name))
-            with self.subTest(strategy=strategy):
-                exact_marker = "response_format의 모든 `FT` key를 정확히 한 번"
-                self.assertIn(exact_marker, text)
-                self.assertIn("빈 문자열", text)
-                self.assertEqual(1, text.count(exact_marker))
-                for marker in retired_response_wrappers:
-                    self.assertNotIn(marker, text)
 
 
 if __name__ == "__main__":

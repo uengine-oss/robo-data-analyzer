@@ -19,7 +19,6 @@ from pipeline.models.analysis_context import (
     StatementFact,
 )
 from pipeline.models.analysis_finding import AnalysisFinding
-from pipeline.models.data_object_usage import DataObjectUsageEvidence
 from pipeline.models.code_analysis_output import (
     BatchRulesItem,
     BatchSummaryItem,
@@ -29,8 +28,7 @@ from pipeline.models.code_analysis_output import (
 from pipeline.meaning.batch_analyze import (
     _apply_batch_summary,
     _apply_node_analysis,
-    _collect_keyed_concern,
-    _direct_table_node_ids,
+    _collect_dbms_summaries,
     _is_summary_terminal,
     _partition_keyed_items,
 )
@@ -42,7 +40,7 @@ from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
     semantic_concern_slots,
 )
-from pipeline.meaning.three_split_llm_fanout import analyze_code_three_split
+from pipeline.meaning.meaning_fanout import analyze_code_meanings
 from shared.files.source_cache import SourceFileCache
 from shared.concurrency.priority_semaphore import PrioritySemaphore
 from pipeline.models.analysis_context import ControlSubtreeNode
@@ -129,37 +127,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             finding.reasons,
         )
 
-    def test_table_usage_meaning_schedules_only_direct_rw_owner(self) -> None:
-        routine = AnalysisContext(
-            id="routine", signature="p", file_path="p.sql",
-            start_line=1, end_line=20,
-            reads=("db:T",),
-        )
-        select = AnalysisContext(
-            id="select", signature="SELECT", file_path="p.sql",
-            start_line=5, end_line=5,
-            reads=("db:T",), direct_reads=("db:T",),
-            data_object_usages=(DataObjectUsageEvidence(
-                source_id="select",
-                raw_reference="db:T",
-                name="T",
-                access="READ",
-                evidence_file="p.sql",
-                evidence_line=5,
-                producer="linked_edges",
-                table_id="db:T",
-                resolution="exact",
-            ),),
-        )
-
-        self.assertEqual(
-            ["select"],
-            _direct_table_node_ids(
-                ["routine", "select"],
-                {"routine": routine, "select": select},
-            ),
-        )
-
     def test_only_trusted_or_explicitly_rejected_summary_is_terminal(self) -> None:
         node = CodeNode(
             id="fn", name="fn", signature="fn", file_path="x.sql",
@@ -212,7 +179,7 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             _apply_node_analysis(
                 None, BatchRulesItem(
                     node_key="28-28", rules=[accepted],
-                ), None,
+                ),
                 child, child_ctx, SimpleNamespace(name="dbms"),
                 SourceFileCache(),
                 contexts={routine.id: routine_ctx, child.id: child_ctx},
@@ -250,7 +217,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             _apply_node_analysis(
                 None,
                 BatchRulesItem(node_key="1-4", rules=[]),
-                None,
                 routine,
                 context,
                 SimpleNamespace(name="dbms"),
@@ -334,11 +300,9 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             ) as run,
         ):
             with self.assertRaises(ValidationError):
-                await _collect_keyed_concern(
+                await _collect_dbms_summaries(
                     parent_id="parent",
                     node_ids=["a", "b"],
-                    concern="summary",
-                    rule_name="code_summary_node",
                     prompts_dir=Path("."),
                     contexts=contexts,
                     code_by_id=code_by_id,
@@ -402,11 +366,9 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
             "pipeline.meaning.batch_analyze.run_yaml_rule",
             side_effect=valid_output,
         ) as run:
-            result = await _collect_keyed_concern(
+            result = await _collect_dbms_summaries(
                 parent_id="parent",
                 node_ids=["a", "b"],
-                concern="summary",
-                rule_name="code_summary_node",
                 prompts_dir=Path("."),
                 contexts=contexts,
                 code_by_id=code_by_id,
@@ -455,11 +417,9 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                     side_effect=valid_output,
                 ) as run,
             ):
-                result = await _collect_keyed_concern(
+                result = await _collect_dbms_summaries(
                     parent_id=None,
                     node_ids=[node.id],
-                    concern="summary",
-                    rule_name="code_summary_node",
                     prompts_dir=Path("pipeline/meaning/dbms"),
                     contexts={node.id: context},
                     code_by_id={node.id: node},
@@ -495,7 +455,6 @@ class DbmsKeyContractTest(unittest.IsolatedAsyncioTestCase):
                 _apply_node_analysis(
                     None,
                     BatchRulesItem(node_key="1-4", rules=[]),
-                    None,
                     node,
                     context,
                     SimpleNamespace(name="dbms"),
@@ -628,7 +587,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
             node, context, summary="", stereotype="", status="insufficient",
         )
 
-        result = await analyze_code_three_split(
+        result = await analyze_code_meanings(
             "fn", {"fn": context}, {"fn": node},
             SimpleNamespace(name="framework", prompts_dir="."),
             source_cache=SourceFileCache(), precomputed_summary=output,
@@ -674,10 +633,10 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 return response_model.model_validate({"rules": []})
 
             with patch(
-                "pipeline.meaning.three_split_llm_fanout.run_yaml_rule",
+                "pipeline.meaning.meaning_requests.run_yaml_rule",
                 side_effect=no_rules,
             ):
-                result = await analyze_code_three_split(
+                result = await analyze_code_meanings(
                     "caller", {"caller": context, "callee": callee},
                     {"caller": node},
                     SimpleNamespace(name="framework", prompts_dir="."),
@@ -730,10 +689,10 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             with patch(
-                "pipeline.meaning.three_split_llm_fanout.run_yaml_rule",
+                "pipeline.meaning.meaning_requests.run_yaml_rule",
                 side_effect=unavailable,
             ):
-                result = await analyze_code_three_split(
+                result = await analyze_code_meanings(
                     "fn", {"fn": context}, {"fn": node},
                     SimpleNamespace(name="framework", prompts_dir="."),
                     source_cache=SourceFileCache(),
@@ -775,7 +734,7 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
             with self.assertRaisesRegex(ValueError, "invalid framework stereotype"):
-                await analyze_code_three_split(
+                await analyze_code_meanings(
                     "fn", {"fn": context}, {"fn": node},
                     SimpleNamespace(name="framework", prompts_dir="."),
                     source_cache=SourceFileCache(),
@@ -801,11 +760,11 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
             context.extra.setdefault("ast_statements", ())
             run = AsyncMock(side_effect=ValueError("summary invalid"))
             with patch(
-                "pipeline.meaning.three_split_llm_fanout.run_yaml_rule",
+                "pipeline.meaning.meaning_requests.run_yaml_rule",
                 new=run,
             ):
                 with self.assertRaisesRegex(ValueError, "summary invalid"):
-                    await analyze_code_three_split(
+                    await analyze_code_meanings(
                         "fn", {"fn": context}, {"fn": node},
                         SimpleNamespace(name="framework", prompts_dir="."),
                         source_cache=SourceFileCache(),
@@ -847,10 +806,10 @@ class FrameworkFailureContractTest(unittest.IsolatedAsyncioTestCase):
                 raise AssertionError(f"unexpected provider concern: {rule_name}")
 
             with patch(
-                "pipeline.meaning.three_split_llm_fanout.run_yaml_rule",
+                "pipeline.meaning.meaning_requests.run_yaml_rule",
                 side_effect=fake_rule,
             ):
-                await analyze_code_three_split(
+                await analyze_code_meanings(
                     "fn", {"fn": context}, {"fn": node},
                     SimpleNamespace(name="framework", prompts_dir="."),
                     source_cache=SourceFileCache(),

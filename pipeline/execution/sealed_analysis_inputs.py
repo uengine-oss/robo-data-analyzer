@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import metadata
 import json
+import platform
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -13,11 +15,13 @@ from pipeline.models.analysis_meta import Codebase
 from shared.files.source_cache import SourceFileCache
 
 
-SCHEMA_VERSION = "sealed-analysis-inputs/v1"
+SCHEMA_VERSION = "sealed-analysis-inputs/v2"
 _IMPLEMENTATION_DIRECTORIES = (
     "agents", "api", "graph", "integrations", "llm", "pipeline", "search", "shared",
 )
-_IMPLEMENTATION_FILES = ("main.py", "requirements.txt", "Dockerfile", "__init__.py")
+_IMPLEMENTATION_FILES = (
+    "main.py", "requirements.txt", "requirements.lock", "Dockerfile", "__init__.py",
+)
 _CONTRACT_FILES = (
     ".specify/memory/constitution.md",
     "specs/001-analyzer-redesign/README.md",
@@ -88,6 +92,27 @@ def _settings_snapshot(settings: Any) -> dict[str, Any]:
         if isinstance(section_values, dict):
             section_values.pop(field_name, None)
     return _normalize(snapshot)
+
+
+def _python_environment() -> dict[str, Any]:
+    """Record the interpreter and every installed distribution used by this process."""
+    packages = sorted(
+        {
+            str(distribution.metadata.get("Name") or "").strip().lower(): (
+                distribution.version
+            )
+            for distribution in metadata.distributions()
+            if str(distribution.metadata.get("Name") or "").strip()
+        }.items()
+    )
+    return {
+        "implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "packages": [
+            {"name": name, "version": version}
+            for name, version in packages
+        ],
+    }
 
 
 def _tree_seal(
@@ -324,6 +349,7 @@ def build_sealed_analysis_inputs(
             paths=_implementation_paths(repository_root),
             content_cache=source_cache,
         ),
+        "python_environment": _python_environment(),
         "human_glossary": _normalize(dict(human_glossary_manifest)),
         "model_runtime_capabilities": {
             "ref": str(model_runtime.artifact_path),

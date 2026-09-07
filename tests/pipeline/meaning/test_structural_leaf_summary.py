@@ -58,7 +58,7 @@ class StructuralLeafSummaryTest(unittest.IsolatedAsyncioTestCase):
         strategy = SimpleNamespace(prompts_dir="pipeline/meaning/dbms", name="dbms")
         code_by_id = {node.id: node for node in nodes}
         target = "pipeline.meaning.batch_analyze"
-        with mock.patch(f"{target}._collect_keyed_concern", _collect):
+        with mock.patch(f"{target}._collect_dbms_summaries", _collect):
             result = await _analyze_batch(
                 Batch(parent_id=None, node_ids=tuple(node.id for node in nodes)),
                 contexts, code_by_id, strategy,

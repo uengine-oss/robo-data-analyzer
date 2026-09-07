@@ -530,7 +530,7 @@ def grade_rules(
     """행 단위 채점. ``assigned`` 는 배칭 시 이번 호출의 할당 행(절대 줄) 집합.
 
     ``extra_values`` 는 프롬프트에 증거로 주입한 값 문자열(callee 반환집합·객체 쓰기
-    값·API 계약값 — spec 116 §19). 모델에게 준 증거를 "소스에 없는 창작"으로 오탐
+    값·API 계약값 —  §19). 모델에게 준 증거를 "소스에 없는 창작"으로 오탐
     거절하지 않도록 창작 검사 풀에만 합류한다 — F() 필드 원문 검사는 소스 전용 불변.
     """
     rows = inventory.table_rows()
@@ -898,4 +898,4 @@ def _grade_rule_content(
         except (LeafSyntaxError, LeafVocabularyError) as error:
             verdict.reasons.append(str(error))
     # 예시는 채점 대상이 아니다 — LLM 이 내지 않고 cond/then 에서 결정론 합성하므로
-    # (spec 116 §21) 검사할 모델 산출물이 없다. 합성 결과의 정합은 합성기 테스트가 진다.
+    #  검사할 모델 산출물이 없다. 합성 결과의 정합은 합성기 테스트가 진다.

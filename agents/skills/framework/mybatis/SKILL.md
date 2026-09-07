@@ -10,7 +10,7 @@
 - Mapper 인터페이스: ``@Mapper`` annotation 또는 ``SqlSession.selectOne(...)``
 - 호출 패턴: ``sqlSession.selectList("namespace.id", ...)`` / Mapper 메서드 직접 호출
 
-## 접근 규칙 (DSL — spec 108)
+## 접근 규칙
 
 `op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림). sqlSession 규칙의
 entity 는 첫 문자열 인자(namespace.id), Mapper 규칙의 entity 는 리시버 이름

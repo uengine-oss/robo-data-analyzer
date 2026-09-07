@@ -291,7 +291,7 @@ def store(key: str, value: Any) -> None:
     body = value.model_dump(by_alias=True) if isinstance(value, BaseModel) else value
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # 같은 키를 여러 콜이 동시에 쓸 수 있다(3분할·폴백 조각이 동시 실행).
+        # 같은 키를 여러 콜이 동시에 쓸 수 있다(관심사·폴백 조각이 동시 실행).
         # 임시 파일에 쓰고 rename 하면 반쪽 파일이 구조적으로 남을 수 없다 — 다음 run 이
         # 손상 항목을 읽고 미적중 처리하는 낭비를 원천 차단한다.
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")

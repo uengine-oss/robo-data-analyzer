@@ -1,4 +1,4 @@
-"""참조 대상 사전 — 무엇이 참조당할 수 있는가를 문자열 하나로 조회한다 (spec 081).
+"""참조 대상 사전 — 무엇이 참조당할 수 있는가를 문자열 하나로 조회한다.
 
 조각 이름표·파일 이름·경로 접미를 한 사전에 모아 두면, 링킹은 언어나 프레임워크를
 몰라도 **조회 한 번**으로 끝난다. 자바의 ``getBean("id")``, C 의 ``fopen("a/b.dat")``,
@@ -71,7 +71,7 @@ class TargetIndex:
         for record in records:
             if record.provenance != "source_span":
                 continue                      # derived 청크는 대상이 아니다 (078 계약)
-            # 조회 주소인 키만 대상이다. 스키마 필드명처럼 이름만 겹치는 키는 제외 (spec 081).
+            # 조회 주소인 키만 대상이다. 스키마 필드명처럼 이름만 겹치는 키는 제외.
             for key in record.addressable_keys:
                 self._records_by_key.setdefault(key, []).append(record)
         for file in files:

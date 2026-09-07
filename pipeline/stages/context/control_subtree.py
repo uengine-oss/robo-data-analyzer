@@ -21,7 +21,7 @@ def build_control_subtrees(
     노드(PL/SQL ``TRIGGER_BLOCK``·``DECLARE``)는 건너뛴다. 종전에는 ``parent_id`` 를 직접
     키로 써서 ``build_statement_facts`` 와 **같은 트리를 다르게 읽었고**, 그 결과 rwis 트리거
     ``TRG_INS_RDITAG_TB`` 는 IF 2개를 가지고도 분기표가 비어 규칙 0건으로 조용히 통과했다
-    (2026-08-08 실측, 헌법 IV — spec 118).
+    (2026-08-08 실측, 헌법 IV).
     """
     controls = control_structure_labels()
     by_id = {node.id: node for node in code_nodes}
@@ -82,7 +82,7 @@ def build_statement_facts(
     variables: list | None = None,
     constants: list | None = None,
 ) -> dict[str, list[StatementFact]]:
-    """Return parser-owned statement facts keyed by owning routine id (spec 016).
+    """Return parser-owned statement facts keyed by owning routine id.
 
     statement 노드의 구조 부모는 가장 안쪽 제어 노드일 수 있으므로 parent 사슬을
     올라가 소유 routine 을 찾는다. 좌표는 routine ``code_text`` 기준 1-based 로

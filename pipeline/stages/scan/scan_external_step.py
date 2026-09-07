@@ -1,4 +1,4 @@
-"""Step4 unknown-format learning and deterministic custom chunk application (spec 078).
+"""Step4 unknown-format learning and deterministic custom chunk application.
 
 The Agent only proposes span-producing skills; a deterministic verifier gate
 decides.  A freshly proposed skill is persisted for later runs only when it

@@ -173,7 +173,7 @@ class RuntimeOutputContractTest(unittest.TestCase):
             "step6.build_context",
             "step7.analyze_code",
             "step7.analyze_code.batch",
-            "step7.analyze_code.three_split",
+            "step7.analyze_code.meanings",
             "step8.enrich_table_description",
             "step8.build_search_embeddings",
         }

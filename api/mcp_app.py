@@ -4,7 +4,7 @@ FastMCP(streamable-http, stateless)를 FastAPI `/robo/mcp` 에 mount. 도구 = R
 검색 코어**(`search.ranking.graph_retriever`) 호출 — 알고리즘 사본 0(SC-005). MCP 는 최종 결과만 반환
 (진행 스트림은 프론트 REST 전용 — 사용자 합의).
 
-spec 131: ``cluster_retrieve``는 선택용 목록만, ``node_detail``은 선택한 ID의 검증된
+: ``cluster_retrieve``는 선택용 목록만, ``node_detail``은 선택한 ID의 검증된
 source-free semantic frame과 ID-deduplicated linked context를 반환한다. 두 도구 모두
 **compact 비이스케이프 JSON 텍스트** 한 벌을 반환한다.
 dict 반환 시 MCP SDK가 escape+indent 텍스트화·structuredContent 이중 전송으로 2.1배

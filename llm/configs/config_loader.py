@@ -86,6 +86,7 @@ class LLMConfig:
     timeout_seconds: int = 300
     verify_ssl: bool = True
     max_concurrency: int | None = None
+    max_rule_effects_per_request: int | None = None
 
     # ChatOpenAI 표준 sampling
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
@@ -183,6 +184,15 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
         or max_concurrency < 1
     ):
         raise RuntimeError(f"max_concurrency must be a positive integer in {source}")
+    max_rule_effects_per_request = raw.get("max_rule_effects_per_request")
+    if max_rule_effects_per_request is not None and (
+        isinstance(max_rule_effects_per_request, bool)
+        or not isinstance(max_rule_effects_per_request, int)
+        or max_rule_effects_per_request < 1
+    ):
+        raise RuntimeError(
+            f"max_rule_effects_per_request must be a positive integer in {source}"
+        )
     temperature = _require_finite_number(
         sampling_raw, "temperature", source, default=0.0
     )
@@ -212,6 +222,7 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
         timeout_seconds=timeout_seconds,
         verify_ssl=verify_ssl,
         max_concurrency=max_concurrency,
+        max_rule_effects_per_request=max_rule_effects_per_request,
         sampling=SamplingConfig(
             temperature=temperature,
             top_p=top_p,

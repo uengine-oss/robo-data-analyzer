@@ -4,7 +4,7 @@
 DBMS(DML 본문)·step5(컨텍스트 빌드)·step6(range 본문)가 공유한다. 모듈 전역 캐시는
 쓰지 않아 장수명 API 서버의 run 사이 stale 데이터를 막는다.
 
-read/decode 실패는 **조용히 넘기지 않는다** (헌법 IV / spec 131 C-023/C-027).
+read/decode 실패는 **조용히 넘기지 않는다** (헌법 IV /  C-023/C-027).
 원문을 exact하게 읽지 못하면 source↔AST closure가 성립하지 않으므로 예외를 전파한다.
 """
 from __future__ import annotations

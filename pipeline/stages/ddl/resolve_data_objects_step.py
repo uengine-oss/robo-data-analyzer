@@ -1,4 +1,4 @@
-"""Reference-scoped Catalog resolution and confirmed-only sample materialization (spec 126)."""
+"""Reference-scoped Catalog resolution and confirmed-only sample materialization."""
 from __future__ import annotations
 
 import hashlib

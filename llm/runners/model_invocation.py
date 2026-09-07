@@ -2,8 +2,7 @@
 
 용도: ``pipeline/meaning/<family>/prompts/<strategy>/<name>.yaml`` 의 룰 로딩 + LLM 호출 + Pydantic 응답.
 사용처:
-- ``pipeline/meaning`` (code_summary /
-  code_table_usage_meanings)
+- ``pipeline/meaning`` (code_summary / code_rule_meanings)
 - ``pipeline/stages/output`` (module_summary / table_description)
 
 yaml 형식 (단순)::
@@ -16,13 +15,13 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `pipeline/meaning/prompts/common_system.yaml` — 함수 의미 3분할 system 단일 진실
+    # `pipeline/meaning/prompts/common_system.yaml` — 함수 의미 system 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
-    # `pipeline/meaning/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
+    # `pipeline/meaning/<family>/prompts/<strategy>/<concern_name>.yaml` — 관심사 고유만
     extends: ../../../prompts/common_system
     user_template_specific: |
       <이 분할 고유 user_template 지침>
@@ -122,7 +121,7 @@ def _write_error_record(
 def _extract_partial_content(error: BaseException) -> str:
     """예외가 실어 온 partial response 를 추출한다 — 없으면 빈 문자열 (graceful).
 
-    지원 경로 (spec 116 0단계 — 실패 시에도 raw 를 지우지 않는다):
+    지원 경로 :
     - ``partial_text`` 속성: ``RepetitionLoopAborted`` 가 중단 시점까지의 수신 tail 을 실음.
     - pydantic ``ValidationError``: 직접 adapter나 과거 evidence에서 예외의
       ``errors()[*]['input']``에 실린 파싱 입력을 복원한다. 현행 yaml runner는 provider

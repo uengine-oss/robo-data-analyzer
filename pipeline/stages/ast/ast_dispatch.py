@@ -40,7 +40,7 @@ _DBMS_VAR_TYPES: frozenset[str] = frozenset({
 
 # (옛 ``_DBMS_EXTS`` / ``_ROUTINE_LABELS`` 삭제 — 각각 ``source_extension.DBMS_EXTS`` 와
 #  ``ontology.ROUTINE_LABELS`` 가 단일 정의처다. 종전엔 여기와 batch_analyze 가 목록을
-#  따로 들어 실제로 갈라졌다: batch_analyze 쪽엔 METHOD 가 빠져 있었다. spec 046 FR-003/FR-005.)
+#  따로 들어 실제로 갈라졌다. batch_analyze 쪽에는 METHOD가 빠져 있었다.
 
 
 from pipeline.parsing.facts.node_builders import ParseResult

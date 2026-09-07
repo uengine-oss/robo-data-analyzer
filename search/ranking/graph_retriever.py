@@ -208,7 +208,7 @@ class Retriever:
             (cid for cid in candidate_ids if not self._is_hub(cid, cfg)),
             key=lambda cid: -score[cid][1],
         )
-        # spec 057: 점수절벽 게이트 — top1 과의 격차가 anchor_gap 초과면 앵커 제외.
+        # : 점수절벽 게이트 — top1 과의 격차가 anchor_gap 초과면 앵커 제외.
         # 하한 1(top1 은 격차 0으로 항상 통과)·상한 anchor_top_n(기존). 상수는 골드 A/B 채택값.
         top_score = score[ranked_candidates[0]][1] if ranked_candidates else 0.0
         anchors = [
@@ -229,7 +229,7 @@ class Retriever:
         if cfg.cluster_expand_hops >= 1:
             # 복합 흐름의 구현이 의미순위 4~12위에 흩어지는 것이 과거 골드에서 확인됐다 —
             # 그 재현율은 직행(direct) 자격으로 지키되, 낮은 순위 후보가 무조건 자기 1홉
-            # 이웃까지 끌고 들어오던 증폭(spec 057 실측)은 정책으로 차단한다.
+            # 이웃까지 끌고 들어오던 증폭은 정책으로 차단한다.
             cand_dists: dict[str, int] = {}
             if cfg.cluster_support_policy == "graph_gated":
                 cand_dists = self._hop_distances(

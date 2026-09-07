@@ -38,7 +38,7 @@ def append_usage_record(
         agent_name: "scan" / "linking_subagent" / "rule:<rule_name>" 등.
         record: ``track_usage()`` 결과.
         cost_usd: ``compute_cost(record)`` 결과.
-        response_cache_hit: 우리 응답 캐시(spec 091)가 답을 돌려줘 서버를 부르지 않은 호출.
+        response_cache_hit: 우리 응답 캐시가 답을 돌려줘 서버를 부르지 않은 호출.
             토큰 4종과 비용은 전부 0 이고 ``latency_ms`` 는 캐시 조회 시간이다.
             **``cached_tokens`` 와 혼동 금지** — 그쪽은 서버측 프리픽스 캐시(RadixAttention)라
             성격이 다르다. 한 필드에 섞으면 회계가 거짓이 된다.

@@ -274,7 +274,8 @@ class DbmsRuleMeaningWiringTest(unittest.IsolatedAsyncioTestCase):
                 return_value=partitions,
             ),
             patch(
-                "pipeline.meaning.batch_analyze.RULE_MEANING_EFFECT_BUDGET", 1,
+                "pipeline.meaning.batch_analyze.configured_rule_effect_limit",
+                return_value=1,
             ),
             patch(
                 "pipeline.meaning.batch_analyze.run_yaml_rule",

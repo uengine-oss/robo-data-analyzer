@@ -171,7 +171,7 @@ def _walk_framework(
 ) -> None:
     """children 을 role 별 핸들러로 디스패치 (``_FW_DISPATCH``).
 
-    두 컨텍스트를 분리 스레딩한다 (spec 054 FR-008):
+    두 컨텍스트를 분리 스레딩한다 :
     - ``parent_fid``       : PARENT_OF(구조 부모). 제어문으로 내려가면 그 제어문으로 바뀐다.
     - ``owner_routine_id`` : CALLS/READS/WRITES 귀속용 소유 routine(가장 가까운 FUNCTION/METHOD).
                              제어문을 지나쳐도 바뀌지 않는다 — 호출의 주어는 언제나 함수다.
@@ -200,7 +200,7 @@ def _fw_module(child: dict, ctx: _FwCtx, module_id: str,
                parent_fid: str | None, owner_routine_id: str | None) -> None:
     """중첩 컨테이너(java 클래스·inner class) → Module 노드.
 
-    id = ``<상위 컨테이너>:<이름>`` (spec 047) — 패키지·바깥클래스 경로가 끝까지 반영된다.
+    id = ``<상위 컨테이너>:<이름>``  — 패키지·바깥클래스 경로가 끝까지 반영된다.
     """
     name = child.get("name") or ""
     sub_id = child_id(module_id, name)
@@ -225,7 +225,7 @@ def _fw_code(child: dict, ctx: _FwCtx, module_id: str,
 
 def _fw_control(child: dict, ctx: _FwCtx, module_id: str,
                 parent_fid: str | None, owner_routine_id: str | None) -> None:
-    """제어 흐름 뼈대(IF/ELSE/LOOP/SWITCH/CASE) → CodeNode (spec 007/054).
+    """제어 흐름 뼈대(IF/ELSE/LOOP/SWITCH/CASE) → CodeNode.
 
     그래프에 보존(라벨=antlr type)하되 routine 이 아니므로 분석 대상에서 제외된다
     (``ROUTINE_LABELS`` 단일 진실 — build_context/step6 가 필터). 구조 부모는 이 제어문
@@ -247,7 +247,7 @@ def _fw_statement(child: dict, ctx: _FwCtx, module_id: str,
                   parent_fid: str | None, owner_routine_id: str | None) -> None:
     """구조 statement(RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT) → CodeNode.
 
-    parser spec 016 이 emit 한 leaf 사실이다. 제어 노드와 같은 id 규칙으로 보존하되
+     이 emit 한 leaf 사실이다. 제어 노드와 같은 id 규칙으로 보존하되
     routine 이 아니므로 LLM 분석 대상에서 제외된다(ROUTINE_LABELS 단일 진실). 표현식
     원문(expression/target/operator)은 ``_make_code_node`` 가 그대로 옮긴다 — analyzer 가
     source 를 재파싱하지 않기 위한 정본이다. leaf 라 하강하지 않는다.
@@ -279,7 +279,7 @@ def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str,
     did = _node_id(child, ctx, module_id)
     ctx.result.data_types.append(_make_data_type(child, did, module_id, ctx.src_path))
     # struct / union 멤버 → Variable 노드 + PARENT_OF (모듈 대신 자료형 소속).
-    # ★ 멤버의 컨테이너는 **구조체(did)** 다 — 모듈이 아니다 (spec 047).
+    # ★ 멤버의 컨테이너는 **구조체(did)** 다 — 모듈이 아니다.
     #   종전엔 module_id 를 넘겨 구조체 이름이 id 에서 사라졌고, 그래서
     #   `member.c` 의 구조체 필드 `member_id` 가 **DB 컬럼 `member.member_id` 와 겹쳤다**.
     #   (owner_id 는 여전히 모듈 — 소속 모듈은 바뀌지 않는다.)
@@ -320,7 +320,7 @@ def _collect_internal(
     """internal 노드 → 호출/import 단서 수집 (Neo4j 노드 X).
 
     ``owner_routine_id`` = 이 호출의 주어(소유 routine). 제어문 아래에 있어도 구조 부모가
-    아니라 이 값(가장 가까운 함수)으로 caller 를 귀속시킨다 (spec 054 FR-009).
+    아니라 이 값(가장 가까운 함수)으로 caller 를 귀속시킨다.
     """
     ctype = node.get("type", "")
     sl = int(node.get("startLine") or 0)

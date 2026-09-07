@@ -32,7 +32,7 @@ ProFrame SQL_KEY 에서 TABLE R/W로 해석할 수 있는 형식과 다른 DB �
 본 R/W 형식의 별도 key가 근거다. 이름이 우연히 DDL TABLE과 같아도 시퀀스 key를 TABLE로
 투영하지 않는다.
 
-## 접근 규칙 (DSL — spec 108)
+## 접근 규칙
 
 TABLE R/W 규칙은 ``entity_not_ending: "_s"`` 로 시퀀스 변종을 거부한다(entity가 ``_s``로
 끝나는 잘못된 매치 차단). 시퀀스는 TABLE 접근 규칙에 넣지 않는다. 정규식은 코드가
@@ -64,11 +64,11 @@ ddl_transform:
   ddl_naming_rule: as_is        # entity 가 이미 DDL 테이블명 형식
   fallback_prefixes: []
 
-# 분기표 [handler] 행 — 예외 핸들러 진입 라벨 (spec 116). try/catch 대신 쓰는 매크로.
+# 분기표 [handler] 행 — 예외 핸들러 진입 라벨. try/catch 대신 쓰는 매크로.
 handler_markers:
   - PFM_CATCH
 
-# 값·객체 추적용 API 계약 (spec 116 2단계) — 문서로 보증되는 사실만, 추측 금지.
+# 값·객체 추적용 API 계약  — 문서로 보증되는 사실만, 추측 금지.
 # arg_roles 의 키는 0-based 인자 위치. 채점기가 via_call·효과 대조에 사용한다.
 api_contracts:
   - name: mpfmdbio

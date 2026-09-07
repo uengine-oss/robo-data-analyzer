@@ -240,11 +240,6 @@ class TableSemanticGroundingTest(unittest.TestCase):
         node = type("Node", (), {
             "id": "code:orders.sql:SELECT@4",
             "extra": {
-                "function_table_usages": [{
-                    "physical_table_id": "db:orders",
-                    "access_mode": "read",
-                    "function_table_usage_summary": "orders 상태를 조회한다.",
-                }],
                 "direct_column_usage_evidence_by_table": {
                     "db:orders": {"STATUS": {
                     "ownership": "sole_direct_table",
@@ -260,7 +255,6 @@ class TableSemanticGroundingTest(unittest.TestCase):
         )
         self.assertEqual([4], candidate["evidence_lines"])
         self.assertNotIn("usage_summary", candidate)
-        self.assertNotIn("function_table_usage_summary", str(columns))
 
     def test_column_evidence_survives_without_table_usage_llm_output(self):
         node = type("Node", (), {
@@ -378,30 +372,6 @@ class TableSemanticGroundingTest(unittest.TestCase):
             _replace_by_id([table], [{"id": "db:unknown"}], "logical_name")
 
     def test_table_prompts_use_the_contract_owned_by_their_output(self):
-        usage_contract = (
-            contract_path("table", "function_table_usage_contract.md")
-        ).read_text(encoding="utf-8").strip()
-        for directory, name in (
-            ("framework", "code_table_usage_meanings"),
-            ("dbms", "code_table_usage_meanings_batch"),
-        ):
-            rule = load_semantic_rule(directory, name)
-            with self.subTest(strategy=directory, rule=name):
-                self.assertEqual(
-                    usage_contract,
-                    rule["static_values"]["function_table_usage_contract"],
-                )
-                self.assertNotIn("`results`", rule["user_template"])
-                expanded = rule["user_template"].replace(
-                    "{function_table_usage_contract}", usage_contract,
-                )
-                self.assertEqual(
-                    1,
-                    expanded.count("response_format의 모든 `FT` key를 정확히 한 번"),
-                )
-                self.assertNotIn("structural_profile", rule["user_template"])
-                self.assertNotIn("applicable_slots", rule["user_template"])
-
         table_contract = (
             contract_path("table", "table_description_contract.md")
         ).read_text(
@@ -421,8 +391,8 @@ class TableSemanticGroundingTest(unittest.TestCase):
                 self.assertNotIn("`slots`", rule["user_template"])
                 self.assertIn("`logical_name`", table_contract)
                 self.assertIn("`description`", table_contract)
-        self.assertIn("잘못", usage_contract)
-        self.assertIn("좋음", usage_contract)
+        self.assertIn("잘못", table_contract)
+        self.assertIn("좋음", table_contract)
         self.assertIn("예:", table_contract)
 
 

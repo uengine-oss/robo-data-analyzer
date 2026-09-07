@@ -1,4 +1,4 @@
-"""검색 라우터 — 요구사항 → 관련 코드 뭉치 (spec 044, NDJSON 스트림).
+"""검색 라우터 — 요구사항 → 관련 코드 뭉치.
 
 ``POST /robo/search/semantic`` — 자연어 요구사항을 받아 관련 코드 뭉치를 **NDJSON 스트림**으로:
 ``progress`` × N → ``result`` → ``stream_end``. 실패는 ``error``, 결과 0건은 빈 ``clusters``.

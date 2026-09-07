@@ -1,4 +1,4 @@
-"""DML 문법 의미표 로더 + 파생 — R/W 판정의 단일 진실 (spec 106).
+"""DML 문법 의미표 로더 + 파생 — R/W 판정의 단일 진실.
 
 표는 인접 ``dml_semantics.yaml``. 소비자:
 - ``link_dbms_tables_step`` — DML 감지·write 대상 추출·dml_type

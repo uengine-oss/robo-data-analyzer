@@ -24,10 +24,8 @@ from pipeline.stages.context.external_evidence import (
 )
 from pipeline.stages.context.framework_context_builder import FrameworkContextBuilder
 from pipeline.meaning.framework_per_node import framework_analysis_targets
-from pipeline.meaning.three_split_llm_fanout import (
-    _prepare_analysis_inputs,
-    _summary_prompt_values,
-)
+from pipeline.meaning.meaning_fanout import _prepare_analysis_inputs
+from pipeline.meaning.meaning_requests import summary_prompt_values
 from shared.files.source_cache import SourceFileCache
 
 
@@ -200,10 +198,10 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
             context.file_path = str(source)
             framework_values, _inventory = _prepare_analysis_inputs(
                 context, prompt_code, {code.id: context}, {code.id: prompt_code},
-                SourceFileCache(),
+                SourceFileCache(), {},
             )
             profile, _all_specs, concerns = context.extra["_semantic_frame_plan"]
-            summary_values = _summary_prompt_values(
+            summary_values = summary_prompt_values(
                 profile,
                 concerns["summary"],
                 framework_values,

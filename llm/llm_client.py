@@ -49,7 +49,7 @@ def build_llm_client(
         temperature: temperature override (기본 ``cfg.sampling.temperature``).
         max_tokens: max_tokens override (기본 ``cfg.max_tokens``).
         streaming: True 면 ainvoke 도 내부적으로 스트리밍 수신·집계한다 — 반복 폭주
-            실시간 차단(spec 080)의 전제. OpenAI 호환 경로는 ``stream_usage=True`` 를
+            실시간 차단의 전제. OpenAI 호환 경로는 ``stream_usage=True`` 를
             함께 켜서 usage 회계(UnmeteredLlmCallError 계약)를 유지한다.
 
     Returns:

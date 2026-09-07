@@ -30,11 +30,17 @@ CURRENT_SPEC_FILES = {
 }
 
 REMOVED_IMPLEMENTATIONS = {
+    "graph/data_object_meaning.py",
     "pipeline/stages/links/calls/call_linker.py",
     "pipeline/stages/links/calls/link_calls_by_ast_step.py",
     "pipeline/stages/links/calls/link_calls_by_name_step.py",
     "pipeline/meaning/batch_prompt_values.py",
     "pipeline/meaning/range_body.py",
+    "pipeline/meaning/table/prompt_values.py",
+    "pipeline/meaning/table/response_schema.py",
+    "pipeline/meaning/table/source_projection.py",
+    "pipeline/meaning/table/table_usage.py",
+    "pipeline/parsing/resolution/verified_call_edges.py",
     "pipeline/stages/output/build_glossary_step.py",
     "pipeline/stages/output/embed_step.py",
     "pipeline/stages/output/health_metrics_step.py",
@@ -118,6 +124,29 @@ class RepositoryLayoutTest(unittest.TestCase):
 
     def test_unconsumed_historical_experiment_directory_does_not_reappear(self) -> None:
         self.assertFalse((REPO / "_artifacts").exists())
+
+    def test_production_comments_do_not_point_to_retired_numbered_specs(self) -> None:
+        import re
+
+        legacy_reference = re.compile(r"(?:parser\s+)?spec\s+[0-9]{3}", re.IGNORECASE)
+        ignored = {
+            REPO / "scripts" / "recompute_strategy_a_notation.py",
+        }
+        violations = []
+        for root_name in CURRENT_RUNTIME_DIRECTORIES - {"scripts"}:
+            for path in (REPO / root_name).rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in {
+                    ".py", ".md", ".yaml", ".yml",
+                }:
+                    continue
+                if legacy_reference.search(path.read_text(encoding="utf-8")):
+                    violations.append(path.relative_to(REPO).as_posix())
+        for path in (REPO / "scripts").glob("*.py"):
+            if path in ignored:
+                continue
+            if legacy_reference.search(path.read_text(encoding="utf-8")):
+                violations.append(path.relative_to(REPO).as_posix())
+        self.assertEqual([], sorted(violations))
 
     def test_default_data_dir_and_prompt_assets_resolve(self) -> None:
         from agents.residual_agent import _RESIDUAL_PROMPTS_DIR, _RESIDUAL_RULE

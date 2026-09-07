@@ -10,13 +10,13 @@
 - Repository: `JpaRepository<T, ID>` / `CrudRepository`
 - 호출 패턴: `repository.findBy*(...)` / `save(...)` / `delete(...)`
 
-## 접근 규칙 (DSL — spec 108)
+## 접근 규칙
 
 `op_prefixes` 는 메서드명 **prefix** 만 (suffix 는 코드가 흘림) — 매치 토큰이
 `op_mappings` 의 token 과 정확히 일치해야 한다. entity 는 리시버 이름에서
 (`orderItemRepository` → `orderItem` → ddl_transform 으로 ORDER_ITEM).
 ※ 구판의 raw 정규식은 `<entity>` group 누락으로 링킹 불가(죽은 규칙)였다 — DSL 은
-named group 을 코드가 보장하므로 재발 불가 (spec 108 이사에서 교정).
+named group 을 코드가 보장하므로 재발 불가.
 
 ```yaml
 table_access_rules:

@@ -372,7 +372,7 @@ async def _finalize(
     """에이전트 draft → 규칙 컴파일 합류 → 결정론 검증 → 최종 ``ScanResult``.
 
     DSL 규칙(``table_access_rules``)은 여기서 코드가 ``call_regex`` 로 컴파일해 raw 패턴
-    목록에 합류시킨다 (spec 108 — named group 구조 보장, 검증 관문은 하나).
+    목록에 합류시킨다.
     코드는 ``verify_table_patterns`` 로 검증만 한다. 제안한 규칙 하나라도 실패하면
     ``_apply_verdict`` 가 전체 응답을 거절한다. 컴파일/내용 실패는 즉시 raise한다.
     """

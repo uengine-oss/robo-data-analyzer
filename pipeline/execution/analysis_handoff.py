@@ -1,18 +1,17 @@
-"""AnalysisHandoff — step7 이 확정한 결과를 후처리가 배리어 없이 받아가는 run 스코프 채널
-(spec 096).
+"""AnalysisHandoff — step7이 확정한 결과를 후처리가 배리어 없이 받는 run 스코프 채널.
 
 **왜 필요한가.** LangGraph 는 노드 간 배리어가 기본이라 "step7 노드 → 후처리 노드" 순서면
 후처리는 step7 의 **마지막 콜**까지 기다린다. 그런데 후처리가 실제로 읽는 값은 step7 의
 **일부 분할**에서만 나온다 — 모듈요약·컴포넌트명·용어사전은 #1 summary 하나만 읽는다.
-#1 은 세 분할 중 가장 짧아, 전 노드의 #1 이 끝나는 시각은 노드 전체가 끝나는 시각보다
+Summary는 Rule보다 짧아, 전 노드의 Summary가 끝나는 시각은 노드 전체가 끝나는 시각보다
 한참 이르다(기준선 실측 +592 vs +692초).
 
 그 차이만큼 GPU 슬롯이 빈다. 이 채널은 **의존이 실제로 풀린 시점**을 후처리에 알려
-그 빈 슬롯을 채우게 한다. spec 082 가 step7 **안에서** 한 일(CALLS 의존을 callee summary
+그 빈 슬롯을 채우게 한다. step7 **안에서** 한 일(CALLS 의존을 callee summary
 확정 시점에 조기 해제)을 step7 **바깥**에 대해 한 번 더 하는 것이다.
 
 **무엇을 바꾸지 않는가.** 시작 시점만 바꾼다. 각 후처리는 자신이 소비하는 전 대상
-노드의 분할이 확정된 뒤에 시작하므로 프롬프트 입력 집합이 종전과 같다 — 부분 집합으로
+노드의 결과가 확정된 뒤에 시작하므로 프롬프트 입력 집합이 종전과 같다 — 부분 집합으로
 앞당겨 시작하면 용어 우주·별칭 후보·모듈 멤버 목록이 달라져 산출물이 바뀐다. 그건 이
 채널의 계약이 아니다.
 
@@ -32,7 +31,6 @@ STEP7_PRIORITY = 0
 POSTPROCESS_PRIORITY = 1
 SUMMARY_WAKE_PRIORITY = -10_000_000
 SUMMARY_LANE = "summary"
-TABLE_USAGE_MEANINGS_LANE = "table_usage_meanings"
 RULES_LANE = "rules"
 POSTPROCESS_LANE = "postprocess"
 
@@ -41,7 +39,6 @@ POSTPROCESS_LANE = "postprocess"
 # shares under contention, not reservations: an idle lane lends all capacity.
 ANALYSIS_LLM_LANE_WEIGHTS = {
     SUMMARY_LANE: 4,
-    TABLE_USAGE_MEANINGS_LANE: 1,
     RULES_LANE: 1,
     POSTPROCESS_LANE: 1,
 }

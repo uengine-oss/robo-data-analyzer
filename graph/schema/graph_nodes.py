@@ -51,7 +51,7 @@ class Schema:
 
     @property
     def id(self) -> str:
-        """``db:<db>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047)."""
+        """``db:<db>.<name>`` — DB 네임스페이스. 코드 id와 절대 겹치지 않는다."""
         return sql_schema_id(
             self.db, self.name, self.name_quoted,
             catalog=self.catalog, catalog_quoted=self.catalog_quoted,
@@ -67,12 +67,12 @@ class Table:
 
     description       = 정식 ``COMMENT ON`` / 카탈로그 (출처 = description_source).
     comment           = 테이블 위 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
-    analyzed_description = analyze_code 3분할이 합성한 설명 (분석 결과, 항상 덮어씀).
+    analyzed_description = 의미 분석이 합성한 설명 (분석 결과, 항상 덮어씀).
     """
     db: str
     schema: str
     name: str
-    logical_name: str = ""                   # 짧은 도메인 표시명(물리명과 별개) — spec 025, 빈값 미저장
+    logical_name: str = ""                   # 짧은 도메인 표시명(물리명과 별개) — , 빈값 미저장
     description: str = ""                    # COMMENT ON·-- 주석·카탈로그 1차 설명
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
     comment: str = ""                        # -- /* */ 주석 원문 (COMMENT ON 없으면 description 출처)
@@ -81,7 +81,7 @@ class Table:
     missing_context_count: int = 0
     missing_context_artifact_hash: str = ""
     table_type: str = "TABLE"                # TABLE / VIEW / MATERIALIZED_VIEW
-    view_definition: str = ""                # VIEW 의 정의 SELECT 원문 (spec 112 뷰 펼치기 재료)
+    view_definition: str = ""                # VIEW 의 정의 SELECT 원문
     # embed_step 이 채우는 의미 벡터. metadata={"vector": True} = 직렬화 소비자용
     # "dim 만 표시" 계약 표식.
     embedding: tuple[float, ...] = field(default=(), metadata={"vector": True})
@@ -95,7 +95,7 @@ class Table:
 
     @property
     def id(self) -> str:
-        """``db:<db>.<schema>.<name>`` — DB 네임스페이스 (코드 id 와 절대 안 겹침, spec 047).
+        """``db:<db>.<schema>.<name>`` — DB 네임스페이스. 코드 id와 절대 겹치지 않는다.
 
         종전엔 db·schema 가 빈값이면 ``"cart"`` 가 되어 **소스 파일 cart.c 의 id 와 충돌**했다.
         """
@@ -117,7 +117,7 @@ class Column:
 
     description       = 정식 ``COMMENT ON`` 1차 설명 (출처 = description_source).
     comment           = 컬럼 옆 ``--`` / ``/* */`` 주석 원문 — 항상 보존 (분석 입력 단서).
-    analyzed_description = analyze_code 3분할 tableInsights 가 합성한 설명.
+    analyzed_description = 테이블 통합 분석이 합성한 설명.
     """
     id: str                                  # "prod_main.PUBLIC.USERS.user_id"
     name: str                                # "user_id"
@@ -127,7 +127,7 @@ class Column:
     is_primary_key: bool = False
     is_unique: bool = False
     default_value: Optional[str] = None
-    logical_name: str = ""                   # 짧은 도메인 표시명 — spec 028, enrich_table_description 이 채움
+    logical_name: str = ""                   # 짧은 도메인 표시명 — , enrich_table_description 이 채움
                                              # (Table 과 대칭: 없으면 Neo4j 에만 있고 artifact 엔 빈값 = 검증 사각지대)
     description: str = ""                    # COMMENT ON·-- 주석 1차 설명
     description_source: str = ""             # "ddl" / "code" / "catalog" / "" — 유효 설명이 어느 칸인지
@@ -212,7 +212,7 @@ class CodeNode:
     return_type: str = ""                    # 반환 타입
     params: str = ""                         # 파라미터 목록 텍스트
 
-    # 구조 statement 표현 (parser spec 016 — listener 가 소유한 원문) ────
+    # 구조 statement 표현  ────
     expression: str = ""                     # RETURN/THROW/RAISE 식·제어 조건식 원문
     condition_timing: str = ""               # 제어 조건 평가 시점: 빈값/pre 또는 post(do-while)
     target: str = ""                         # ASSIGNMENT 좌변(lvalue) 원문

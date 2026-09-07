@@ -1,4 +1,4 @@
-"""Common, provenance-preserving data-object usage evidence (spec 126)."""
+"""Common, provenance-preserving data-object usage evidence."""
 from __future__ import annotations
 
 import json
@@ -125,7 +125,7 @@ def usages_from_parser_ast(
     qualified_columns: Sequence[Mapping[str, object]],
     evidence_version: int = 1,
 ) -> tuple[tuple[DataObjectUsageEvidence, ...], tuple[QualifiedColumnUsage, ...]]:
-    """Normalize parser spec 017 evidence and bind only exact visible qualifiers.
+    """Normalize  evidence and bind only exact visible qualifiers.
 
     The second result contains qualified references that cannot be assigned to an object owned
     by this node (for example a correlated outer alias). They remain explicit instead of being

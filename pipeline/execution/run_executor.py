@@ -60,8 +60,6 @@ from shared.events.runtime_logger import (
     redact_sensitive_text,
 )
 from shared.events.ndjson_event_stream import NDJSONStream
-from graph.neo4j_client import Neo4jClient
-from graph.product_writer import replace_product_graph
 from pipeline.models.call_resolution import normalize_call_resolution_ledger, summarize_call_resolution_ledger
 from pipeline.models.import_resolution import (
     normalize_import_resolution_ledger,
@@ -72,15 +70,16 @@ from shared.files.source_cache import SourceFileCache
 from shared.files.run_cache_context import reset_run_file_cache, set_run_file_cache
 from pipeline.execution.analysis_handoff import AnalysisHandoff, analysis_llm_slots
 from pipeline.execution.langgraph_builder import build_langgraph_workflow
-from pipeline.execution.pause_controller import PauseController
+from pipeline.execution.pause_controller import PauseController, RunStopped
 from pipeline.execution.sealed_analysis_inputs import (
     SealedAnalysisInputs,
     build_sealed_analysis_inputs,
     write_sealed_analysis_inputs,
 )
-from pipeline.publication.product_graph import (
-    ProductGraphInput,
-    build_product_graph,
+from pipeline.execution.run_publication import (
+    PublishedRunUnsealed,
+    publish_completed_run,
+    update_run_manifest,
 )
 from pipeline.execution.run_registry import clear as clear_active_run
 from pipeline.execution.run_registry import set_active as set_active_run
@@ -143,92 +142,6 @@ async def _read_final_workflow_state(app: Any, config: dict) -> dict[str, Any]:
             + ", ".join(missing)
         )
     return dict(values)
-
-
-def _build_product_graph_input(
-    *,
-    final_state: Mapping[str, Any],
-    call_resolution_ledger: Sequence[Mapping[str, Any]],
-    import_resolution_ledger: Sequence[Mapping[str, Any]],
-) -> ProductGraphInput:
-    """Bind the final workflow state to the closed product-plan contract."""
-    final_call_ledger = normalize_call_resolution_ledger(
-        final_state["call_resolution_ledger"]
-    )
-    captured_call_ledger = normalize_call_resolution_ledger(
-        call_resolution_ledger
-    )
-    if final_call_ledger != captured_call_ledger:
-        raise ValueError(
-            "final workflow call ledger differs from its sole streamed producer"
-        )
-    final_import_ledger = normalize_import_resolution_ledger(
-        final_state["import_resolution_ledger"]
-    )
-    captured_import_ledger = normalize_import_resolution_ledger(
-        import_resolution_ledger
-    )
-    if final_import_ledger != captured_import_ledger:
-        raise ValueError(
-            "final workflow import ledger differs from its sole streamed producer"
-        )
-
-    return ProductGraphInput(
-        packages=final_state["packages"],
-        modules=final_state["modules"],
-        code_nodes=final_state["code_nodes"],
-        variables=final_state["variables"],
-        constants=final_state["constants"],
-        data_types=final_state["data_types"],
-        parent_of_edges=final_state["parent_of_edges"],
-        statement_next_edges=final_state["statement_next_edges"],
-        references_edges=final_state["references_edges"],
-        init_by_edges=final_state["init_by_edges"],
-        tables=final_state["tables"],
-        columns=final_state["columns"],
-        has_column_edges=final_state["has_column_edges"],
-        foreign_key_edges=final_state["fk_edges"],
-        external_source_records=final_state["external_source_records"],
-        resolved_external_reference_links=(
-            final_state["resolved_external_reference_links"]
-        ),
-        calls_edges=final_state["calls_edges"],
-        reads_writes_edges=final_state["reads_writes_edges"],
-        rules=final_state["rules"],
-        has_rule_edges=final_state["has_rule_edges"],
-        rule_table_edges=final_state["rule_table_edges"],
-        routine_embeddings=final_state["routine_embeddings"],
-    )
-
-
-def _write_content_addressed_performance_artifact(
-    run_dir: Path,
-    payload: Mapping[str, Any],
-) -> str:
-    """Persist one canonical performance ledger and return its byte hash."""
-    encoded = (
-        json.dumps(
-            dict(payload),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()
-    artifact_dir = run_dir / "performance"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    target = artifact_dir / f"{digest}.json"
-    if target.exists():
-        if target.read_bytes() != encoded:
-            raise ValueError(
-                "content-addressed performance artifact hash collision"
-            )
-    else:
-        temporary = artifact_dir / f"{digest}.json.tmp"
-        temporary.write_bytes(encoded)
-        temporary.replace(target)
-    return digest
 
 
 def _capture_call_resolution_update(
@@ -314,6 +227,177 @@ def _state_msgpack_allowlist() -> tuple[type, ...]:
 _STATE_MSGPACK_ALLOWLIST = _state_msgpack_allowlist()
 
 
+async def _run_analysis_workflow(
+    *,
+    strategy: Any,
+    codebase: Codebase,
+    run: AnalysisRun,
+    pause: PauseController,
+    stream: NDJSONStream | None,
+    source_cache: SourceFileCache,
+    human_glossary: HumanGlossary,
+    source_ast_closure: SourceAstClosure,
+    project_input_inventory: Sequence[Any],
+    sealed_analysis_inputs: SealedAnalysisInputs,
+    run_started_at: float,
+) -> None:
+    """Run the graph workflow, close its ledgers, and publish verified output."""
+    update_run_manifest(run.run_dir, status="building")
+    response_cache.sweep()
+
+    cost_budget = CostBudget()
+    checkpointer = MemorySaver(
+        serde=JsonPlusSerializer(allowed_msgpack_modules=_STATE_MSGPACK_ALLOWLIST)
+    )
+    app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
+    llm_semaphore = analysis_llm_slots()
+    analysis_handoff = AnalysisHandoff(llm_semaphore)
+    initial_state: dict = {"run": run}
+    config = {
+        "configurable": {
+            "thread_id": run.run_id,
+            "strategy": strategy,
+            "codebase": codebase,
+            "run": run,
+            "cost_budget": cost_budget,
+            "stream": stream,
+            "pause": pause,
+            "llm_semaphore": llm_semaphore,
+            "analysis_handoff": analysis_handoff,
+            "human_glossary": human_glossary,
+            "source_ast_closure": source_ast_closure,
+            "project_input_inventory": project_input_inventory,
+            "sealed_analysis_inputs": sealed_analysis_inputs,
+            "source_cache": source_cache,
+        }
+    }
+
+    if stream is not None:
+        stream.emit({"type": "phase_event", "event": "start", "run_id": run.run_id})
+
+    stopped = False
+    call_resolution_ledger: list[dict] = []
+    call_resolution_seen = False
+    import_resolution_ledger: list[dict] = []
+    import_resolution_seen = False
+    workflow_started_at = time.monotonic()
+    workflow_node_completion_timeline: list[dict[str, Any]] = []
+    try:
+        try:
+            async for chunk in app.astream(
+                initial_state,
+                config=config,
+                stream_mode="updates",
+            ):
+                if isinstance(chunk, dict):
+                    for node_name, update in chunk.items():
+                        call_resolution_ledger, call_resolution_seen = (
+                            _capture_call_resolution_update(
+                                call_resolution_ledger,
+                                call_resolution_seen,
+                                update,
+                            )
+                        )
+                        import_resolution_ledger, import_resolution_seen = (
+                            _capture_import_resolution_update(
+                                import_resolution_ledger,
+                                import_resolution_seen,
+                                update,
+                            )
+                        )
+                        workflow_node_completion_timeline.append({
+                            "ordinal": len(workflow_node_completion_timeline),
+                            "node": str(node_name),
+                            "completed_elapsed_ms": int(
+                                (time.monotonic() - workflow_started_at) * 1000
+                            ),
+                        })
+                        if stream is not None:
+                            stream.emit({
+                                "type": "phase_event",
+                                "event": "node_done",
+                                "node": node_name,
+                            })
+                await pause.gate()
+        except RunStopped:
+            stopped = True
+            if stream is not None:
+                stream.emit({
+                    "type": "phase_event",
+                    "event": "stopped",
+                    "run_id": run.run_id,
+                })
+            log_info("run", "stopped", run_id=run.run_id)
+        except Exception:
+            try:
+                _summarize_usage(run.run_dir)
+                _summarize_analysis_findings(
+                    run.run_dir,
+                    call_resolution_ledger=call_resolution_ledger,
+                    import_resolution_ledger=import_resolution_ledger,
+                )
+                log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
+            except Exception as artifact_error:
+                log_error(
+                    "run",
+                    "dump_failure_artifacts_failed",
+                    artifact_error,
+                    stream_emit=stream.emit if stream is not None else None,
+                    run_id=run.run_id,
+                )
+            raise
+
+        if stopped:
+            update_run_manifest(run.run_dir, status="stopped")
+            return
+
+        _require_call_resolution_producer(strategy.name, call_resolution_seen)
+        _require_import_resolution_producer(import_resolution_seen)
+        _summarize_usage(run.run_dir)
+        quality_summary = _summarize_analysis_findings(
+            run.run_dir,
+            call_resolution_ledger=call_resolution_ledger,
+            import_resolution_ledger=import_resolution_ledger,
+        )
+        final_state = await _read_final_workflow_state(app, config)
+        await publish_completed_run(
+            run=run,
+            final_state=final_state,
+            call_resolution_ledger=call_resolution_ledger,
+            import_resolution_ledger=import_resolution_ledger,
+            workflow_node_completion_timeline=workflow_node_completion_timeline,
+            run_started_at=run_started_at,
+            quality_status=quality_summary["run_quality_status"],
+            stream=stream,
+        )
+
+        if stream is not None:
+            stream.emit({
+                "type": "phase_event",
+                "event": "complete",
+                "run_id": run.run_id,
+                "quality_status": quality_summary["run_quality_status"],
+                "analysis_findings": quality_summary["total"],
+            })
+        log_info(
+            "run",
+            "complete",
+            run_id=run.run_id,
+            elapsed_sec=f"{time.monotonic() - run_started_at:.1f}",
+            quality_status=quality_summary["run_quality_status"],
+            analysis_findings=quality_summary["total"],
+        )
+    finally:
+        log_info(
+            "run",
+            "llm_concurrency",
+            capacity=llm_semaphore.capacity,
+            peak_in_use=llm_semaphore.peak_in_use,
+            in_use_at_close=llm_semaphore.in_use,
+            waiting_at_close=llm_semaphore.waiting,
+        )
+
+
 async def execute_run(
     strategy: Any,
     codebase: Codebase,
@@ -331,7 +415,6 @@ async def execute_run(
     run = AnalysisRun.now(codebase=codebase, run_output_root=run_output_root)
     pause = PauseController(stream)
 
-    llm_semaphore = None
     try:
         # 단일 활성 슬롯은 output reset/Neo4j wipe보다 먼저 선점한다. 두 번째 run이
         # 파괴 작업에 진입한 뒤 control 슬롯만 덮어쓰는 경쟁을 막는다.
@@ -466,237 +549,27 @@ async def execute_run(
                 sealed_analysis_inputs.payload["ddl_files"].get("file_count", 0)
             ),
         )
-        neo_client: Neo4jClient | None = None
-        try:
-            _update_run_manifest(run.run_dir, status="building")
-
-            # 응답 캐시 정리 — 프롬프트를 고칠 때마다 다시는 안 읽히는 항목이 쌓인다.
-            # run 시작 1회, 상한 초과 시에만 실제로 지운다.
-            response_cache.sweep()
-
-            cost_budget = CostBudget()
-            # 체크포인트(msgpack)가 직렬화하는 state dataclass(CodeNode/Table/Rule/Calls 등)를
-            # 명시 allowlist 로 등록 — langgraph 가 "미등록 타입" 경고 없이 조용히 역직렬화하고,
-            # 장래 STRICT 차단에도 안전. (=True 는 "전체허용+경고"라 근본 해결 아님.)
-            checkpointer = MemorySaver(
-                serde=JsonPlusSerializer(allowed_msgpack_modules=_STATE_MSGPACK_ALLOWLIST)
-            )
-            app = build_langgraph_workflow(strategy, checkpointer=checkpointer)
-
-            # run 전체가 공유하는 **단 하나의** LLM 슬롯 (spec 096). step 마다 따로 만들면
-            # 동시 실행 시 N 배가 한 서버로 몰려 과부하 — 실측으로 닫힌 길이다.
-            # Step 7과 후처리가 같은 superstep에서 겹친다. 총량은 고정하고
-            # 의존성 Summary/Rule/TABLE/후처리를 공정 차선으로 스케줄한다.
-            llm_semaphore = analysis_llm_slots()
-            # step7 → 후처리 인계 채널 — 분할이 확정된 시점을 후처리에 알려 배리어를 없앤다.
-            analysis_handoff = AnalysisHandoff(llm_semaphore)
-
-            # 일시정지/재개/중단 컨트롤러 — control 엔드포인트가 registry 로 찾아 신호.
-            initial_state: dict = {"run": run}
-            config = {
-                "configurable": {
-                    # LangGraph Checkpointer 가 요구하는 키 — run_id 를 그대로 쓴다.
-                    "thread_id": run.run_id,
-                    "strategy": strategy,
-                    "codebase": codebase,
-                    "run": run,
-                    "cost_budget": cost_budget,
-                    "stream": stream,
-                    "pause": pause,
-                    "llm_semaphore": llm_semaphore,   # run 공유 동시성 한도 (총량 단일 진실)
-                    "analysis_handoff": analysis_handoff,  # step7 분할 확정 → 후처리 인계
-                    "human_glossary": human_glossary,
-                    "source_ast_closure": source_ast_closure,
-                    "project_input_inventory": project_input_inventory,
-                    "sealed_analysis_inputs": sealed_analysis_inputs,
-                    # ★ run 스코프 소스 캐시 (spec 046 FR-008) — 파일당 디스크 read 1회.
-                    #   종전엔 step 마다 새 인스턴스를 만들어 캐시가 무력화됐고, 같은 파일을
-                    #   한 run 에서 5~8회 읽었다 (step2 안에서만 2회).
-                    #   run 스코프라 "장수명 서버의 stale" 위험(SourceFileCache docstring)도 없다.
-                    "source_cache": source_cache,
-                }
-            }
-
-            if stream is not None:
-                # emit 안에서 logger mirror 가 자동으로 analyzer.log 에 phase_event 한 줄.
-                stream.emit({"type": "phase_event", "event": "start", "run_id": run.run_id})
-
-            # step 경계마다 pause.gate() — paused 면 다음 step 앞에서 hold, stopped 면
-            # RunStopped. stop 은 사용자 의도된 종료라 실패가 아님 → 정상 경로로 마무리.
-            stopped = False
-            call_resolution_ledger: list[dict] = []
-            call_resolution_seen = False
-            import_resolution_ledger: list[dict] = []
-            import_resolution_seen = False
-            workflow_started_at = time.monotonic()
-            workflow_node_completion_timeline: list[dict[str, Any]] = []
-            try:
-                async for chunk in app.astream(initial_state, config=config, stream_mode="updates"):
-                    if isinstance(chunk, dict):
-                        for node_name, update in chunk.items():
-                            call_resolution_ledger, call_resolution_seen = (
-                                _capture_call_resolution_update(
-                                    call_resolution_ledger,
-                                    call_resolution_seen,
-                                    update,
-                                )
-                            )
-                            import_resolution_ledger, import_resolution_seen = (
-                                _capture_import_resolution_update(
-                                    import_resolution_ledger,
-                                    import_resolution_seen,
-                                    update,
-                                )
-                            )
-                            workflow_node_completion_timeline.append({
-                                "ordinal": len(workflow_node_completion_timeline),
-                                "node": str(node_name),
-                                "completed_elapsed_ms": int(
-                                    (time.monotonic() - workflow_started_at) * 1000
-                                ),
-                            })
-                            if stream is not None:
-                                stream.emit({"type": "phase_event", "event": "node_done", "node": node_name})
-                    await pause.gate()
-            except Exception:
-                # stopped 플래그가 켜진 채 빠져나온 예외 = 사용자 중단(RunStopped / 취소된
-                # in-flight 의 래핑). 그 외 예외는 진짜 실패 → 그대로 위로 전파.
-                if not pause.status()["isStopped"]:
-                    # 실패해도 사용량 집계는 남긴다 (state artifact 덤프는 사용자 지시로 제거
-                    # — 선택된 logs 루트에는 로그·jsonl·llm-prompts만 둔다).
-                    try:
-                        _summarize_usage(run.run_dir)
-                        _summarize_analysis_findings(
-                            run.run_dir,
-                            call_resolution_ledger=call_resolution_ledger,
-                            import_resolution_ledger=import_resolution_ledger,
-                        )
-                        log_info("run", "failure_usage_summarized", run_dir=str(run.run_dir))
-                    except Exception as artifact_error:
-                        log_error(
-                            "run", "dump_failure_artifacts_failed", artifact_error,
-                            stream_emit=stream.emit if stream is not None else None,
-                            run_id=run.run_id,
-                        )
-                    raise
-                stopped = True
-                if stream is not None:
-                    stream.emit({"type": "phase_event", "event": "stopped", "run_id": run.run_id})
-                log_info("run", "stopped", run_id=run.run_id)
-
-            if not stopped:
-                _require_call_resolution_producer(strategy.name, call_resolution_seen)
-                _require_import_resolution_producer(import_resolution_seen)
-                _summarize_usage(run.run_dir)
-                quality_summary = _summarize_analysis_findings(
-                    run.run_dir,
-                    call_resolution_ledger=call_resolution_ledger,
-                    import_resolution_ledger=import_resolution_ledger,
-                )
-                final_state = await _read_final_workflow_state(app, config)
-                prepublish_wall_time_ms = int(
-                    (time.monotonic() - run_started_at) * 1000
-                )
-                prepublish_performance_artifact_hash = (
-                    _write_content_addressed_performance_artifact(
-                        run.run_dir,
-                        {
-                            "schema_version": "prepublish-performance/v1",
-                            "measurement_boundary": (
-                                "run_start_through_final_workflow_state_before_"
-                                "product_graph_build_and_publish"
-                            ),
-                            "prepublish_wall_time_ms": prepublish_wall_time_ms,
-                            "workflow_node_completion_timeline": (
-                                workflow_node_completion_timeline
-                            ),
-                        },
-                    )
-                )
-                product_graph = build_product_graph(
-                    _build_product_graph_input(
-                        final_state=final_state,
-                        call_resolution_ledger=call_resolution_ledger,
-                        import_resolution_ledger=import_resolution_ledger,
-                    )
-                )
-                neo_client = Neo4jClient()
-                publish_started_at = time.monotonic()
-                receipt = await replace_product_graph(
-                    neo_client, product_graph,
-                )
-                publish_transaction_wall_time_ms = int(
-                    (time.monotonic() - publish_started_at) * 1000
-                )
-                graph_closure = {
-                    "graph_sha256": receipt.graph_sha256,
-                    "node_count": receipt.node_count,
-                    "relationship_count": receipt.relationship_count,
-                }
-                try:
-                    _write_product_graph_receipt(run.run_dir, graph_closure)
-                    _write_content_addressed_performance_artifact(
-                        run.run_dir,
-                        {
-                            "schema_version": "postcommit-performance/v1",
-                            "prepublish_performance_artifact_hash": (
-                                prepublish_performance_artifact_hash
-                            ),
-                            "product_graph_sha256": receipt.graph_sha256,
-                            "product_node_count": receipt.node_count,
-                            "product_relationship_count": receipt.relationship_count,
-                            "publish_transaction_wall_time_ms": (
-                                publish_transaction_wall_time_ms
-                            ),
-                            "total_wall_time_ms": int(
-                                (time.monotonic() - run_started_at) * 1000
-                            ),
-                        },
-                    )
-                    _update_run_manifest(
-                        run.run_dir,
-                        status=quality_summary["run_quality_status"],
-                        graph_closure=graph_closure,
-                    )
-                except Exception as artifact_error:
-                    log_error(
-                        "run", "write_product_graph_artifact_failed", artifact_error,
-                        stream_emit=stream.emit if stream is not None else None,
-                        run_id=run.run_id,
-                    )
-
-                if stream is not None:
-                    stream.emit({
-                        "type": "phase_event",
-                        "event": "complete",
-                        "run_id": run.run_id,
-                        "quality_status": quality_summary["run_quality_status"],
-                        "analysis_findings": quality_summary["total"],
-                    })
-
-                log_info(
-                    "run",
-                    "complete",
-                    run_id=run.run_id,
-                    elapsed_sec=f"{time.monotonic() - run_started_at:.1f}",
-                    quality_status=quality_summary["run_quality_status"],
-                    analysis_findings=quality_summary["total"],
-                )
-
-            if stopped:
-                _update_run_manifest(run.run_dir, status="stopped")
-
-        except BaseException:
-            raise
-        finally:
-            if neo_client is not None:
-                await neo_client.close()
+        await _run_analysis_workflow(
+            strategy=strategy,
+            codebase=codebase,
+            run=run,
+            pause=pause,
+            stream=stream,
+            source_cache=source_cache,
+            human_glossary=human_glossary,
+            source_ast_closure=source_ast_closure,
+            project_input_inventory=project_input_inventory,
+            sealed_analysis_inputs=sealed_analysis_inputs,
+            run_started_at=run_started_at,
+        )
+    except PublishedRunUnsealed:
+        raise
     except Exception as e:
         # 파이프라인 실패 — 스트림 consumer 가 알도록 에러 emit (조용한 실패 차단).
         try:
             manifest_path = run.run_dir / "manifest.json"
             if manifest_path.is_file():
-                _update_run_manifest(run.run_dir, status="failed")
+                update_run_manifest(run.run_dir, status="failed")
             else:
                 _write_preflight_failure_manifest(run, e)
         except Exception as manifest_error:
@@ -714,14 +587,6 @@ async def execute_run(
         raise
     finally:
         clear_active_run(run.run_id)
-        if llm_semaphore is not None:
-            log_info(
-                "run", "llm_concurrency",
-                capacity=llm_semaphore.capacity,
-                peak_in_use=llm_semaphore.peak_in_use,
-                in_use_at_close=llm_semaphore.in_use,
-                waiting_at_close=llm_semaphore.waiting,
-            )
         # neo close 다음 — Windows fd 충돌 회피 위해 attach 의 역순.
         detach_run_file_handlers(file_handlers)
         if output_context_token is not None:
@@ -956,48 +821,13 @@ def _write_source_ast_closure(
     return target.resolve(), payload, hashlib.sha256(payload).hexdigest()
 
 
-def _write_product_graph_receipt(run_dir: Path, receipt: dict[str, Any]) -> None:
-    """Persist the complete verified product ledger after publication."""
-    target = run_dir / "product-graph-receipt.json"
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(target)
-
-
-def _update_run_manifest(
-    run_dir: Path,
-    *,
-    status: str,
-    graph_closure: dict[str, Any] | None = None,
-) -> None:
-    """Atomically add the terminal run status and published graph receipt."""
-    target = run_dir / "manifest.json"
-    manifest = json.loads(target.read_text(encoding="utf-8"))
-    manifest["status"] = status
-    if graph_closure is not None:
-        manifest["product_graph"] = {
-            "sha256": graph_closure["graph_sha256"],
-            "node_count": graph_closure["node_count"],
-            "relationship_count": graph_closure["relationship_count"],
-        }
-    temporary = target.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(target)
-
-
 def _summarize_usage(run_dir: Path) -> None:
     """``usage.jsonl`` → ``usage_summary.json`` 집계."""
     usage_path = run_dir / "usage.jsonl"
     if not usage_path.exists():
         return
 
-    # ``response_cache_hits`` — 응답 캐시(spec 091)가 답을 돌려준 호출 수. 적중도 ``calls``
+    # ``response_cache_hits`` — 응답 캐시가 답을 돌려준 호출 수. 적중도 ``calls``
     # 에 포함되므로 이 값이 없으면 "호출은 늘었는데 토큰은 0" 으로 보여 집계가 오해를 만든다.
     per_agent_model: dict[tuple[str, str], dict] = defaultdict(lambda: {
         "input_tokens": 0,

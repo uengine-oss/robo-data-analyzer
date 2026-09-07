@@ -1,4 +1,4 @@
-"""PrioritySemaphore — 총량이 고정된 우선순위 슬롯 (spec 096).
+"""PrioritySemaphore — 총량이 고정된 우선순위 슬롯.
 
 ``asyncio.Semaphore`` 는 FIFO 다. 한 run 안에서 **급한 일과 덜 급한 일이 같은 슬롯을
 나눠 쓸 때** FIFO 는 나중에 도착한 급한 일을 먼저 도착한 덜 급한 일 뒤에 세운다.

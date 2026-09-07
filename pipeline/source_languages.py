@@ -4,7 +4,7 @@
 ``지원 언어가 무엇인가``라는 같은 변경 이유를 가지며 ``ontology_roles.yaml``을 데이터
 단일 진실로 사용한다. parser 지원과 lexing-only 지원은 서로 다른 능력이므로 분리한다.
 
-★ 왜 단일 정의처여야 하나 (spec 046 FR-003 — 실제로 갈라져 있던 사고):
+★ 왜 단일 정의처여야 하나:
 ``strategy_detector`` 가 자기 목록(``.kt .go .ts .js .rb .rs .php .scala .cpp .hpp`` 포함
 14종)을 따로 들고 있어서, ``.kt`` 만 있는 프로젝트가 "framework" 로 판정된 뒤 파싱에서
 전 파일 스킵 → **노드 0개짜리 분석이 "성공"으로 끝났다.** 두 곳이 같은 목록을 봐야 한다.
@@ -223,7 +223,7 @@ def statement_effect_ops() -> dict[str, str]:
 
 @lru_cache(maxsize=1)
 def dml_effect_ops() -> dict[str, str]:
-    """ontology ``dml_effect_ops`` — DML 구문 종류 → Rule 직접 효과 op (spec 119).
+    """ontology ``dml_effect_ops`` — DML 구문 종류 → Rule 직접 효과 op.
 
     step5 링커가 DML 노드마다 만든 (테이블, dml_type) 사실을 rule 효과 어휘로 옮기는
     유일한 지점이다. 미선언 dml_type 의 처리는 **소비자가 좌표와 함께 실패**한다 —
@@ -239,7 +239,7 @@ def callsite_labels() -> frozenset[str]:
 
     framework 는 parser 가 호출을 노드가 아닌 call_site 로 내보내므로 이 집합이 비어 있고,
     DBMS 는 ``CALL`` 이 실제 CodeNode 다. 모든 언어 값의 합집합을 돌려준다 —
-    소비자는 언어를 분기하지 않는다(spec 119).
+    소비자는 언어를 분기하지 않는다.
     """
     languages = _load_ontology().get("callsite_labels") or {}
     return frozenset(
@@ -262,7 +262,7 @@ def unsupported_construct_patterns(lang: str) -> dict[str, str]:
 def statement_labels() -> frozenset[str]:
     """Return every structural-statement label declared by the language ontology.
 
-    parser spec 016 이 emit 하는 RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT.
+    Parser가 emit하는 RETURN/THROW/RAISE/BREAK/CONTINUE/GOTO/LABEL/ASSIGNMENT를 반환한다.
     routine 도 branch 도 아니므로 LLM 분석 대상에서 제외되고, branch_inventory 가
     종료행·반환식·대입의 AST 정본으로 소비한다.
     """
@@ -354,7 +354,7 @@ def complement_owner_types(lang: str) -> frozenset[str]:
 
 @lru_cache(maxsize=None)
 def alternative_clause_types(lang: str) -> frozenset[str]:
-    """부모 판정의 **본문이 아니라 대안 절**인 canonical 제어 타입 (spec 118 §2.3).
+    """부모 판정의 **본문이 아니라 대안 절**인 canonical 제어 타입.
 
     PL/SQL parser 는 ``ELSIF``/``ELSE`` 를 ``IF`` 의 자식으로 낸다(평면 형상). 이 사실이
     없으면 조상 사슬이 부모 조건을 "성립"으로 상속해 경로가 정반대가 된다
@@ -629,7 +629,7 @@ def exclude_contradicted_stereotype(
 ) -> tuple[str, str | None]:
     """결정론 근거와 모순인 stereotype 을 ``Unclassified``로 닫는다.
 
-    실측(spec 116 7단계): 쓰기 근거가 있는 함수가 Query 류로 서술되는 오답은 의미
+    실측: 쓰기 근거가 있는 함수가 Query 류로 서술되는 오답은 의미
     판단이 아니라 사실 모순이다. 모순된 역할을 공개하지 않되, 계약된 ontology의
     불확정 값을 써서 summary/stereotype 결합 존재 규칙을 보존한다.
     """
@@ -637,20 +637,3 @@ def exclude_contradicted_stereotype(
     if has_writes and stereotype in forbidden:
         return "Unclassified", f"{stereotype} 는 결정론 쓰기 근거와 모순 (write_forbidden)"
     return stereotype, None
-
-
-@lru_cache(maxsize=1)
-def _module_stereotype_values() -> dict[str, tuple[str, ...]]:
-    data = _load_ontology()
-    return {
-        "framework": tuple(data.get("module_framework") or []),
-        "dbms": tuple(data.get("module_dbms") or []),
-    }
-
-
-def module_stereotype_values(strategy: str) -> tuple[str, ...]:
-    """Legacy module role labels retained only so graph cleanup can remove them."""
-    values = _module_stereotype_values().get(strategy)
-    if values is None:
-        raise ValueError(f"unknown module stereotype strategy: {strategy!r}")
-    return values

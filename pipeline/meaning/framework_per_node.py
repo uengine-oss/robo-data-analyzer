@@ -2,12 +2,12 @@
 
 순서:
 1. prompt 수신자 ``ctx.callees`` + PARENT_OF → 공용 summary 의존 계획.
-2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 (spec 079, 라운드 배리어 제거):
+2. 의존 그래프(callee→caller) 구성 — dataflow 스케줄 :
    의존이 풀린 코드노드부터 즉시 분석하고 상태와 NDJSON 진행 이벤트를 만든다.
    CALLS와 PARENT_OF 모두 하위 summary 확정 신호로 조기 해제한다. Rule/table 완료는
    상위 입력 계약이 아니다. 투입 순서는 critical-path
    rank 내림차순(긴 사슬·큰 노드 우선) — 전부 산출물 불변인 스케줄 결정이다.
-3. 각 코드노드 = summary/rule-atom/table-usage LLM concern. Rule 구조와 관계는 결정론으로 만든다.
+3. 각 코드노드 = Summary/Rule meaning LLM concern. Rule 구조와 관계는 결정론으로 만든다.
 
 결합 SCC 내부 코드노드 → 순환 callee summary 없이 분석 (``is_in_cycle=True`` 메타).
 """
@@ -26,8 +26,8 @@ from pipeline.execution.pause_controller import PauseController
 
 # (dbms 엔진은 여기서 import 하지 않는다 — 전략이 주입한다(analysis_pipelines). 헌법 II.)
 from pipeline.meaning.analysis_order import plan_summary_dependencies
-from pipeline.meaning.three_split_llm_fanout import (
-    analyze_code_three_split,
+from pipeline.meaning.meaning_fanout import (
+    analyze_code_meanings,
 )
 from shared.config.app_settings import SETTINGS
 from pipeline.meaning.rule.rule_graph import RuleGraphResult
@@ -44,7 +44,7 @@ from pipeline.meaning.result_sink import finalize_and_emit_code_result
 
 
 def framework_analysis_targets(code_nodes: list) -> set[str]:
-    """Framework 가 실제로 분석하는 노드 = routine 라벨만 (spec 054 FR-005).
+    """Framework 가 실제로 분석하는 노드 = routine 라벨만.
 
     이 엔진과 ``build_context_step`` 이 같은 답을 봐야 해서 여기 한 곳에 둔다 —
     분석 대상 밖 노드는 아래에서 컨텍스트에서 빠지므로 어느 렌더에서도 조회되지 않는다.
@@ -65,7 +65,7 @@ async def run_framework_per_node_analysis(
     source_cache: SourceFileCache,
     handoff: AnalysisHandoff,
 ) -> dict:
-    """Framework 분석 엔진 — 코드노드 **1개당** 3분할 fan-out (per-node).
+    """Framework 분석 엔진 — 코드노드별 Summary/Rule fan-out.
 
     ``run_dbms_batch_analysis`` 와 **동일 시그니처** — 전략이 둘 중 하나를 주입한다
     (``Strategy.code_analyzer``). 호출부(``analyze_code_step``)는 어느 쪽인지 모른다.
@@ -74,7 +74,7 @@ async def run_framework_per_node_analysis(
     """
     started = time.monotonic()
 
-    # 0. 분석 대상 = routine 만 (spec 054 FR-005). parser 007 이 emit 하는 제어문(IF/LOOP/…)은
+    # 0. 분석 대상 = routine만. Parser가 emit하는 제어문(IF/LOOP/…)은
     #    reader 가 그래프에 CodeNode 로 보존하지만 routine 이 아니므로 LLM 분석에서 제외한다.
     #    ``ROUTINE_LABELS`` 가 단일 진실(DBMS batch 와 동일) — 소비자마다 if 분기 흩뿌리지 않는다.
     #    이 한 곳에서 걸러 all_ids/rounds/accounting/return 이 모두 routine 기준으로 흐른다.
@@ -112,7 +112,7 @@ async def run_framework_per_node_analysis(
     # Rule 결과와 관계는 코드노드 단위로 만들어져 step 마지막에 state로 반영한다.
     # Rule 정체성과 exact-once 검증은
     # 최종 제품 계획이 소유하므로 여기서 중복을 숨기지 않는다.
-    # run 공유 슬롯 — 후처리와 **같은 세마포어**를 쓴다(spec 096). step7 은 우선순위 0
+    # run 공유 슬롯 — 후처리와 **같은 세마포어**를 쓴다. step7 은 우선순위 0
     # 이라 후처리보다 항상 먼저 슬롯을 잡는다. 총량은 종전과 같다(값 = max_concurrency).
     semaphore = handoff.slots
     handoff.expect(contexts.keys())
@@ -142,7 +142,7 @@ async def run_framework_per_node_analysis(
             node = code_by_id.get(fid)
             if node is not None:
                 # 후처리(모듈요약·컴포넌트명·용어사전)는 이 시점의 필드만 읽는다 — 노드
-                # 완료가 아니라 여기서 인계해야 step7 의 빈 슬롯을 채울 수 있다 (spec 096).
+                # 완료가 아니라 여기서 인계해야 step7 의 빈 슬롯을 채울 수 있다.
                 handoff.publish_summary(node)
 
         def _ready() -> list[str]:
@@ -163,7 +163,7 @@ async def run_framework_per_node_analysis(
                 ready = _ready()
                 if warm_id is None and ready:
                     # 첫 Summary만 cache prefix를 만든다. 다른 Summary는 이 완료 신호를
-                    # 기다리지만, 모든 노드의 Rule/Table concern은 즉시 시작한다.
+                    # 기다리지만, 모든 노드의 Rule concern은 즉시 시작한다.
                     warm_id = ready[0]
 
                 for fn_id in ready:
@@ -320,7 +320,7 @@ def _accumulate_rule_graph(acc: RuleGraphResult, value: RuleGraphResult) -> None
     """코드노드 단위 Rule graph를 round 누적 결과에 합친다.
 
     state는 발생 결과를 그대로 누적하고 최종 제품 계획이 중복을 검증한다.
-    Rule 노드 id 는 ``<function id>::R<anchor>`` (anchor 좌표 정체성, spec 116).
+    Rule 노드 id 는 ``<function id>::R<anchor>``이며 anchor 좌표가 정체성이다.
 
     새 필드 추가 시 ``RuleGraphResult``의 list 필드면 자동 누적 — dataclass의
     ``fields`` 가 단일 진실.
@@ -359,7 +359,7 @@ async def _analyze_one(
 ):
     """코드노드 1개 분석 — track_processing 이 start/done/failed 자동 emit (stream 인자 chain X)."""
     async with track_processing("CodeNode", fn_id):
-        return await analyze_code_three_split(
+        return await analyze_code_meanings(
             fn_id, contexts, code_by_id, strategy,
             cost_budget=cost_budget,
             table_descriptions=table_descriptions,

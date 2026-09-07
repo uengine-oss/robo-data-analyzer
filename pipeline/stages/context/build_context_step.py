@@ -463,7 +463,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     read_dml_tables_by_fn: dict[str, set[str]] = {}
     # **루틴의 R/W 는 자기 자손 구문이 하는 R/W 를 포함한다.** DBMS 는 DML 이 루틴의
     # 자식 CodeNode 라 링커가 그 노드에 엣지를 단다(그래프 계약은 그대로 유지). 그런데
-    # rule 의무 행의 소유자는 루틴이므로(spec 117), 루틴의 허용 테이블이 자기 줄만 담으면
+    # rule 의무 행의 소유자는 루틴이므로, 루틴의 허용 테이블이 자기 줄만 담으면
     # 자손 DML 에서 온 정당한 효과가 "결정론 R/W 집합에 없음"으로 거절된다
     # (2026-08-08 실측: findings 21건 전부 이 원인). 자손 구문은 callee 가 아니라 그 루틴의
     # 본문이므로 04 §3.2 의 "callee R/W 오귀속 금지"에 걸리지 않는다.
@@ -514,7 +514,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     statement_facts = build_statement_facts(
         code_nodes, state.get("variables", []), state.get("constants", []),
     )
-    # parser FUNCTION_CALL 좌표 (spec 016) — branch 직접 호출 귀속의 AST 정본.
+    # parser FUNCTION_CALL 좌표  — branch 직접 호출 귀속의 AST 정본.
     # (routine 상대 1-based line, 호출명) 쌍. source 정규식 `이름(` 재탐색을 대체한다.
     parser_call_sites = list(state.get("call_sites", []) or [])
     complete_call_ledger = normalize_call_resolution_ledger(
@@ -542,7 +542,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
     table_ops_by_fn = _table_op_lines(code_nodes)
     for fn in code_nodes:
         # 원문은 step2 가 이미 채웠다 (code_text) — 같은 (file,start,end) 를 여기서 다시
-        # 잘라내지 않는다 (spec 046 FR-007: 슬라이싱 계산은 한 곳). 없을 때만 캐시에서 슬라이스
+        # 잘라내지 않는다. 없을 때만 캐시에서 슬라이스
         # (code_text 가 빈 경우 = 소스 read 실패 — FR-004 가 이미 경고를 남겼다).
         body_text = raw_node_text(fn) or body_cache.slice(
             fn.file_path, fn.start_line, fn.end_line
@@ -583,7 +583,7 @@ async def build_context_step(state: dict, config: Optional[RunnableConfig] = Non
             ctx.extra["table_identity_aliases"] = table_aliases_by_fn[fn.id]
         if fn.id in control_subtrees:
             ctx.extra["control_subtree"] = control_subtrees[fn.id]
-        # parser 소유 구조 statement 정본 (spec 016) — branch_inventory 가 종료행·
+        # parser 소유 구조 statement 정본  — branch_inventory 가 종료행·
         # 반환식·대입·entry 를 이것으로만 조립한다. statement 가 없는 routine 도
         # "없음"이 사실이므로 빈 튜플을 명시 제공한다(source 재탐색 금지).
         ctx.extra["ast_statements"] = tuple(statement_facts.get(fn.id, ()))

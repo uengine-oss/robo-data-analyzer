@@ -1,4 +1,4 @@
-"""노드 식별자 단일진실 — **네임스페이스 + 위치 기반** (spec 047).
+"""노드 식별자 단일진실 — **네임스페이스 + 위치 기반**.
 
 ★ 왜 네임스페이스인가 (실제로 터진 사고)
 ─────────────────────────────────────────
@@ -27,7 +27,7 @@ Neo4j 의 UNIQUE 제약은 **라벨별**이라 이걸 못 막는다. 그 결과 
   (종전엔 구조체 이름이 빠져 구조체 필드와 전역변수가 겹쳤다).
 - **DB**가 db·스키마·테이블·컬럼의 유일성을 보장한다.
 
-★ id 는 **불투명한 열쇠**다 (spec 047 FR-006)
+★ id 는 **불투명한 열쇠**다.
 ────────────────────────────────────────────
 **id 를 잘라 부모·이름을 알아내지 마라.** 소속은 노드 속성(``owner_id``)이나
 관계(``HAS_COLUMN``/``PARENT_OF``)로 찾는다. id 를 뜯는 순간 id 규칙에 묶여
@@ -85,7 +85,7 @@ def project_file_id(project: str, rel_path: str) -> str:
 
 
 def external_chunk_id(file_id: str, char_start: int, char_end: int) -> str:
-    """Return the span-scoped identity of one external semantic chunk (spec 078)."""
+    """Return the span-scoped identity of one external semantic chunk."""
     fid = _normalized_text(file_id, "file_id")
     if not fid.startswith(FILE_NS):
         raise ValueError(f"file_id must use {FILE_NS!r} namespace")
@@ -98,7 +98,7 @@ def external_chunk_id(file_id: str, char_start: int, char_end: int) -> str:
 
 
 def derived_chunk_id(file_id: str, ordinal: int) -> str:
-    """Identity for a derived-document chunk, which has no source span (spec 078)."""
+    """Identity for a derived-document chunk, which has no source span."""
     fid = _normalized_text(file_id, "file_id")
     if not fid.startswith(FILE_NS):
         raise ValueError(f"file_id must use {FILE_NS!r} namespace")

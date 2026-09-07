@@ -1,4 +1,4 @@
-"""Per-routine external evidence selection (spec 078).
+"""Per-routine external evidence selection.
 
 Only the routine's outgoing external ``REFERENCES`` targets are selected. Every linked
 chunk is re-verified against its stored hash and preserved whole.  Provider

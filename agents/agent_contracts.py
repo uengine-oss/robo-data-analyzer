@@ -94,7 +94,7 @@ class TableAccessExclusionPattern(StrictAgentOutput):
     call_regex: str = Field(..., min_length=1, description="compiled source shape")
 
 
-# ── wrapper 규칙 DSL (spec 108/115) — 닫힌 템플릿 4종. 조합 문법 금지 ──
+# ── wrapper 규칙 DSL  — 닫힌 템플릿 4종. 조합 문법 금지 ──
 #
 # 에이전트는 빈칸(필드)만 채우고, 정규식은 ``agents/rule_compiler.py`` 가 기계 생성한다
 # → <entity>·<op_token> named group 이 구조상 보장돼 "죽은 규칙"(entity 누락)이 재발 불가.
@@ -176,7 +176,7 @@ class SqlFragmentRule(StrictAgentOutput):
 
 
 class EmbeddedSqlRule(StrictAgentOutput):
-    """구분자(울타리)로 둘러싸인 SQL 블록 — Pro*C/COBOL/ABAP 류 임베디드 SQL (spec 115).
+    """구분자(울타리)로 둘러싸인 SQL 블록 — Pro*C/COBOL/ABAP 류 임베디드 SQL.
 
     예: ``EXEC SQL UPDATE orders SET ... END-EXEC``
     → delimiter_start="EXEC SQL", delimiter_end="END-EXEC"
@@ -248,7 +248,7 @@ class CallWrapper(StrictAgentOutput):
 
 
 class ApiContract(StrictAgentOutput):
-    """프레임워크 API 의 문서 보증 값 계약 (spec 116 §19 — SKILL fence 전용).
+    """프레임워크 API 의 문서 보증 값 계약.
 
     SKILL 카드 ``api_contracts`` fence 를 그대로 옮겨 담는다 — 추측으로 채우지 않는다.
     rules 프롬프트에 "소스만 봐서는 모르는 값 사실"(성공 판정값·인자 역할)로 주입되고,
@@ -359,7 +359,7 @@ class ScanResult(StrictAgentOutput):
     matched_skill: Optional[str] = Field(None, description="매칭된 SKILL 이름 또는 null")
 
     # 결정론 grep 용 — 구조화 규칙(DSL, 우선) + raw 정규식(탈출구, 4종 템플릿 불가 시만).
-    # 규칙은 코드(_finalize)가 컴파일해 patterns 에 합류 — 검증·링킹 관문은 하나 (spec 108).
+    # 규칙은 코드(_finalize)가 컴파일해 patterns 에 합류 — 검증·링킹 관문은 하나다.
     table_access_rules: list[
         WrapperKeyRule | MethodCallRule | SqlFragmentRule | EmbeddedSqlRule
     ] = Field(
@@ -384,7 +384,7 @@ class ScanResult(StrictAgentOutput):
     # ``call_classifier`` 가 wrapper 호출을 만나면 인자를 추출해 Calls 엣지로 정합.
     call_wrappers: list[CallWrapper] = Field(default_factory=list)
 
-    # 분기표 종료문 행용 — 예외 핸들러 진입 라벨/매크로 (spec 116 1단계 [handler] 행).
+    # 분기표 종료문 행용 — 예외 핸들러 진입 라벨/매크로.
     # SKILL fence 계약이 있으면 그 값으로 결정론 덮어쓰기 — 추측으로 채우지 않는다.
     handler_markers: list[str] = Field(
         default_factory=list,
@@ -394,7 +394,7 @@ class ScanResult(StrictAgentOutput):
         ),
     )
 
-    # 값 사실 주입용 — 프레임워크 API 의 문서 보증 값 계약 (spec 116 §19).
+    # 값 사실 주입용 — 프레임워크 API 의 문서 보증 값 계약.
     # SKILL fence 계약이 있으면 그 값으로 결정론 덮어쓰기 — 추측으로 채우지 않는다.
     api_contracts: list[ApiContract] = Field(
         default_factory=list,

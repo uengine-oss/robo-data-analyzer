@@ -24,11 +24,11 @@ def build_control_inventory(
     """
     statements = ctx.extra.get("ast_statements")
     if statements is None:
-        # parser statement 계약(spec 016) 부재는 corpus/배선 결함 — source 재탐색으로
+        # parser statement 계약 부재는 corpus/배선 결함 — source 재탐색으로
         # 복원하지 않고 좌표와 함께 실패한다 (No Silent Failure).
         raise ValueError(
             f"ast_statements missing for {fn.id!r} — "
-            "step6 build_statement_facts 가 모든 routine 에 명시 제공해야 한다 (spec 016)"
+            "step6 build_statement_facts 가 모든 routine 에 명시 제공해야 한다 "
         )
     return build_inventory(
         cache.slice(ctx.file_path, ctx.start_line, ctx.end_line),
@@ -44,7 +44,7 @@ def build_control_inventory(
         ),
         statements=statements,
         call_occurrences=ctx.extra.get("ast_call_occurrences") or (),
-        # DBMS DML 효과 좌표 (spec 119). framework 는 키가 없어 빈 튜플이다.
+        # DBMS DML 효과 좌표. framework는 키가 없어 빈 튜플이다.
         table_ops=ctx.extra.get("ast_table_ops") or (),
     )
 
@@ -55,7 +55,7 @@ def routine_inventory(
     code_by_id: Mapping[str, CodeNode],
     cache: SourceFileCache,
 ) -> tuple[CodeNode, BranchInventory]:
-    """rule 의무의 실제 소유자(루틴)와 그 분기표 (spec 117).
+    """rule 의무의 실제 소유자(루틴)와 그 분기표.
 
     statement/control 사실의 생산자가 루틴 id 로만 집계하므로, 배치 노드가 루틴이 아니면
     자기 좌표로 분기표를 만들 수 없다. 소유 루틴으로 올라가 한 번 만들고, 행 배분은

@@ -108,7 +108,9 @@ class SealedAnalysisInputsTest(unittest.TestCase):
             (repository / directory / "owned.py").write_text(
                 f"OWNER = {directory!r}\n", encoding="utf-8",
             )
-        for file_name in ("main.py", "requirements.txt", "Dockerfile", "__init__.py"):
+        for file_name in (
+            "main.py", "requirements.txt", "requirements.lock", "Dockerfile", "__init__.py",
+        ):
             (repository / file_name).write_text(
                 f"fixture={file_name}\n", encoding="utf-8",
             )
@@ -200,6 +202,13 @@ class SealedAnalysisInputsTest(unittest.TestCase):
         self.assertEqual("test-runtime", runtime_values["serving_runtime_id"])
         self.assertEqual("test-gpu", runtime_values["gpu_model"])
         self.assertEqual("driver-1", runtime_values["driver_runtime_version"])
+        self.assertEqual("CPython", first.payload["python_environment"]["implementation"])
+        self.assertTrue(first.payload["python_environment"]["packages"])
+        implementation_files = {
+            item["relative_path"]
+            for item in first.payload["analyzer_implementation"]["files"]
+        }
+        self.assertIn("requirements.lock", implementation_files)
         self.assertNotIn("must-not-enter-seal", json.dumps(first.as_dict()))
 
     def test_changed_answer_key_is_rejected_at_seal_boundary(self) -> None:

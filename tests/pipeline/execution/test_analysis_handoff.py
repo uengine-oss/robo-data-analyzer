@@ -14,7 +14,6 @@ from pipeline.execution.analysis_handoff import (
     AnalysisHandoff,
     AnalysisHandoffAborted,
     ANALYSIS_LLM_LANE_WEIGHTS,
-    TABLE_USAGE_MEANINGS_LANE,
     RULES_LANE,
     SUMMARY_LANE,
     analysis_llm_slots,
@@ -144,7 +143,7 @@ class SharedLlmAdmissionTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                SUMMARY_LANE, RULES_LANE, TABLE_USAGE_MEANINGS_LANE,
+                SUMMARY_LANE, RULES_LANE,
                 "postprocess",
             },
             set(ANALYSIS_LLM_LANE_WEIGHTS),
