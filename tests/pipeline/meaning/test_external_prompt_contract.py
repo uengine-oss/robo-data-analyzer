@@ -6,13 +6,22 @@ the Summary user contract, avoiding a duplicate system instruction.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from llm.runners.prompt_values import _safe_format
 from tests.pipeline.semantic_prompt_paths import load_semantic_rule
 
 
-RULES = ("code_summary", "code_table_usage_meanings")
+ROOT = Path(__file__).resolve().parents[3]
+RULES = (
+    ("framework", "code_summary"),
+    ("dbms", "code_summary_node"),
+    ("framework", "code_rule_meanings"),
+    ("dbms", "code_rule_meanings_batch"),
+    ("framework", "code_table_usage_meanings"),
+    ("dbms", "code_table_usage_meanings_batch"),
+)
 
 
 class ExternalPromptContractTest(unittest.TestCase):
@@ -24,13 +33,28 @@ class ExternalPromptContractTest(unittest.TestCase):
         self.assertNotIn("{summary_context}", table.get("user_template", ""))
 
     def test_system_prefix_is_static_and_byte_identical_across_loads(self) -> None:
-        for rule_name in RULES:
-            with self.subTest(rule=rule_name):
-                first = load_semantic_rule("framework", rule_name).get("system", "")
-                second = load_semantic_rule("framework", rule_name).get("system", "")
+        systems = []
+        for strategy, rule_name in RULES:
+            with self.subTest(strategy=strategy, rule=rule_name):
+                first = load_semantic_rule(strategy, rule_name).get("system", "")
+                second = load_semantic_rule(strategy, rule_name).get("system", "")
                 self.assertEqual(first.encode("utf-8"), second.encode("utf-8"))
                 # system 텍스트에 남은 미치환 placeholder 가 없어야 실행 간 byte 동일이 보장된다.
                 self.assertEqual(first, _safe_format(first, {}))
+                systems.append(first.encode("utf-8"))
+        self.assertEqual(1, len(set(systems)))
+
+    def test_semantic_system_has_one_canonical_file(self) -> None:
+        for relative in (
+            "summary/prompts/framework/_common.yaml",
+            "rule/prompts/framework/_common.yaml",
+            "table/prompts/framework/_common.yaml",
+            "table/prompts/dbms/_common.yaml",
+        ):
+            with self.subTest(relative=relative):
+                self.assertFalse(
+                    (ROOT / "pipeline" / "meaning" / relative).exists()
+                )
 
     def test_summary_contract_describes_live_external_packet_once(self) -> None:
         rule = load_semantic_rule("framework", "code_summary")

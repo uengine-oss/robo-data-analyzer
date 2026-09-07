@@ -1,5 +1,5 @@
 ## DBMS single effective-AST node — complete structural-fact semantic frame.
-extends: ../framework/_common
+extends: ../../../prompts/common_system
 inherit_inputs: false
 shared_values:
   summary_grounding_contract: ../common/summary_grounding_contract.md
@@ -18,9 +18,6 @@ user_template_specific: |
   ## [OUTPUT CONTRACT — exact node summary]
 
   최상위에는 response_format이 required로 지정한 `summary`, `stereotype`만 각각 정확히 한 번 출력한다.
-  `summary`는 원문을 행별 번역하지 않는다.
-  입력·조건별 처리·직접 CALL/RW·반환과 상태 변화를 실행 순서대로 한 흐름으로 설명하되,
-  현재 CodeNode 밖의 부모·형제·callee 내부 책임은 복사하지 않는다.
 
   ## [DECISION — DBMS stereotype]
 

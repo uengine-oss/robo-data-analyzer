@@ -87,7 +87,10 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("node._owner = $owner", all_queries)
         self.assertIn("relationship._owner = $owner", all_queries)
-        self.assertIn("MATCH (source {_id: item.source_id})", all_queries)
+        self.assertIn("MATCH (source:METHOD {_id: item.source_id})", all_queries)
+        self.assertIn("MATCH (target:RULE {_id: item.target_id})", all_queries)
+        self.assertIn("MATCH (node:METHOD {_id: id, _owner: $owner})", all_queries)
+        self.assertNotIn("MATCH (source {_id: item.source_id})", all_queries)
         self.assertIn("relationship[item.from_column_key]", all_queries)
         self.assertIn("SET node = item", all_queries)
 

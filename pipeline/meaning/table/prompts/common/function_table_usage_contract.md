@@ -16,7 +16,3 @@ Analyzer가 직접 테이블 접근을 `(table, access_mode)`별 `FT`로 확정�
 response_format의 모든 `FT` key를 정확히 한 번 채우고 다른 key를 만들지 않는다.
 
 잘못: “T 테이블을 READ한다.” 좋음: “승인 전 요청의 현재 상태를 확인한다.”
-
-## [SELF CHECK]
-
-각 값이 직접 사용 목적만 담고 모든 FT key가 한 번씩 있는지 확인한다.

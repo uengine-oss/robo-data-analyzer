@@ -392,7 +392,13 @@ class TableSemanticGroundingTest(unittest.TestCase):
                     rule["static_values"]["function_table_usage_contract"],
                 )
                 self.assertNotIn("`results`", rule["user_template"])
-                self.assertIn("FT key exact required map", rule["user_template"])
+                expanded = rule["user_template"].replace(
+                    "{function_table_usage_contract}", usage_contract,
+                )
+                self.assertEqual(
+                    1,
+                    expanded.count("response_format의 모든 `FT` key를 정확히 한 번"),
+                )
                 self.assertNotIn("structural_profile", rule["user_template"])
                 self.assertNotIn("applicable_slots", rule["user_template"])
 

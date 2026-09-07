@@ -85,6 +85,7 @@ class LLMConfig:
     max_tokens: int = 8192
     timeout_seconds: int = 300
     verify_ssl: bool = True
+    max_concurrency: int | None = None
 
     # ChatOpenAI 표준 sampling
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
@@ -175,6 +176,13 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
         raise RuntimeError(f"verify_ssl must be boolean in {source}")
     max_tokens = _require_positive_integer(raw, "max_tokens", source, default=8192)
     timeout_seconds = _require_positive_integer(raw, "timeout_seconds", source, default=300)
+    max_concurrency = raw.get("max_concurrency")
+    if max_concurrency is not None and (
+        isinstance(max_concurrency, bool)
+        or not isinstance(max_concurrency, int)
+        or max_concurrency < 1
+    ):
+        raise RuntimeError(f"max_concurrency must be a positive integer in {source}")
     temperature = _require_finite_number(
         sampling_raw, "temperature", source, default=0.0
     )
@@ -203,6 +211,7 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
         max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
         verify_ssl=verify_ssl,
+        max_concurrency=max_concurrency,
         sampling=SamplingConfig(
             temperature=temperature,
             top_p=top_p,

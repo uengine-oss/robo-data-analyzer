@@ -118,7 +118,7 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
 
     def test_each_rule_places_fixed_contract_before_variable_target_input(self) -> None:
         # RadixAttention은 첫 변동 지점까지만 재사용한다. 같은 concern의 모든 대상이 긴 고정
-        # 계약을 공유하도록 분할 계약을 TARGET/SOURCE보다 앞에 두고, 행 증거는 맨 뒤에 둔다.
+        # 계약을 공유하도록 분할 계약을 TARGET/SOURCE보다 앞에 두고, 동적 증거는 맨 뒤에 둔다.
         for strategy, names in (
             ("framework", ("code_summary", "code_table_usage_meanings")),
             ("dbms", ("code_summary_node", "code_table_usage_meanings_batch")),
@@ -135,7 +135,12 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                     for contract_marker in ("[OUTPUT CONTRACT", "[DECISION"):
                         self.assertIn(contract_marker, expanded)
                     if "summary" not in name:
-                        self.assertIn("[SELF CHECK]", expanded)
+                        self.assertEqual(
+                            1,
+                            expanded.count(
+                                "response_format의 모든 `FT` key를 정확히 한 번"
+                            ),
+                        )
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
 
         self.assertFalse(

@@ -1,5 +1,5 @@
 ## DBMS split 3 — exact atom meanings for batched Rule projection.
-extends: ../framework/_common
+extends: ../../../prompts/common_system
 inherit_inputs: false
 structured_output_method: function_calling
 shared_values:

@@ -1,5 +1,0 @@
-## Framework direct table-usage meaning envelope.
-system: |
-  TARGET의 직접 테이블 접근 목적을 배정된 table·READ/WRITE·발생 줄·exact SOURCE에서만
-  추출합니다. 접근 구조를 바꾸거나 함수 전체 요약·Rule·COLUMN 의미·callee 내부 절차·이름에서
-  추측한 업무 뜻을 만들지 마십시오. response_format 외 필드는 출력하지 마십시오.

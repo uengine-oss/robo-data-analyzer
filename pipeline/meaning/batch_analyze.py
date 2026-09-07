@@ -40,7 +40,10 @@ from pipeline.meaning.source_outline import render_source_outline
 from pipeline.meaning.three_split_llm_fanout import (
     _direct_callee_effects_by_id,
     _project_referenced_symbols,
+    _rule_input_counts,
     _run_frame_summary,
+    _summary_input_counts,
+    _table_input_counts,
 )
 from pipeline.source_languages import ROUTINE_LABELS
 from pipeline.meaning.table.rule_tables import (
@@ -74,8 +77,10 @@ from pipeline.meaning.rule.row_batching import (
     materialize_and_validate_rules,
 )
 from pipeline.meaning.rule.meaning_frame import (
+    RULE_MEANING_EFFECT_BUDGET,
     batch_rule_meaning_response_model,
     build_rule_meaning_packet,
+    partition_rule_meaning_evidence,
     prepare_rule_meaning_assignment,
     project_batch_rule_meanings,
     unavailable_rule_meaning_projections,
@@ -714,6 +719,15 @@ async def _collect_keyed_concern(
                                 "source": len(summary_values["code_body"]),
                                 "context": len(summary_values["summary_context"]),
                             },
+                            "input_counts": _summary_input_counts(
+                                profile, slot_specs, analysis_inputs,
+                            ),
+                            "waiting_before": waiting_before,
+                            "slots_in_use": llm_slots.in_use,
+                            "lane_slots_in_use": llm_slots.in_use_for(
+                                SUMMARY_LANE
+                            ),
+                            "slots_capacity": llm_slots.capacity,
                         },
                     )
 
@@ -777,6 +791,19 @@ async def _collect_keyed_concern(
     queued_at = time.monotonic()
     waiting_before = llm_slots.waiting
     payload_chars = sum(len(str(value)) for value in values.values())
+    table_packets = json.loads(values["table_usage_packets"])
+    table_counts = {
+        "nodes": len(table_packets),
+        "table_usages": 0,
+        "occurrences": 0,
+        "source_lines": 0,
+    }
+    for packet in table_packets.values():
+        packet_counts = _table_input_counts(
+            packet["assigned_table_usages"], packet["relevant_source"],
+        )
+        for key in ("table_usages", "occurrences", "source_lines"):
+            table_counts[key] += packet_counts[key]
     queue_lane = TABLE_USAGE_MEANINGS_LANE
     async with llm_slots.at(queue_priority, queue_lane):
         queue_wait_ms = round((time.monotonic() - queued_at) * 1000, 3)
@@ -807,6 +834,11 @@ async def _collect_keyed_concern(
                 "payload_chars": payload_chars,
                 "node_count": len(node_ids),
                 "input_sections": {"table_packets": payload_chars},
+                "input_counts": table_counts,
+                "waiting_before": waiting_before,
+                "slots_in_use": llm_slots.in_use,
+                "lane_slots_in_use": llm_slots.in_use_for(queue_lane),
+                "slots_capacity": llm_slots.capacity,
             },
         )
     output = normalize_batch_function_table_usages_response(
@@ -900,8 +932,7 @@ async def _collect_dbms_rule_meanings(
         )
         for node_key, node_id in key_to_id.items()
     }
-    packets = {}
-    active_assignments: dict[str, dict[str, object]] = {}
+    active_partitions: dict[str, tuple[dict[str, object], ...]] = {}
     unavailable_keys: set[str] = set()
     for node_key, node_id in key_to_id.items():
         assignment = assignments[node_key]
@@ -914,10 +945,49 @@ async def _collect_dbms_rule_meanings(
         if not conditions and not effects:
             unavailable_keys.add(node_key)
             continue
-        context = contexts[node_id]
-        active_assignments[node_key] = evidence
-        packets[node_key] = build_rule_meaning_packet(
-                evidence,
+        active_partitions[node_key] = partition_rule_meaning_evidence(evidence)
+
+    units: list[tuple[str, int, dict[str, object]]] = [
+        (node_key, partition_index, partition)
+        for node_key, partitions in active_partitions.items()
+        for partition_index, partition in enumerate(partitions)
+    ]
+    request_groups: list[list[tuple[str, int, dict[str, object]]]] = []
+    current_group: list[tuple[str, int, dict[str, object]]] = []
+    current_effects = 0
+    for unit in units:
+        unit_effects = len(unit[2].get("effects") or {})
+        if current_group and current_effects + unit_effects > RULE_MEANING_EFFECT_BUDGET:
+            request_groups.append(current_group)
+            current_group = []
+            current_effects = 0
+        current_group.append(unit)
+        current_effects += unit_effects
+    if current_group:
+        request_groups.append(current_group)
+
+    projected_by_partition: dict[tuple[str, int], tuple] = {}
+
+    async def _run_dbms_rule_group(
+        group: list[tuple[str, int, dict[str, object]]], group_index: int,
+    ) -> None:
+        local_assignments = {
+            f"N{index}": partition
+            for index, (_node_key, _partition_index, partition)
+            in enumerate(group, start=1)
+        }
+        local_owners = {
+            f"N{index}": (node_key, partition_index)
+            for index, (node_key, partition_index, _partition)
+            in enumerate(group, start=1)
+        }
+        packets = {}
+        for local_key, partition in local_assignments.items():
+            node_key, _partition_index = local_owners[local_key]
+            node_id = key_to_id[node_key]
+            context = contexts[node_id]
+            packets[local_key] = build_rule_meaning_packet(
+                partition,
                 referenced_symbols=context.referenced_symbols,
                 callee_effects_by_id=_direct_callee_effects_by_id(
                     context, dict(contexts),
@@ -925,13 +995,8 @@ async def _collect_dbms_rule_meanings(
                 table_descriptions=table_descriptions,
                 api_contracts=tuple(context.extra.get("api_contracts") or ()),
             )
-
-    projected_by_key = {}
-    model_error: ModelOutputError | None = None
-    if active_assignments:
         values = {
-            # Batch owner is trace metadata, not model input.
-            "target_id": parent_id or next(iter(active_assignments)),
+            "target_id": parent_id or key_to_id[group[0][0]],
             "rule_packets": json.dumps(
                 packets,
                 ensure_ascii=False,
@@ -939,48 +1004,63 @@ async def _collect_dbms_rule_meanings(
                 separators=(",", ":"),
             ),
         }
+        rule_counts = {
+            "nodes": len(packets), "conditions": 0, "effects": 0,
+            "rows": 0, "used_symbols": 0,
+            "partition_index": group_index,
+            "partition_count": len(request_groups),
+        }
+        for packet in packets.values():
+            packet_counts = _rule_input_counts(packet)
+            for key in ("conditions", "effects", "rows", "used_symbols"):
+                rule_counts[key] += packet_counts[key]
         queued_at = time.monotonic()
         waiting_before = llm_slots.waiting
         try:
             async with llm_slots.at(0, RULES_LANE):
                 queue_wait_ms = round((time.monotonic() - queued_at) * 1000, 3)
                 log_info(
-                    _STEP,
-                    "llm_slot_acquired",
-                    concern="rules",
-                    lane=RULES_LANE,
-                    parent_id=parent_id,
-                    node_count=len(active_assignments),
+                    _STEP, "llm_slot_acquired", concern="rules", lane=RULES_LANE,
+                    parent_id=parent_id, node_count=len(local_assignments),
                     payload_chars=len(values["rule_packets"]),
-                    queue_wait_ms=queue_wait_ms,
-                    waiting_before=waiting_before,
-                    slots_in_use=llm_slots.in_use,
-                    slots_capacity=llm_slots.capacity,
+                    queue_wait_ms=queue_wait_ms, waiting_before=waiting_before,
+                    slots_in_use=llm_slots.in_use, slots_capacity=llm_slots.capacity,
                 )
                 output = await run_yaml_rule(
-                    prompts_dir=semantic_prompt_dir(
-                        family="rule", strategy="dbms",
-                    ),
+                    prompts_dir=semantic_prompt_dir(family="rule", strategy="dbms"),
                     rule_name="code_rule_meanings_batch",
                     user_values=values,
-                    response_model=batch_rule_meaning_response_model(active_assignments),
+                    response_model=batch_rule_meaning_response_model(local_assignments),
                     budget=cost_budget,
                     request_metrics={
-                        "concern": "rules",
-                        "lane": RULES_LANE,
+                        "concern": "rules", "lane": RULES_LANE,
                         "queue_wait_ms": queue_wait_ms,
                         "payload_chars": len(values["rule_packets"]),
-                        "node_count": len(active_assignments),
-                        "input_sections": {
-                            "rule_packets": len(values["rule_packets"]),
-                        },
+                        "node_count": len(local_assignments),
+                        "input_sections": {"rule_packets": len(values["rule_packets"])},
+                        "input_counts": rule_counts,
+                        "waiting_before": waiting_before,
+                        "slots_in_use": llm_slots.in_use,
+                        "lane_slots_in_use": llm_slots.in_use_for(RULES_LANE),
+                        "slots_capacity": llm_slots.capacity,
                     },
                 )
-            projected_by_key = project_batch_rule_meanings(
-                output, active_assignments,
-            )
+            local_results = project_batch_rule_meanings(output, local_assignments)
+            for local_key, projections in local_results.items():
+                projected_by_partition[local_owners[local_key]] = projections
         except ModelOutputError as error:
-            model_error = error
+            for local_key, partition in local_assignments.items():
+                projected_by_partition[local_owners[local_key]] = (
+                    unavailable_rule_meaning_projections(
+                        partition, reason=str(error),
+                    )
+                )
+
+    if request_groups:
+        await asyncio.gather(*(
+            _run_dbms_rule_group(group, index)
+            for index, group in enumerate(request_groups, start=1)
+        ))
 
     items: dict[str, BatchRulesItem] = {}
     findings: dict[str, list[AnalysisFinding]] = {}
@@ -1008,21 +1088,15 @@ async def _collect_dbms_rule_meanings(
                 target_scope=node_id,
                 count_call=False,
             )
-        elif model_error is not None:
-            assignment = assignments[node_key]
-            collection = apply_rule_meaning_projections(
-                collection,
-                (
-                    *unavailable_rule_meaning_projections(
-                        assignment.model_evidence, reason=str(model_error),
-                    ),
-                    *assignment.deterministic_projections,
-                ),
-                target_scope=node_id,
-            )
         else:
             assignment = assignments[node_key]
-            model_projections = projected_by_key.get(node_key, ())
+            model_projections = tuple(
+                projection
+                for partition_index in range(len(active_partitions.get(node_key, ())))
+                for projection in projected_by_partition.get(
+                    (node_key, partition_index), ()
+                )
+            )
             collection = apply_rule_meaning_projections(
                 collection,
                 (
@@ -1030,7 +1104,7 @@ async def _collect_dbms_rule_meanings(
                     *assignment.deterministic_projections,
                 ),
                 target_scope=node_id,
-                count_call=bool(model_projections),
+                count_call=len(active_partitions.get(node_key, ())),
             )
         items[node_id] = item.model_copy(update={"rules": collection.rules})
         if collection.findings:

@@ -51,9 +51,24 @@ async def replace_product_graph(
     nodes_by_label: dict[str, list[dict[str, object]]] = defaultdict(list)
     for node in graph.nodes:
         nodes_by_label[node.label].append(node.write_properties())
-    relationships_by_type: dict[str, list[dict[str, object]]] = defaultdict(list)
+    node_label_by_id = {node.node_id: node.label for node in graph.nodes}
+    relationships_by_shape: dict[
+        tuple[str, str, str], list[dict[str, object]]
+    ] = defaultdict(list)
     for relationship in graph.relationships:
-        relationships_by_type[relationship.relationship_type].append({
+        try:
+            source_label = node_label_by_id[relationship.source_id]
+            target_label = node_label_by_id[relationship.target_id]
+        except KeyError as error:
+            raise ProductWriteError(
+                "product relationship endpoint is absent from the product graph: "
+                f"{relationship.source_id!r} -> {relationship.target_id!r}"
+            ) from error
+        relationships_by_shape[(
+            relationship.relationship_type,
+            source_label,
+            target_label,
+        )].append({
             "source_id": relationship.source_id,
             "target_id": relationship.target_id,
             "properties": relationship.write_properties(),
@@ -108,7 +123,11 @@ RETURN count(node) AS written
                     f"{label} write count differs: {row['written']} != {len(items)}"
                 )
 
-        for relationship_type, items in sorted(relationships_by_type.items()):
+        for (
+            relationship_type,
+            source_label,
+            target_label,
+        ), items in sorted(relationships_by_shape.items()):
             merge = (
                 "MERGE (source)-[relationship:FK {_owner: $owner, "
                 "from_column: item.properties.from_column, "
@@ -120,8 +139,8 @@ RETURN count(node) AS written
             result = await transaction.run(
                 f"""
 UNWIND $items AS item
-MATCH (source {{_id: item.source_id}})
-MATCH (target {{_id: item.target_id}})
+MATCH (source:{source_label} {{_id: item.source_id}})
+MATCH (target:{target_label} {{_id: item.target_id}})
 {merge}
 SET relationship = item.properties
 RETURN count(relationship) AS written
@@ -136,46 +155,56 @@ RETURN count(relationship) AS written
                     f"{row['written']} != {len(items)}"
                 )
 
-        node_result = await transaction.run(
-            """
+        matched_nodes = 0
+        for label, items in sorted(nodes_by_label.items()):
+            node_result = await transaction.run(
+                f"""
 UNWIND $ids AS id
-MATCH (node {_id: id, _owner: $owner})
+MATCH (node:{label} {{_id: id, _owner: $owner}})
 RETURN count(node) AS matched
 """,
-            ids=[node.node_id for node in graph.nodes],
-            owner=GRAPH_OWNER,
-        )
-        node_row = await node_result.single(strict=True)
-        if int(node_row["matched"]) != len(graph.nodes):
+                ids=[str(item["_id"]) for item in items],
+                owner=GRAPH_OWNER,
+            )
+            node_row = await node_result.single(strict=True)
+            matched_nodes += int(node_row["matched"])
+        if matched_nodes != len(graph.nodes):
             raise ProductWriteError("product node readback is incomplete")
 
-        relationship_result = await transaction.run(
-            """
+        matched_relationships = 0
+        for (
+            relationship_type,
+            source_label,
+            target_label,
+        ), grouped_items in sorted(relationships_by_shape.items()):
+            relationship_result = await transaction.run(
+                f"""
 UNWIND $items AS item
-MATCH (source {_id: item.source_id})
+MATCH (source:{source_label} {{_id: item.source_id}})
       -[relationship]->
-      (target {_id: item.target_id})
-WHERE type(relationship) = item.relationship_type
+      (target:{target_label} {{_id: item.target_id}})
+WHERE type(relationship) = $relationship_type
   AND relationship._owner = $owner
-  AND (item.relationship_type <> 'FK' OR (
+  AND ($relationship_type <> 'FK' OR (
     relationship[item.from_column_key] = item.from_column
     AND relationship[item.to_column_key] = item.to_column
   ))
 RETURN count(relationship) AS matched
 """,
-            items=[{
-                "relationship_type": relationship.relationship_type,
-                "source_id": relationship.source_id,
-                "target_id": relationship.target_id,
-                "from_column": relationship.properties.get("from_column"),
-                "to_column": relationship.properties.get("to_column"),
-                "from_column_key": "from_column",
-                "to_column_key": "to_column",
-            } for relationship in graph.relationships],
-            owner=GRAPH_OWNER,
-        )
-        relationship_row = await relationship_result.single(strict=True)
-        if int(relationship_row["matched"]) != len(graph.relationships):
+                relationship_type=relationship_type,
+                items=[{
+                    "source_id": item["source_id"],
+                    "target_id": item["target_id"],
+                    "from_column": item["properties"].get("from_column"),
+                    "to_column": item["properties"].get("to_column"),
+                    "from_column_key": "from_column",
+                    "to_column_key": "to_column",
+                } for item in grouped_items],
+                owner=GRAPH_OWNER,
+            )
+            relationship_row = await relationship_result.single(strict=True)
+            matched_relationships += int(relationship_row["matched"])
+        if matched_relationships != len(graph.relationships):
             raise ProductWriteError("product relationship readback is incomplete")
 
         return ProductWriteReceipt(

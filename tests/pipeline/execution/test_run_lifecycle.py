@@ -225,6 +225,14 @@ class UsageSummaryContractTest(unittest.TestCase):
                         "output_tokens": index * 10,
                         "payload_chars": index * 400,
                         "input_sections": {"source": index * 300},
+                        "input_counts": {
+                            "source_lines": index * 10,
+                            "structure_nodes": index * 3,
+                        },
+                        "waiting_before": index,
+                        "slots_in_use": 2,
+                        "lane_slots_in_use": 1,
+                        "slots_capacity": 32,
                         "largest_observed_stage": "stream_generation",
                     },
                 }
@@ -240,11 +248,23 @@ class UsageSummaryContractTest(unittest.TestCase):
                 (run_dir / "usage_summary.json").read_text(encoding="utf-8")
             )["request_performance"]
 
-        self.assertEqual(2, summary["calls"])
+        self.assertEqual(2, summary["attempted_calls"])
+        self.assertEqual(2, summary["succeeded_calls"])
+        self.assertEqual(0, summary["failed_calls"])
         self.assertEqual(
             {"stream_generation": 2}, summary["largest_observed_stage_counts"],
         )
-        self.assertEqual("code:2", summary["slowest_requests"][0]["target_id"])
+        self.assertEqual("code:2", summary["slowest_by"]["model"][0]["target_id"])
+        self.assertEqual(
+            {"source_lines": 20, "structure_nodes": 6},
+            summary["slowest_by"]["model"][0]["input_counts"],
+        )
+        self.assertEqual(
+            1.0,
+            summary["per_rule"][0]["input_counts"]["source_lines"][
+                "to_model_latency"
+            ],
+        )
         self.assertEqual(
             1.0,
             summary["per_rule"][0]["correlations"][

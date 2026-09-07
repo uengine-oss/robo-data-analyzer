@@ -30,6 +30,11 @@ RuleProjectionStatus = Literal[
     "sufficient", "partial", "insufficient", "not_business", "unavailable",
 ]
 
+# A response-obligation budget, not a target-name exception or retry threshold.
+# In the sealed 44,143 LOC run every request below 150 effects completed, while
+# all three stalls were in the 173+ effect group. A row remains atomic.
+RULE_MEANING_EFFECT_BUDGET = 128
+
 
 def rule_meaning_response_model(
     condition_keys: Iterable[str],
@@ -172,8 +177,9 @@ def build_rule_meaning_packet(
 
     Internal occurrence IDs, source ranges, resolution diagnostics, file paths,
     hashes, graph IDs, and repeated active/effect status are intentionally absent.
-    Resolved callee/API/table context is attached to the effect that consumes it so
-    the model never joins private IDs or searches an unrelated context list.
+    Each call keeps its exact source statement; the old packet discarded arguments
+    and forced the model to align repeated callees with a large row source by order.
+    Resolved callee/API/table context remains attached to the consuming effect.
     """
     conditions, effects, rows = _evidence_maps(evidence)
     condition_keys = _wire_key_map(conditions, "C")
@@ -287,7 +293,11 @@ def _project_effect(
     result: dict[str, object] = {"kind": op}
     if op == "call":
         target = str(payload.get("target") or "")
-        result["callee"] = target
+        call_source = str(payload.get("call_source") or "").strip()
+        if call_source:
+            result["source"] = call_source
+        else:
+            result["callee"] = target
         callee_id = str(payload.get("callee_id") or "")
         effects = callee_effects.get(callee_id)
         if isinstance(effects, Mapping):
@@ -341,13 +351,68 @@ def _project_row(
         result["after_control"] = True
     if str(row.get("at_label") or "").strip():
         result["at_label"] = True
-    source = str(row.get("source") or "").strip()
-    if source:
-        result["source"] = source
     post_condition = row.get("post_condition")
     if post_condition is not None and str(post_condition).strip():
         result["post_condition"] = str(post_condition)
     return result
+
+
+def partition_rule_meaning_evidence(
+    evidence: Mapping[str, object],
+    *,
+    max_effects: int = RULE_MEANING_EFFECT_BUDGET,
+) -> tuple[dict[str, object], ...]:
+    """Partition whole rows by response obligations without retry or loss."""
+    if isinstance(max_effects, bool) or max_effects < 1:
+        raise ValueError("Rule meaning max_effects must be a positive integer")
+    conditions, effects, rows = _evidence_maps(evidence)
+    if not rows:
+        return ()
+
+    grouped_rows: list[list[tuple[str, Mapping[str, object]]]] = []
+    current: list[tuple[str, Mapping[str, object]]] = []
+    current_effects: set[str] = set()
+    for row_key, row in rows.items():
+        row_effects = {str(value) for value in row.get("direct") or ()}
+        if len(row_effects) > max_effects:
+            raise ValueError(
+                f"{row_key}: one Rule row exceeds the atomic effect budget: "
+                f"{len(row_effects)} > {max_effects}"
+            )
+        if current and len(current_effects | row_effects) > max_effects:
+            grouped_rows.append(current)
+            current = []
+            current_effects = set()
+        current.append((row_key, row))
+        current_effects.update(row_effects)
+    if current:
+        grouped_rows.append(current)
+
+    partitions: list[dict[str, object]] = []
+    for group in grouped_rows:
+        selected_rows = dict(group)
+        condition_refs = {
+            str(value).lstrip("!")
+            for row in selected_rows.values()
+            for value in row.get("when") or ()
+        }
+        effect_refs = {
+            str(value)
+            for row in selected_rows.values()
+            for value in row.get("direct") or ()
+        }
+        partitions.append({
+            "conditions": {
+                key: value for key, value in conditions.items()
+                if key in condition_refs
+            },
+            "effects": {
+                key: value for key, value in effects.items()
+                if key in effect_refs
+            },
+            "rows": selected_rows,
+        })
+    return tuple(partitions)
 
 
 def _api_contracts_by_name(values: Sequence[object]) -> dict[str, Mapping[str, object]]:

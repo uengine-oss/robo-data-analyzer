@@ -1,6 +1,7 @@
 """Rule wire retirement and deterministic DBMS ownership contracts."""
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from pipeline.models.code_analysis_output import (
     RuleItem,
 )
 from pipeline.meaning.batch_analyze import (
+    DbmsRuleMaterialization,
     _collect_dbms_rule_meanings,
     _materialize_dbms_rules,
 )
@@ -201,6 +203,104 @@ class DbmsRuleMeaningWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rule.structural_condition)
         self.assertTrue(rule.condition_description)
         self.assertTrue(rule.effect_descriptions)
+
+    async def test_partitioned_batches_cover_each_row_once_even_out_of_order(self) -> None:
+        evidence = {
+            "conditions": {},
+            "effects": {
+                "E1": {
+                    "op": "ret", "target": None, "value": "FIRST",
+                    "from_source": True,
+                },
+                "E2": {
+                    "op": "ret", "target": None, "value": "SECOND",
+                    "from_source": True,
+                },
+            },
+            "rows": {
+                "R1": {"role": "exit", "when": [], "direct": ["E1"]},
+                "R2": {"role": "exit", "when": [], "direct": ["E2"]},
+            },
+        }
+        partitions = (
+            {
+                "conditions": {},
+                "effects": {"E1": evidence["effects"]["E1"]},
+                "rows": {"R1": evidence["rows"]["R1"]},
+            },
+            {
+                "conditions": {},
+                "effects": {"E2": evidence["effects"]["E2"]},
+                "rows": {"R2": evidence["rows"]["R2"]},
+            },
+        )
+        materialized = DbmsRuleMaterialization(
+            items={
+                "a": BatchRulesItem(
+                    node_key="N1",
+                    rules=[
+                        RuleItem(anchor_line=1, structural_effects=['ret("FIRST")']),
+                        RuleItem(anchor_line=2, structural_effects=['ret("SECOND")']),
+                    ],
+                ),
+            },
+            findings={},
+            evidence={"a": evidence},
+        )
+        context = AnalysisContext(
+            id="a", signature="a", file_path="sample.sql",
+            start_line=1, end_line=2,
+        )
+        completion_order: list[str] = []
+
+        async def respond(*, user_values, response_model, **_kwargs):
+            is_first = "FIRST" in user_values["rule_packets"]
+            if is_first:
+                await asyncio.sleep(0.02)
+            completion_order.append("first" if is_first else "second")
+            return response_model.model_validate({
+                "nodes": {
+                    "N1": {
+                        "conditions": {},
+                        "effects": {"E1": "first" if is_first else "second"},
+                        "rows": {"R1": "business_rule"},
+                    },
+                },
+            })
+
+        with (
+            patch(
+                "pipeline.meaning.batch_analyze.partition_rule_meaning_evidence",
+                return_value=partitions,
+            ),
+            patch(
+                "pipeline.meaning.batch_analyze.RULE_MEANING_EFFECT_BUDGET", 1,
+            ),
+            patch(
+                "pipeline.meaning.batch_analyze.run_yaml_rule",
+                side_effect=respond,
+            ) as run,
+        ):
+            completed = await _collect_dbms_rule_meanings(
+                materialized,
+                parent_id="p",
+                contexts={"a": context},
+                strategy=SimpleNamespace(prompts_dir="."),
+                cost_budget=None,
+                table_descriptions={},
+                source_cache=SourceFileCache(),
+                llm_slots=PrioritySemaphore(2),
+            )
+
+        self.assertEqual(2, run.await_count)
+        self.assertEqual(["second", "first"], completion_order)
+        self.assertEqual(
+            [1, 2], [rule.anchor_line for rule in completed.items["a"].rules],
+        )
+        self.assertEqual(
+            [["first"], ["second"]],
+            [rule.effect_descriptions for rule in completed.items["a"].rules],
+        )
 
 
 if __name__ == "__main__":

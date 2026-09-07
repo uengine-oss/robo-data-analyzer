@@ -72,7 +72,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         for marker in (
-            "target의 전체 책임을 한 흐름",
+            "target의 전체 책임을 중복 없는 한 흐름",
             "선행 검증, 조건별 처리",
             "사용되지 않는 파라미터",
             "output-only",
@@ -132,7 +132,7 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 self.assertIn("[TASK", text)
                 self.assertIn("[OUTPUT CONTRACT", text)
                 self.assertIn("[DECISION", text)
-                if "summary" not in name:
+                if name == "table_description":
                     self.assertIn("[SELF CHECK]", text)
                 self.assertIn("[INPUT", text)
                 self.assertLess(text.index("[TASK"), text.rindex("[INPUT"))
@@ -190,8 +190,10 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         for strategy, name in cases:
             text = self._expanded(load_semantic_rule(strategy, name))
             with self.subTest(strategy=strategy):
-                self.assertIn("FT key exact required map", text)
+                exact_marker = "response_format의 모든 `FT` key를 정확히 한 번"
+                self.assertIn(exact_marker, text)
                 self.assertIn("빈 문자열", text)
+                self.assertEqual(1, text.count(exact_marker))
                 for marker in retired_response_wrappers:
                     self.assertNotIn(marker, text)
 

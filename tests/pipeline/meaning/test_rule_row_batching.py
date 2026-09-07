@@ -274,10 +274,10 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
                 "from_source": None,
             })
 
-    def test_provider_batching_and_retry_api_is_absent(self):
+    def test_provider_retry_api_is_absent(self):
         for retired in (
-            "collect_rules_by_rows", "plan_batches", "rule_queue_priority",
-            "DEFAULT_ROWS_PER_CALL", "MAX_RULE_SEMANTIC_SLOTS",
+            "rule_queue_priority", "DEFAULT_ROWS_PER_CALL",
+            "MAX_RULE_SEMANTIC_SLOTS", "retry_rule_meanings",
         ):
             with self.subTest(retired=retired):
                 self.assertFalse(hasattr(rule_row_batching, retired))

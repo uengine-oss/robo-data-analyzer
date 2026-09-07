@@ -1,5 +1,5 @@
 ## Framework split 2 — direct table usage meanings.
-extends: _common
+extends: ../../../prompts/common_system
 inherit_inputs: false
 shared_values:
   function_table_usage_contract: ../common/function_table_usage_contract.md
@@ -9,8 +9,6 @@ user_template_specific: |
   Analyzer가 미리 묶은 `FT` 항목의 업무 목적만 채운다. 함수 요약, Rule, COLUMN 의미는 만들지 않는다.
 
   ## [OUTPUT CONTRACT]
-
-  응답 최상위 객체는 response_format이 지정한 FT key exact required map이다. 모든 key를 정확히 한 번 채우고 다른 key를 만들지 않는다. 각 값은 업무 목적 문자열 하나이며, 입증할 수 없으면 빈 문자열이다.
 
   {function_table_usage_contract}
 

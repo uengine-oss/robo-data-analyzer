@@ -1,5 +1,5 @@
 ## Framework 분할 1 — 전체 semantic frame + 역할 분류.
-extends: _common
+extends: ../../../prompts/common_system
 inherit_inputs: false
 structured_output_method: function_calling
 shared_values:
@@ -19,11 +19,6 @@ user_template_specific: |
   ## [OUTPUT CONTRACT — frame summary concern]
 
   최상위에는 response_format이 required로 지정한 `summary`, `stereotype`만 각각 정확히 한 번 출력한다.
-
-  `summary`는 코드 한 줄씩 번역한 목록이 아니다. 입력과 선행 검증,
-  결과를 바꾸는 조건별 처리, 직접 CALL/RW, 반환·외부 상태 변화를 실행 순서와 소유 범위를
-  보존한 자연스러운 전체 설명이다. SOURCE에 없는 정책·코드값 뜻·callee 내부 절차를 만들지
-  않는다. 확정할 수 있는 동작만 쓰되, 현재 TARGET의 직접 동작은 빠뜨리지 않는다.
 
   ## [DECISION — stereotype 역할 분류]
 

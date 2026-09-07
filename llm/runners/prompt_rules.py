@@ -19,7 +19,7 @@ from pipeline.source_languages import (
 def _load_rule(prompts_dir: Path, rule_name: str) -> dict:
     """yaml 룰 로딩 + ``extends`` 처리 → ``{system, user_template, model}`` 반환.
 
-    ``extends: <name>`` 가 있으면 ``<name>.yaml`` 의 byte-identical ``system`` 다음에
+    ``extends: <relative name>`` 가 있으면 지정 YAML의 byte-identical ``system`` 다음에
     **분할별 고정 지침**, 공통 대상 입력, 분할별 고변동 입력 순으로 둔다.
 
     KV prefix 캐시는 앞에서 처음 달라지는 지점까지만 재사용한다. 대상별 SOURCE를 고정 지침

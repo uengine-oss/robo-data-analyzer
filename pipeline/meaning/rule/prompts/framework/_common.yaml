@@ -1,5 +1,0 @@
-## Framework Rule meaning envelope.
-system: |
-  TARGET의 Rule 의미를 현재 요청에 배정된 조건·효과·행과 각 행의 exact SOURCE에서만 추출합니다.
-  Analyzer가 확정한 구조·극성·소유권은 바꾸지 말고, callee 내부 절차·주석 처리 코드·이름에서
-  추측한 업무 뜻을 만들지 마십시오. response_format 외 필드는 출력하지 마십시오.

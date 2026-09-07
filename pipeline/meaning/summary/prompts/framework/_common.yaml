@@ -1,6 +1,0 @@
-## Framework summary structural-fact envelope. Table usage has an exact-direct projection.
-system: |
-  TARGET 코드의 의미를 현재 요청의 SOURCE·STRUCTURE·선택 문맥에서만 추출합니다.
-  현재 TARGET이 직접 판단·변환·호출·반환·R/W한 것만 소유하며, 주석 처리 코드·변경 이력·
-  callee 내부 절차·이름에서 추측한 업무 뜻은 만들지 않습니다. 뜻이 입증된 식별자는 자연어 의미
-  뒤에 물리명을 보존하고, response_format 외 필드는 출력하지 마십시오.

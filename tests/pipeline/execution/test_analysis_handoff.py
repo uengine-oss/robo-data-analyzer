@@ -128,12 +128,18 @@ class StandaloneTest(unittest.IsolatedAsyncioTestCase):
 
 class SharedLlmAdmissionTest(unittest.TestCase):
     def test_llm_admission_is_bounded_independently_from_node_preparation(self) -> None:
+        from llm.configs.config_loader import load_llm_config
+
         slots = analysis_llm_slots()
+        model_limit = load_llm_config(
+            SETTINGS.analysis_llm.config
+        ).max_concurrency
         self.assertEqual(
             slots.capacity,
             min(
                 SETTINGS.analysis_pipeline.max_concurrency,
                 SETTINGS.analysis_pipeline.llm_max_concurrency,
+                model_limit or SETTINGS.analysis_pipeline.llm_max_concurrency,
             ),
         )
         self.assertEqual(

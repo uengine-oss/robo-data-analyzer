@@ -48,6 +48,8 @@
   evidence 복창, question처럼 모델의 의미 판정을 개선하지 않는 내부 정보는 모델에 보내지 않는다.
 - 같은 사실을 source·structure·symbol·table·callee section에 반복하지 않는다. 빈 선택 section도
   보내지 않는다.
+- 같은 정적 지시도 system·user·공통 contract 중 한 정본에만 둔다. Summary·FunctionTableUsage·Rule의
+  system prompt는 하나의 정본에서 읽어 실제 전송 바이트가 같아야 한다.
 - 짧게 만들기 위해 이름을 암호처럼 축약하거나 의미를 생략하지 않는다. 제거 기준은 오직
   `없어도 정확성·완전성·재현성이 변하지 않고 다른 권위 값에서 완전히 복원되는가`다.
 
@@ -84,6 +86,9 @@
   Analyzer가 미리 배정한 연속 순번 local key를 사용하며, 그 key에 stable ID·hash·line/range를
   인코딩하지 않는다. extra field와 임의 key를 거부한다. schema의 설명용 title·description과 동적
   fingerprint는 의미 제약이 아니며 prompt와 중복되므로 provider wire에 넣지 않는다.
+- 출력 token은 자연어 의미와 wire 문법을 분리해 측정한다. 의미 필드명과 local key를 암호식 약어 또는
+  위치 배열로 바꿔 귀속 검증과 사람이 읽는 계약을 약화시키지 않는다. wire 축약은 같은 의미·같은
+  exact-once 검증을 유지하면서 실측 이득이 충분할 때만 허용한다.
 - Summary 모델은 함수 전체 흐름의 `summary`와 허용된 `stereotype`을 한 번만 만든다. 세부 문장을
   따로 생성해 기계적으로 이어 붙인 것을 최종 Summary로 승격하지 않는다.
 - Table 모델은 Analyzer가 확정한 직접 `(function, table, access mode)`만 설명한다. 하위 함수의 table
@@ -129,6 +134,14 @@
 - 성능은 결과 수를 줄인 시간이 아니라 동일 required population을 처리한 wall time, queue,
   input/output token, cache, prefill/decode, validation, write/publish 시간으로 측정한다.
 - 요청 admission은 실제 token·KV·GPU 자원에 근거한다. 관측 없이 동시성 숫자를 고정하지 않는다.
+- client 동시성은 배포 모델 서버의 실제 running-request 상한을 넘기지 않는다. 같은 입력 집단을 여러
+  동시성으로 실측해 가장 빠른 값을 쓰며, 서버 상한보다 큰 대기열을 성능 개선으로 계산하지 않는다.
+- 병목은 함수와 concern별 queue wait, client-visible first chunk, stream generation, local validation,
+  input/output token을 같은 요청 좌표로 연결해 판정한다. 전체 wall time이나 상관관계만으로 서버·모델·
+  Analyzer를 원인으로 확정하지 않는다.
+- 한 Rule 요청이 지나치게 크면 임의 행 수를 버리거나 재시도하지 않고, 완전한 row 단위로 결정론적으로
+  분할한다. 모든 row와 condition/effect atom은 분할 전후 exact-once여야 하며 부분 실패는 해당 분할만
+  unavailable로 닫는다.
 
 ## X. 검증된 batch만 기존 DB에 원자적으로 공개한다
 
@@ -179,13 +192,13 @@
   않는다.
 - 원칙을 바꿀 때는 이 문서의 major/minor version을 올리고 변경 이유를 기록한다.
 
-**Version**: 2.1.0
+**Version**: 2.2.0
 
 **Ratified**: 2026-06-15
 
-**Last Amended**: 2026-09-01
+**Last Amended**: 2026-09-07
 
-**Amendment**: Parser와 Analyzer 책임 경계, 최소 비중복 모델 입력, Strategy B, exact-once 회계,
-임의 제한 금지, 3층 검증과 범위 밖 자산 보호를 유지한다. 제품 graph의 generation/scope 제어 구조를
-폐기하고, DB 밖 완전 검증 뒤 Analyzer 소유 batch만 단일 transaction으로 교체하도록 공개 계약을
-단순화했다.
+**Amendment**: 기존 공개·정확도 경계를 유지하면서 함수 의미 3분할의 system prompt를 한 정본·동일
+바이트로 고정했다. 정적 지시 중복과 입출력 wire 비용은 실제 token으로 분리 측정하되, 의미 누락·위치
+배열·암호식 약어로 정확성과 exact-once 귀속을 교환하지 않도록 성능 판정 기준을 강화했다. 큰 Rule은
+완전한 row 단위로 결정론 분할하고, client 동시성은 배포 서버의 실측 처리 상한에 맞추도록 명시했다.

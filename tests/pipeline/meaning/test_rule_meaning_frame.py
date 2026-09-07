@@ -8,6 +8,7 @@ from pipeline.models.analysis_context import ReferencedSymbolContext
 from pipeline.meaning.rule.meaning_frame import (
     batch_rule_meaning_response_model,
     build_rule_meaning_packet,
+    partition_rule_meaning_evidence,
     prepare_rule_meaning_assignment,
     project_batch_rule_meanings,
     project_rule_meanings,
@@ -108,7 +109,8 @@ class RuleMeaningFrameTest(unittest.TestCase):
             "declared_value": '"N"',
         }], packet["used_symbols"])
         effect = packet["effects"]["E1"]
-        self.assertNotIn("source", effect)
+        self.assertEqual("c520_mms_psbl_yn_check(ctx)", effect["source"])
+        self.assertNotIn("callee", effect)
         self.assertNotIn("receiver", effect)
         self.assertNotIn("arguments", effect)
         self.assertEqual({"returns": ["Y", "N"]}, effect["callee_effects"])
@@ -119,10 +121,63 @@ class RuleMeaningFrameTest(unittest.TestCase):
                 "kind": "decision",
                 "when": ["C1"],
                 "effects": ["E1"],
-                "source": "c520_mms_psbl_yn_check(ctx);",
             },
             packet["rows"]["R1"],
         )
+
+    def test_large_rule_evidence_is_partitioned_by_whole_rows(self) -> None:
+        evidence = {
+            "conditions": {"C1": "a", "C2": "b"},
+            "effects": {
+                f"E{index}": {
+                    "op": "set", "target": f"v{index}", "value": str(index),
+                    "from_source": True,
+                }
+                for index in range(1, 7)
+            },
+            "rows": {
+                "R1": {"role": "decision", "when": ["C1"], "direct": ["E1", "E2"]},
+                "R2": {"role": "decision", "when": ["C2"], "direct": ["E3", "E4"]},
+                "R3": {"role": "exit", "when": [], "direct": ["E5", "E6"]},
+            },
+        }
+
+        partitions = partition_rule_meaning_evidence(evidence, max_effects=3)
+
+        self.assertEqual(3, len(partitions))
+        self.assertEqual(
+            [{"R1"}, {"R2"}, {"R3"}],
+            [set(partition["rows"]) for partition in partitions],
+        )
+        self.assertEqual(
+            [{"C1"}, {"C2"}, set()],
+            [set(partition["conditions"]) for partition in partitions],
+        )
+        self.assertEqual(
+            [{"E1", "E2"}, {"E3", "E4"}, {"E5", "E6"}],
+            [set(partition["effects"]) for partition in partitions],
+        )
+
+    def test_one_row_cannot_be_split_across_rule_requests(self) -> None:
+        evidence = {
+            "conditions": {},
+            "effects": {
+                f"E{index}": {
+                    "op": "set", "target": f"v{index}", "value": str(index),
+                    "from_source": True,
+                }
+                for index in range(1, 4)
+            },
+            "rows": {
+                "R1": {
+                    "role": "entry", "when": [],
+                    "direct": ["E1", "E2", "E3"],
+                },
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "atomic effect budget"):
+            partition_rule_meaning_evidence(evidence, max_effects=2)
 
     def test_rule_table_effect_gets_only_the_existing_table_meaning(self) -> None:
         evidence = {

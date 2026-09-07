@@ -16,18 +16,18 @@ yaml 형식 (단순)::
 
 yaml 형식 (DRY — 분할 그룹의 KV 캐시 prefix 통일)::
 
-    # `pipeline/meaning/<family>/prompts/<strategy>/_common.yaml` — 단일 진실
+    # `pipeline/meaning/prompts/common_system.yaml` — 함수 의미 3분할 system 단일 진실
     system: |
       <분할 공통 system 본문>
     user_template_inputs: |
       <분할 공통 user_template 입력값 영역>
 
     # `pipeline/meaning/<family>/prompts/<strategy>/<split_name>.yaml` — 분할 고유만
-    extends: _common
+    extends: ../../../prompts/common_system
     user_template_specific: |
       <이 분할 고유 user_template 지침>
 
-``extends`` 가 있으면 ``_common`` 의 ``system`` 을 그대로 둔다. 기본 user 메시지는 공통 대상
+``extends`` 가 있으면 지정 YAML의 ``system`` 을 그대로 둔다. 기본 user 메시지는 공통 대상
 입력 뒤 분할 계약·전용 증거를 잇는다. 결정론 evidence packet만으로 책임이 완결되는 rule은
 ``inherit_inputs: false``로 중복 SOURCE를 제외할 수 있다. 이는 값을 숨기는 토큰 절단이 아니라
 그 호출이 소비하지 않는 입력 소유권을 schema와 함께 제거하는 명시 계약이다.

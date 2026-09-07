@@ -1156,6 +1156,7 @@ def _summarize_request_performance(run_dir: Path) -> dict[str, object] | None:
             rows.append({
                 "rule": path.stem,
                 "target_id": str(record.get("target_id") or ""),
+                "status": "failed" if metadata.get("error") else "succeeded",
                 **metadata,
             })
     if not rows:
@@ -1177,12 +1178,22 @@ def _summarize_request_performance(run_dir: Path) -> dict[str, object] | None:
         "prompt_chars",
         "response_schema_chars",
         "payload_chars",
+        "waiting_before",
+        "slots_in_use",
+        "lane_slots_in_use",
+        "slots_capacity",
     )
     by_rule: dict[str, list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         by_rule[str(row["rule"])].append(row)
     per_rule = []
     for rule, rule_rows in sorted(by_rule.items()):
+        input_count_fields = sorted({
+            key
+            for row in rule_rows
+            for key, value in (row.get("input_counts") or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        })
         per_rule.append({
             "rule": rule,
             "calls": len(rule_rows),
@@ -1205,14 +1216,46 @@ def _summarize_request_performance(run_dir: Path) -> dict[str, object] | None:
                     rule_rows, "output_tokens", "model_latency_ms",
                 ),
             },
+            "input_counts": {
+                field: {
+                    "distribution": _nested_numeric_distribution(
+                        rule_rows, "input_counts", field,
+                    ),
+                    "to_first_chunk_wait": _nested_correlation(
+                        rule_rows, "input_counts", field,
+                        "time_to_first_chunk_ms",
+                    ),
+                    "to_model_latency": _nested_correlation(
+                        rule_rows, "input_counts", field, "model_latency_ms",
+                    ),
+                }
+                for field in input_count_fields
+            },
         })
-    slowest = sorted(
-        rows,
-        key=lambda row: float(
-            row.get("request_total_ms") or row.get("model_latency_ms") or 0
-        ),
-        reverse=True,
-    )[:20]
+    request_fields = (
+        "rule", "target_id", "status", "largest_observed_stage",
+        "queue_wait_ms", "time_to_first_chunk_ms", "generation_ms",
+        "validation_ms", "model_latency_ms", "request_total_ms",
+        "input_tokens", "output_tokens", "payload_chars",
+        "input_value_chars", "prompt_chars", "response_schema_chars",
+        "input_sections", "error", "input_counts", "waiting_before",
+        "slots_in_use", "lane_slots_in_use", "slots_capacity",
+    )
+
+    def _slowest(field: str) -> list[dict[str, object]]:
+        selected = sorted(
+            rows,
+            key=lambda row: float(row.get(field) or 0),
+            reverse=True,
+        )[:20]
+        return [{
+            key: row[key]
+            for key in request_fields
+            if row.get(key) is not None
+        } for row in selected]
+
+    succeeded = sum(row["status"] == "succeeded" for row in rows)
+    failed = len(rows) - succeeded
     return {
         "measurement_boundary": {
             "queue_wait_ms": "Analyzer semaphore wait",
@@ -1222,25 +1265,47 @@ def _summarize_request_performance(run_dir: Path) -> dict[str, object] | None:
             "generation_ms": "first through last observed stream chunk",
             "validation_ms": "local parse and schema validation",
         },
-        "calls": len(rows),
+        "attempted_calls": len(rows),
+        "succeeded_calls": succeeded,
+        "failed_calls": failed,
         "largest_observed_stage_counts": dict(sorted(stage_counts.items())),
         "per_rule": per_rule,
-        "slowest_requests": [
-            {
-                key: row[key]
-                for key in (
-                    "rule", "target_id", "largest_observed_stage",
-                    "queue_wait_ms", "time_to_first_chunk_ms", "generation_ms",
-                    "validation_ms", "model_latency_ms", "request_total_ms",
-                    "input_tokens", "output_tokens", "payload_chars",
-                    "input_value_chars", "prompt_chars", "response_schema_chars",
-                    "input_sections", "error",
-                )
-                if row.get(key) is not None
-            }
-            for row in slowest
-        ],
+        "slowest_by": {
+            "total": _slowest("request_total_ms"),
+            "model": _slowest("model_latency_ms"),
+            "first_chunk": _slowest("time_to_first_chunk_ms"),
+            "generation": _slowest("generation_ms"),
+            "analyzer_queue": _slowest("queue_wait_ms"),
+        },
     }
+
+
+def _nested_numeric_distribution(
+    rows: Sequence[Mapping[str, object]], container: str, field: str,
+) -> dict[str, float] | None:
+    projected = [
+        {field: nested[field]}
+        for row in rows
+        if isinstance((nested := row.get(container)), Mapping)
+        and field in nested
+    ]
+    return _numeric_distribution(projected, field)
+
+
+def _nested_correlation(
+    rows: Sequence[Mapping[str, object]],
+    container: str,
+    field: str,
+    target: str,
+) -> float | None:
+    projected = [
+        {field: nested[field], target: row[target]}
+        for row in rows
+        if isinstance((nested := row.get(container)), Mapping)
+        and field in nested
+        and target in row
+    ]
+    return _correlation(projected, field, target)
 
 
 def _numeric_distribution(

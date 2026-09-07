@@ -48,11 +48,16 @@ ANALYSIS_LLM_LANE_WEIGHTS = {
 
 def analysis_llm_slots() -> PrioritySemaphore:
     from shared.config.app_settings import SETTINGS
+    from llm.configs.config_loader import load_llm_config
 
-    llm_capacity = min(
+    configured = load_llm_config(SETTINGS.analysis_llm.config)
+    limits = [
         SETTINGS.analysis_pipeline.max_concurrency,
         SETTINGS.analysis_pipeline.llm_max_concurrency,
-    )
+    ]
+    if configured.max_concurrency is not None:
+        limits.append(configured.max_concurrency)
+    llm_capacity = min(limits)
     return PrioritySemaphore(
         llm_capacity,
         fair_weights=ANALYSIS_LLM_LANE_WEIGHTS,

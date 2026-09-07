@@ -170,6 +170,14 @@ def _mirror_event_to_logger(event: dict) -> None:
     # event 본문에서 type 빼고 모두 context 로 전달 (operation 결정용 키도 추출).
     body = {k: v for k, v in event.items() if k != "type"}
 
+    # The live client needs display properties, including code_text.  The run log
+    # does not: mirroring every graph payload made 94.5% of a 26 MB log duplicate
+    # wire data.  Keep identity and property names without copying source values.
+    if etype in {"node_event", "relationship_event"}:
+        properties = body.pop("props", None)
+        if isinstance(properties, dict) and properties:
+            body["prop_keys"] = sorted(properties)
+
     # tool_event 는 전용 처리 — 도구명 op 라벨 / args 단축.
     if etype == "tool_event":
         _mirror_tool_event(body)

@@ -43,6 +43,16 @@ Parser가 만든 구조 사실을 Analyzer가 의미로 해석하여 사람이 �
 prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 않는 한 순수 prefill이라고 부르지 않는다.
 전체 wall time만으로 모델·서버·Analyzer 중 어느 하나를 원인으로 단정하지 않는다.
 
+### 정적 프롬프트와 출력 효율
+
+- Summary·Table Usage·Rule의 system prompt는 하나의 정본을 공유하며 실제 전송 바이트가 같아야 한다.
+  concern별 의미 지침은 고정 user prefix에 두고, 같은 금지·출력 계약을 system·user·공통 contract에
+  반복하지 않는다.
+- 입력 절감은 정적 지침, 동적 evidence, response schema를 분리해 측정한다. 출력 절감은 자연어 의미와
+  JSON wire 비용을 분리해 측정하며, 의미 누락이나 local key의 순서 기반 오귀속을 만드는 축약은 하지 않는다.
+- prompt 변경 전후에는 실제 직렬화된 system·user·schema의 바이트와 tokenizer token을 비교하고,
+  같은 required population의 의미 정확도와 요청 지연을 함께 검증한다.
+
 ## 그래프
 
 - Parser의 실제 label을 source 노드 label로 사용한다.
@@ -78,3 +88,7 @@ prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 
 6. GPU 모델로 약 5만 LOC를 정확히 한 번 실행해 시간·토큰·결과를 기록한다.
 7. 최종 문서, 작업 보고, 커밋과 원격 push가 완료된다.
 8. LLM 요청별 queue·first-chunk·generation·validation 지연과 입력 section 크기를 감사할 수 있다.
+9. 세 함수 의미 concern의 system prompt가 byte-identical하고 동일 정적 지시가 한 번만 존재한다.
+10. 큰 Rule은 완전한 row 단위로 분할되고 모든 row·atom이 분할 전후 exact-once다.
+11. client 동시성은 배포 서버 상한과 8/16/24/32 실측 중 가장 빠른 값으로 정한다.
+12. Neo4j endpoint lookup과 readback은 label+`_id` 제약을 사용하며 누락 관계를 조용히 버리지 않는다.

@@ -33,3 +33,18 @@
 - [x] 보호된 사용자 WIP를 제외한 저장소별 commit과 push
 
 GPU 실행은 사용자의 1회 제한에 따라 수정 후 반복하지 않는다. Neo4j `test` DB는 접근하지 않는다.
+
+## 현재 재검증
+
+- [x] 세 함수 의미 concern의 system prompt를 하나의 byte-identical 정본으로 통합
+- [x] system·user·공통 contract의 중복 정적 지시 제거와 의미 계약 회귀 추가
+- [x] 변경 전후 실제 정적 prompt token 비교
+- [x] Rule complete-row 결정론 분할과 partial unavailable exact-once 구현
+- [x] Neo4j labeled endpoint lookup과 labeled readback 구현
+- [x] 출력 간결화 A/B와 자연어 귀속·빈 의미 검증
+- [x] Qwen client 동시성 8/16/24/32 처리량 비교 후 16 확정
+- [x] focused 검사와 Analyzer 전체 회귀 통과
+- [x] Analyzer 헌법과 Claude/Codex 공용 skill에 재발 방지 기준 동기화
+- [x] 새로 승인된 GPU 전체 실행 1회와 함수·조건별 병목 분석
+
+재검증은 44,143 LOC 전체 20분 27.4초, 934/934 LLM 요청 성공으로 끝났다. 기존 `test` DB는 접근하지 않았다.

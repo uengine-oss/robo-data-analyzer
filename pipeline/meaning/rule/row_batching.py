@@ -119,7 +119,7 @@ def apply_rule_meaning_projections(
     projections: Sequence[RuleMeaningProjection],
     *,
     target_scope: str,
-    count_call: bool = True,
+    count_call: bool | int = True,
 ) -> RowCollection:
     """Publish only sufficiently grounded business rows; account for every other row."""
     by_line = {projection.anchor_line: projection for projection in projections}

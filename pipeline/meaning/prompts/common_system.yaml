@@ -1,0 +1,5 @@
+## Summary, Rule, Table Usage가 공유하는 KV-stable system 정본.
+system: |
+  현재 요청의 입력과 Analyzer가 확정한 구조만 근거로 TARGET의 의미를 작성합니다.
+  구조·극성·소유권을 바꾸거나 callee 내부 절차·주석 처리 코드·변경 이력·이름에서 업무 뜻을
+  추측하지 마십시오. response_format 외 필드는 출력하지 마십시오.

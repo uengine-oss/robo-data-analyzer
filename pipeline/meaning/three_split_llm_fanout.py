@@ -13,7 +13,7 @@ Rule의 구조와 좌표는 parser-owned branch evidence에서 결정론으로 �
 
 **KV 캐시 흐름**:
 서버 KV cache는 동작하지만 API cached-token 필드는 0만 보고한다. 저장 prompt의 실제
-바이트를 대조하면 세 LLM concern은 공통 system prefix만 공유하고 user prompt는 concern별로
+바이트를 대조하면 세 LLM concern은 하나의 system prompt를 공유하고 user prompt는 concern별로
 갈라진다. 따라서 첫 summary 한 번으로 전역 system prefix를 워밍하되, 이후 코드노드에서
 summary를 기다려도 node-specific prefix는 늘지 않는다. summary/rule/table-usage meaning은
 독립 실행하고 summary가 끝나는 즉시 caller 의존만 조기 해제한다.
@@ -74,6 +74,7 @@ from pipeline.meaning.table.response_schema import (
 from pipeline.meaning.table.source_projection import render_table_source
 from pipeline.meaning.rule.meaning_frame import (
     build_rule_meaning_packet,
+    partition_rule_meaning_evidence,
     prepare_rule_meaning_assignment,
     project_rule_meanings,
     rule_meaning_response_model,
@@ -250,6 +251,53 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
     }
 
 
+def _summary_input_counts(profile, slot_specs, analysis_inputs: dict) -> dict[str, int]:
+    """Count only semantic input shapes useful for latency attribution."""
+    source = str(analysis_inputs.get("raw_source_code") or "")
+    outline = str(analysis_inputs.get("source_outline") or "").strip()
+    external_sources = _assigned_external_source_texts(
+        profile,
+        tuple(slot_specs),
+        dict(analysis_inputs.get("external_source_text_by_id") or {}),
+    )
+    return {
+        "source_lines": len(source.split("\n")) if source else 0,
+        "structure_nodes": len(outline.splitlines()) if outline else 1,
+        "direct_table_usages": len(
+            analysis_inputs.get("direct_table_usages") or ()
+        ),
+        "external_symbols": len(analysis_inputs.get("referenced_symbols") or ()),
+        "direct_callee_effects": len(
+            analysis_inputs.get("callee_effects_by_id") or {}
+        ),
+        "linked_project_contracts": len(external_sources),
+    }
+
+
+def _rule_input_counts(packet: dict[str, object]) -> dict[str, int]:
+    """Describe the Analyzer-assigned Rule packet without logging its content."""
+    return {
+        "conditions": len(packet.get("conditions") or {}),
+        "effects": len(packet.get("effects") or {}),
+        "rows": len(packet.get("rows") or {}),
+        "used_symbols": len(packet.get("used_symbols") or ()),
+    }
+
+
+def _table_input_counts(
+    assignments: dict[str, dict[str, object]], source: str,
+) -> dict[str, int]:
+    """Describe direct table assignments and their exact supporting source."""
+    return {
+        "table_usages": len(assignments),
+        "occurrences": sum(
+            len(assignment.get("occurrences") or ())
+            for assignment in assignments.values()
+        ),
+        "source_lines": len(source.split("\n")) if source else 0,
+    }
+
+
 def _table_usage_meaning_values(
     profile,
     slot_specs,
@@ -369,6 +417,7 @@ async def analyze_code_three_split(
         lane: str,
         payload_chars: int = 0,
         input_sections: dict[str, int] | None = None,
+        input_counts: dict[str, int] | None = None,
     ):
         async with track_processing("CodeNode", code_id, sub_action=sub_action):
             queued_at = time.monotonic()
@@ -395,10 +444,15 @@ async def analyze_code_three_split(
                     "queue_wait_ms": queue_wait_ms,
                     "payload_chars": payload_chars,
                     "input_sections": dict(input_sections or {}),
+                    "input_counts": dict(input_counts or {}),
+                    "waiting_before": waiting_before,
+                    "slots_in_use": llm_slots.in_use,
+                    "lane_slots_in_use": llm_slots.in_use_for(lane),
+                    "slots_capacity": llm_slots.capacity,
                 })
 
     # Server logs confirm KV caching, but recorded prompt bytes show that the three
-    # concerns share only the global system prompt; their user prompts diverge immediately.
+    # concerns share one canonical system prompt; their user prompts diverge immediately.
     # The one global warmup remains, while per-node concerns can start independently.
     async def _collect_summary():
         if precomputed_summary_supplied:
@@ -429,6 +483,9 @@ async def analyze_code_three_split(
                             "source": len(values["code_body"]),
                             "context": len(values["summary_context"]),
                         },
+                        input_counts=_summary_input_counts(
+                            profile, slot_specs, analysis_inputs,
+                        ),
                     )
 
                 summary_out = await _run_frame_summary(
@@ -630,59 +687,72 @@ async def analyze_code_three_split(
                 target_scope=code_id,
                 count_call=False,
             )
-        packet = build_rule_meaning_packet(
-            model_evidence,
-            referenced_symbols=ctx.referenced_symbols,
-            callee_effects_by_id=_direct_callee_effects_by_id(ctx, contexts),
-            table_descriptions=table_descriptions or {},
-            api_contracts=tuple(ctx.extra.get("api_contracts") or ()),
-        )
-        values = {
-            # Audit identity is consumed by the prompt recorder only.  Because the
-            # Rule template has no {target_id} placeholder, it never reaches the model.
-            "target_id": code_id,
-            "rule_packet": json.dumps(
-                packet,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-        }
-        try:
-            output = await _track_split(
-                "split_rules",
-                lambda request_metrics: run_yaml_rule(
-                    prompts_dir=rule_prompts_dir,
-                    rule_name="code_rule_meanings",
-                    user_values=values,
-                    response_model=rule_meaning_response_model(
-                        packet.get("conditions", {}), packet["effects"], packet["rows"],
-                    ),
-                    budget=cost_budget,
-                    request_metrics=request_metrics,
-                ),
-                lane=RULES_LANE,
-                payload_chars=len(values["rule_packet"]),
-                input_sections={"rule_packet": len(values["rule_packet"])},
+        partitions = partition_rule_meaning_evidence(model_evidence)
+
+        async def _run_rule_partition(
+            partition: dict[str, object], index: int,
+        ):
+            packet = build_rule_meaning_packet(
+                partition,
+                referenced_symbols=ctx.referenced_symbols,
+                callee_effects_by_id=_direct_callee_effects_by_id(ctx, contexts),
+                table_descriptions=table_descriptions or {},
+                api_contracts=tuple(ctx.extra.get("api_contracts") or ()),
             )
-        except ModelOutputError as error:
-            return apply_rule_meaning_projections(
-                collection,
-                (
-                    *unavailable_rule_meaning_projections(
-                        model_evidence, reason=str(error),
-                    ),
-                    *assignment.deterministic_projections,
+            values = {
+                # Audit identity is consumed by the recorder only; the Rule
+                # template has no target_id placeholder.
+                "target_id": code_id,
+                "rule_packet": json.dumps(
+                    packet,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ),
-                target_scope=code_id,
-            )
+            }
+            counts = _rule_input_counts(packet)
+            counts.update({
+                "partition_index": index,
+                "partition_count": len(partitions),
+            })
+            try:
+                output = await _track_split(
+                    "split_rules",
+                    lambda request_metrics: run_yaml_rule(
+                        prompts_dir=rule_prompts_dir,
+                        rule_name="code_rule_meanings",
+                        user_values=values,
+                        response_model=rule_meaning_response_model(
+                            packet.get("conditions", {}),
+                            packet["effects"],
+                            packet["rows"],
+                        ),
+                        budget=cost_budget,
+                        request_metrics=request_metrics,
+                    ),
+                    lane=RULES_LANE,
+                    payload_chars=len(values["rule_packet"]),
+                    input_sections={"rule_packet": len(values["rule_packet"])},
+                    input_counts=counts,
+                )
+            except ModelOutputError as error:
+                return unavailable_rule_meaning_projections(
+                    partition, reason=str(error),
+                )
+            return project_rule_meanings(output, partition)
+
+        partition_results = await asyncio.gather(*(
+            _run_rule_partition(partition, index)
+            for index, partition in enumerate(partitions, start=1)
+        ))
         return apply_rule_meaning_projections(
             collection,
             (
-                *project_rule_meanings(output, model_evidence),
+                *(projection for result in partition_results for projection in result),
                 *assignment.deterministic_projections,
             ),
             target_scope=code_id,
+            count_call=len(partitions),
         )
 
     gather_map: dict[str, Any] = {
@@ -707,6 +777,9 @@ async def analyze_code_three_split(
                     table_descriptions or {},
                     analysis_inputs,
                 )
+                usage_assignments = json.loads(
+                    usage_values["assigned_table_usages"]
+                )
                 output = await _track_split(
                     "split_table_usage_meanings",
                     lambda request_metrics: run_yaml_rule(
@@ -727,6 +800,9 @@ async def analyze_code_three_split(
                         ),
                         "source": len(usage_values["code_body"]),
                     },
+                    input_counts=_table_input_counts(
+                        usage_assignments, usage_values["code_body"],
+                    ),
                 )
                 return output, None
             except ModelOutputError as error:

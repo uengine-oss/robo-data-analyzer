@@ -119,7 +119,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
         # Scan Agent prose is metadata, never authoritative input to another LLM.
         for relative_path in (
             "agents/prompts/residual.yaml",
-            "pipeline/meaning/summary/prompts/framework/_common.yaml",
+            "pipeline/meaning/prompts/common_system.yaml",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(
@@ -208,6 +208,7 @@ class LlmBoundaryContractTest(unittest.TestCase):
 
         self.assertEqual(config.provider, "sglang")
         self.assertTrue(config.model)
+        self.assertEqual(16, config.max_concurrency)
         self.assertEqual("json_schema", config.structured_output_method)
 
     def test_quoted_false_is_not_misread_as_true(self) -> None:

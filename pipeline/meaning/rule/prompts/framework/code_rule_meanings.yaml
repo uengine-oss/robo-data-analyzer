@@ -1,5 +1,5 @@
 ## Framework split 3 — exact atom meanings for Rule projection.
-extends: _common
+extends: ../../../prompts/common_system
 inherit_inputs: false
 structured_output_method: function_calling
 shared_values:
@@ -11,9 +11,7 @@ user_template_specific: |
 
   ## [OUTPUT CONTRACT]
 
-  최상위에는 `conditions`, `effects`, `rows`만 쓴다. 세 객체는 response_format의 exact required
-  key를 빠짐없이 한 번씩 채우며 다른 key를 만들지 않는다. 조건과 직접 효과의 의미를 먼저 판단하고,
-  그 결과를 바탕으로 행 전체의 업무 Rule 여부를 판단한다.
+  조건과 직접 효과의 의미를 먼저 판단하고 그 결과를 바탕으로 행 전체의 업무 Rule 여부를 판단한다.
 
 user_template_dynamic_inputs: |
   # [INPUT — RULE meaning packet]
