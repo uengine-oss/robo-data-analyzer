@@ -8,6 +8,7 @@ from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import AnalysisContext
 from pipeline.meaning.three_split_llm_fanout import (
     _prepare_analysis_inputs,
+    _summary_prompt_values,
 )
 from shared.files.source_cache import SourceFileCache
 
@@ -41,10 +42,14 @@ class ModelSourceFidelityContractTest(unittest.TestCase):
                 context, node, {node.id: context}, {node.id: node},
                 SourceFileCache(),
             )
+            profile, _specs, concerns = context.extra["_semantic_frame_plan"]
+            summary_values = _summary_prompt_values(
+                profile, concerns["summary"], values,
+            )
 
         for line in source_text.splitlines():
-            self.assertIn(line, values["numbered_source_code"])
-        self.assertNotIn("[QUOTED_LITERAL", values["numbered_source_code"])
+            self.assertIn(line, summary_values["code_body"])
+        self.assertNotIn("[QUOTED_LITERAL", summary_values["code_body"])
 
     def test_no_lossy_source_projection_producer_or_replay_switch_exists(self) -> None:
         self.assertFalse(

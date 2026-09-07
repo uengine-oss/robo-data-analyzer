@@ -56,14 +56,15 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         for marker in (
-            "facts", "fact ID", "occurrence ID", "hash", "path",
-            "grammar reference", "request-local 결합 key", "조건 극성",
-            "소유 범위", "opaque 함수", "함수 이름을 보고",
+            "조건 극성", "opaque 함수", "함수 이름을 보고",
             "null/empty/valid/success", "다른 언어의", "문자나 단어",
             "그 조건이", "f(x) == Y", "operand", "substitution",
         ):
             self.assertIn(marker, shared)
-        for retired in ("applicable_slots_json", "fact_refs", "`slots`", "`status`"):
+        for retired in (
+            "facts", "fact ID", "occurrence ID", "hash", "grammar reference",
+            "applicable_slots_json", "fact_refs", "`slots`", "`status`",
+        ):
             self.assertNotIn(retired, shared)
 
     def test_function_summary_contract_closes_noop_and_complete_flow_roles(self) -> None:
@@ -131,7 +132,8 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
                 self.assertIn("[TASK", text)
                 self.assertIn("[OUTPUT CONTRACT", text)
                 self.assertIn("[DECISION", text)
-                self.assertIn("[SELF CHECK]", text)
+                if "summary" not in name:
+                    self.assertIn("[SELF CHECK]", text)
                 self.assertIn("[INPUT", text)
                 self.assertLess(text.index("[TASK"), text.rindex("[INPUT"))
 
@@ -153,12 +155,12 @@ class CanonicalSemanticPromptContractTest(unittest.TestCase):
         table = self._expanded(load_semantic_rule(
             "framework", "code_table_usage_meanings",
         ))
-        self.assertIn("linked_callee_outcomes_json", summary)
-        self.assertIn("linked_external_sources_json", summary)
+        self.assertIn("DIRECT CALLEE EFFECTS", summary)
+        self.assertIn("LINKED PROJECT CONTRACTS", summary)
         self.assertIn("table_description", table)
         self.assertNotIn("table_description", summary)
-        self.assertNotIn("linked_callee_outcomes_json", table)
-        self.assertNotIn("linked_external_sources_json", table)
+        self.assertNotIn("DIRECT CALLEE EFFECTS", table)
+        self.assertNotIn("LINKED PROJECT CONTRACTS", table)
 
     def test_column_meaning_is_deferred_to_final_table_frame(self) -> None:
         for strategy, name in (

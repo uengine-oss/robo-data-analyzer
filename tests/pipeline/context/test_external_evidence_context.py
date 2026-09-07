@@ -211,13 +211,12 @@ class ExternalEvidenceContextTest(unittest.IsolatedAsyncioTestCase):
 
         linked_sources = framework_values["external_source_text_by_id"]
         self.assertEqual({linked.source_record_id: "/orders"}, linked_sources)
-        self.assertNotIn("matched_key", summary_values["structural_profile"])
-        self.assertIn('"matched_key":"ORDER.API"', summary_values["linked_external_sources"])
-        self.assertIn("/orders", summary_values["linked_external_sources"])
-        self.assertNotIn("must-not-leak", summary_values["linked_external_sources"])
+        self.assertIn('"matched_key":"ORDER.API"', summary_values["summary_context"])
+        self.assertIn("/orders", summary_values["summary_context"])
+        self.assertNotIn("must-not-leak", summary_values["summary_context"])
         self.assertNotIn("domain_term_evidence", framework_values)
         self.assertNotIn(
-            "[DOMAIN_TERM_EVIDENCE]", summary_values["linked_external_sources"],
+            "[DOMAIN_TERM_EVIDENCE]", summary_values["summary_context"],
         )
 
 

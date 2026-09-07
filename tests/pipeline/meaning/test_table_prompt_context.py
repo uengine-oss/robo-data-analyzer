@@ -87,7 +87,7 @@ def test_framework_table_packet_contains_only_nonduplicated_model_inputs() -> No
             },
         },
         {
-            "numbered_source_code": "10 | void load(void) {\n11 | SELECT ...\n12 | }",
+            "table_source": "11 | SELECT ...",
             "column_usage_candidates": {"must_not_be_sent": True},
         },
     )
@@ -173,6 +173,7 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
         usage_values = build_table_usage_meaning_batch_values(
             batch=Batch(None, (node.id,)),
             contexts={node.id: context},
+            code_by_id={node.id: node},
             table_descriptions={"db:RWIS.RDD01DD_TB": {}},
             cache=SourceFileCache(),
         )
@@ -180,7 +181,7 @@ def test_dbms_batch_prompt_carries_exact_alias_column_evidence() -> None:
         assert set(packets) == {"N1"}
         assert set(packets["N1"]) == {
             "assigned_table_usages",
-            "numbered_source",
+            "relevant_source",
         }
         assignment = packets["N1"]["assigned_table_usages"]["FT1"]
         assert "table_description" not in assignment

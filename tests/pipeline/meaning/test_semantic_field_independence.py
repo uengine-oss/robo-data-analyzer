@@ -16,7 +16,7 @@ from pipeline.models.code_analysis_output import (
 )
 from pipeline.meaning.summary.summary_quality import normalize_canonical_summary
 from pipeline.meaning.three_split_llm_fanout import (
-    _direct_callee_outcomes_by_id,
+    _direct_callee_effects_by_id,
 )
 from shared.files.source_cache import SourceFileCache
 
@@ -93,9 +93,9 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
             id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
             summary=None,
         )
-        self.assertEqual({}, _direct_callee_outcomes_by_id(caller, {"callee": callee}))
+        self.assertEqual({}, _direct_callee_effects_by_id(caller, {"callee": callee}))
 
-    def test_callee_handoff_uses_canonical_summary(self) -> None:
+    def test_callee_summary_is_not_used_as_a_handoff(self) -> None:
         caller = AnalysisContext(
             id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
             callees=("callee",),
@@ -104,15 +104,10 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
             id="callee", signature="callee", file_path="x", start_line=1, end_line=1,
             summary="상태 코드와 테이블을 포함한 canonical 요약",
         )
-        rendered = _direct_callee_outcomes_by_id(caller, {"callee": callee})
-        self.assertEqual({
-            "callee": {
-                "callee": "callee",
-                "meaning": "상태 코드와 테이블을 포함한 canonical 요약",
-            },
-        }, rendered)
+        rendered = _direct_callee_effects_by_id(caller, {"callee": callee})
+        self.assertEqual({}, rendered)
 
-    def test_callee_return_expressions_do_not_repeat_in_prompt(self) -> None:
+    def test_callee_handoff_keeps_only_direct_return_expressions(self) -> None:
         caller = AnalysisContext(
             id="caller", signature="caller", file_path="x", start_line=1, end_line=1,
             callees=("callee",),
@@ -122,9 +117,10 @@ class DownstreamEvidenceIndependenceTest(unittest.TestCase):
             summary="검색 근거",
             extra={"return_expressions": ["RC_ERR", "RC_NRM"]},
         )
-        rendered = str(_direct_callee_outcomes_by_id(caller, {"callee": callee}))
-        self.assertNotIn("returns", rendered)
-        self.assertNotIn("RC_ERR", rendered)
+        rendered = str(_direct_callee_effects_by_id(caller, {"callee": callee}))
+        self.assertIn("returns", rendered)
+        self.assertIn("RC_ERR", rendered)
+        self.assertNotIn("검색 근거", rendered)
 
 class StaticSemanticCopyAuditTest(unittest.TestCase):
     def test_step7_has_no_secondary_semantic_rewrite(self) -> None:

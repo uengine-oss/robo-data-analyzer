@@ -10,6 +10,8 @@ from pipeline.meaning.table.response_schema import (
 )
 from pipeline.meaning.batch_node_identity import batch_node_keys
 from pipeline.meaning.batch_planner import Batch
+from pipeline.meaning.table.source_projection import render_table_source
+from graph.schema.graph_nodes import CodeNode
 from shared.files.source_cache import SourceFileCache
 
 
@@ -17,6 +19,7 @@ def build_table_usage_meaning_batch_values(
     *,
     batch: Batch,
     contexts: dict[str, AnalysisContext],
+    code_by_id: dict[str, CodeNode],
     table_descriptions: dict[str, dict],
     cache: SourceFileCache,
 ) -> dict[str, str]:
@@ -26,9 +29,6 @@ def build_table_usage_meaning_batch_values(
     packets: dict[str, dict] = {}
     for node_id in batch.node_ids:
         context = contexts[node_id]
-        excerpt = cache.excerpt(
-            context.file_path, context.start_line, context.end_line,
-        )
         profile, _all_specs, concerns = context.extra["_semantic_frame_plan"]
         usage_specs = concerns["table_usage_meanings"]
         direct_reads = exact_direct_table_ids(context, "READ")
@@ -38,7 +38,7 @@ def build_table_usage_meaning_batch_values(
                 profile, usage_specs, direct_reads, direct_writes,
                 table_descriptions,
             ),
-            "numbered_source": excerpt.numbered_text,
+            "relevant_source": render_table_source(context, code_by_id, cache),
         }
     return {
         # Recorder identity only. The prompt template does not reference this value.

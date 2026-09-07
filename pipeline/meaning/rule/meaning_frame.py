@@ -163,9 +163,8 @@ def rule_meaning_wire_keys(
 def build_rule_meaning_packet(
     evidence: Mapping[str, object],
     *,
-    numbered_source: str,
     referenced_symbols: Sequence[ReferencedSymbolContext] = (),
-    callee_outcomes_by_id: Mapping[str, Mapping[str, object]] | None = None,
+    callee_effects_by_id: Mapping[str, Mapping[str, object]] | None = None,
     table_descriptions: Mapping[str, Mapping[str, object]] | None = None,
     api_contracts: Sequence[object] = (),
 ) -> dict[str, object]:
@@ -180,13 +179,13 @@ def build_rule_meaning_packet(
     condition_keys = _wire_key_map(conditions, "C")
     effect_keys = _wire_key_map(effects, "E")
     row_keys = _wire_key_map(rows, "R")
-    callee_outcomes = callee_outcomes_by_id or {}
+    callee_effects = callee_effects_by_id or {}
     tables = table_descriptions or {}
     contracts = _api_contracts_by_name(api_contracts)
     compact_effects = {
         effect_keys[ref]: _project_effect(
             payload,
-            callee_outcomes=callee_outcomes,
+            callee_effects=callee_effects,
             table_descriptions=tables,
             api_contracts=contracts,
         )
@@ -195,13 +194,13 @@ def build_rule_meaning_packet(
     compact_rows = {
         row_keys[key]: _project_row(
             row,
+            anchor_line=int(key[1:]),
             condition_keys=condition_keys,
             effect_keys=effect_keys,
         )
         for key, row in rows.items()
     }
     packet: dict[str, object] = {
-        "source": numbered_source,
         "effects": compact_effects,
         "rows": compact_rows,
     }
@@ -280,7 +279,7 @@ def _project_symbol(symbol: ReferencedSymbolContext) -> dict[str, object] | None
 def _project_effect(
     payload: Mapping[str, object],
     *,
-    callee_outcomes: Mapping[str, Mapping[str, object]],
+    callee_effects: Mapping[str, Mapping[str, object]],
     table_descriptions: Mapping[str, Mapping[str, object]],
     api_contracts: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
@@ -289,15 +288,15 @@ def _project_effect(
     if op == "call":
         target = str(payload.get("target") or "")
         result["callee"] = target
-        call_source = str(payload.get("call_source") or "").strip()
-        if call_source:
-            result["source"] = call_source
         callee_id = str(payload.get("callee_id") or "")
-        outcome = callee_outcomes.get(callee_id)
-        if isinstance(outcome, Mapping):
-            meaning = str(outcome.get("meaning") or "").strip()
-            if meaning:
-                result["callee_outcome"] = meaning
+        effects = callee_effects.get(callee_id)
+        if isinstance(effects, Mapping):
+            visible = {
+                key: value for key, value in effects.items()
+                if key != "callee" and value not in (None, "", (), [], {})
+            }
+            if visible:
+                result["callee_effects"] = visible
         contract = api_contracts.get(target)
         if contract is not None:
             result["api_contract"] = dict(contract)
@@ -321,6 +320,7 @@ def _project_effect(
 def _project_row(
     row: Mapping[str, object],
     *,
+    anchor_line: int,
     condition_keys: Mapping[str, str],
     effect_keys: Mapping[str, str],
 ) -> dict[str, object]:
@@ -332,6 +332,7 @@ def _project_row(
         wire_key = condition_keys[internal_key]
         when.append(f"!{wire_key}" if negated else wire_key)
     result: dict[str, object] = {
+        "line": anchor_line,
         "kind": str(row.get("role") or ""),
         "when": when,
         "effects": [effect_keys[str(value)] for value in row.get("direct") or ()],
@@ -340,20 +341,12 @@ def _project_row(
         result["after_control"] = True
     if str(row.get("at_label") or "").strip():
         result["at_label"] = True
+    source = str(row.get("source") or "").strip()
+    if source:
+        result["source"] = source
     post_condition = row.get("post_condition")
     if post_condition is not None and str(post_condition).strip():
         result["post_condition"] = str(post_condition)
-    children = row.get("nested_children") or ()
-    if children:
-        result["nested_controls"] = [
-            {
-                key: child[key]
-                for key in ("type", "condition", "condition_timing")
-                if isinstance(child, Mapping) and child.get(key) not in (None, "")
-            }
-            for child in children
-            if isinstance(child, Mapping)
-        ]
     return result
 
 

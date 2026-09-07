@@ -72,11 +72,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
     def test_prompt_packet_omits_private_ids_and_attaches_consumed_context(self) -> None:
         packet = build_rule_meaning_packet(
             _EVIDENCE,
-            numbered_source=(
-                '1135 | if (ctx->gc_usim_yn != "Y") {\n'
-                "1138 |   c520_mms_psbl_yn_check(ctx);\n"
-                "1139 | }"
-            ),
             referenced_symbols=(
                 ReferencedSymbolContext(
                     id="private-symbol-id",
@@ -91,8 +86,8 @@ class RuleMeaningFrameTest(unittest.TestCase):
                     kind="parameter",
                 ),
             ),
-            callee_outcomes_by_id={
-                "callee-private-id": {"meaning": "가입 상태를 바탕으로 MMS 가능 여부를 반환한다"},
+            callee_effects_by_id={
+                "callee-private-id": {"callee": "check", "returns": ["Y", "N"]},
             },
             api_contracts=(
                 {"name": "c520_mms_psbl_yn_check", "return_role": "가능 여부"},
@@ -113,19 +108,19 @@ class RuleMeaningFrameTest(unittest.TestCase):
             "declared_value": '"N"',
         }], packet["used_symbols"])
         effect = packet["effects"]["E1"]
-        self.assertEqual(
-            "c520_mms_psbl_yn_check(ctx)",
-            effect["source"],
-        )
+        self.assertNotIn("source", effect)
         self.assertNotIn("receiver", effect)
         self.assertNotIn("arguments", effect)
-        self.assertEqual(
-            "가입 상태를 바탕으로 MMS 가능 여부를 반환한다",
-            effect["callee_outcome"],
-        )
+        self.assertEqual({"returns": ["Y", "N"]}, effect["callee_effects"])
         self.assertEqual({"return_role": "가능 여부"}, effect["api_contract"])
         self.assertEqual(
-            {"kind": "decision", "when": ["C1"], "effects": ["E1"]},
+            {
+                "line": 17,
+                "kind": "decision",
+                "when": ["C1"],
+                "effects": ["E1"],
+                "source": "c520_mms_psbl_yn_check(ctx);",
+            },
             packet["rows"]["R1"],
         )
 
@@ -152,7 +147,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
         }
         packet = build_rule_meaning_packet(
             evidence,
-            numbered_source="1 | UPDATE orders SET status = 'DONE';",
             table_descriptions={
                 "db:orders": {
                     "name": "orders",
@@ -183,7 +177,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             build_rule_meaning_packet(
                 evidence,
-                numbered_source="1138 | c520_mms_psbl_yn_check(ctx);",
             )
 
     def test_rule_structure_and_display_meaning_are_kept_separate(self) -> None:
@@ -300,7 +293,6 @@ class RuleMeaningFrameTest(unittest.TestCase):
     def test_wire_keys_and_schema_do_not_expose_internal_coordinates_or_hashes(self) -> None:
         packet = build_rule_meaning_packet(
             _EVIDENCE,
-            numbered_source="17 | c520_mms_psbl_yn_check(ctx);",
         )
         rendered = str(packet)
         self.assertNotIn("C17", rendered)

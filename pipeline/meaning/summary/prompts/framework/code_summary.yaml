@@ -41,26 +41,13 @@ user_template_specific: |
   - 저수준 자료구조·문자열 연산은 `Util`, 횡단 시스템 기능은 `Utility`다.
   - 결정론 writes가 있는 target에 조회 전용 역할을 선택하지 않는다.
 
-  ## [SELF CHECK]
-
-  - 최상위에 response_format이 요구한 필드만 썼는가
-  - `summary`는 TARGET 전체의 자연스러운 한 흐름인가
-  - `stereotype`은 ontology literal이고 summary와 모순되지 않는가
-
 user_template_dynamic_inputs: |
   # [INPUT — SUMMARY meaning packet]
 
   response_locale: {response_locale}
   자연어 의미 값만 이 언어로 작성한다. 원문 리터럴과 물리 식별자는 번역하지 않는다.
 
-  structural_profile_json:
-  {structural_profile}
-
-  linked_callee_outcomes_json:
-  {linked_callee_outcomes}
-
-  linked_external_sources_json:
-  {linked_external_sources}
+  {summary_context}
 
   ## [SOURCE]
   각 줄은 `절대 파일 줄번호 | 원문`이다. 줄번호는 근거를 맞추는 좌표일 뿐 실행 코드가 아니다.

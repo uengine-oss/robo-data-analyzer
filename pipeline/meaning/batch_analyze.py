@@ -36,8 +36,10 @@ from pipeline.meaning.table.prompt_values import (
 )
 from pipeline.meaning.batch_node_identity import batch_node_keys
 from pipeline.meaning.source_body import exact_source_body
+from pipeline.meaning.source_outline import render_source_outline
 from pipeline.meaning.three_split_llm_fanout import (
-    _direct_callee_outcomes_by_id,
+    _direct_callee_effects_by_id,
+    _project_referenced_symbols,
     _run_frame_summary,
 )
 from pipeline.source_languages import ROUTINE_LABELS
@@ -63,6 +65,7 @@ from pipeline.models.code_analysis_output import (
 )
 from pipeline.meaning.table.response_schema import (
     batch_function_table_usages_response_model,
+    function_table_usage_prompt_assignments,
     normalize_batch_function_table_usages_response,
 )
 from pipeline.meaning.rule.row_batching import (
@@ -640,16 +643,24 @@ async def _collect_keyed_concern(
             context = contexts[node_id]
             profile, _all_specs, concerns = context.extra["_semantic_frame_plan"]
             slot_specs = concerns["summary"]
-            excerpt = source_cache.excerpt(
-                context.file_path, context.start_line, context.end_line,
-            )
             analysis_inputs = {
                 "raw_source_code": exact_source_body(context, source_cache),
-                "numbered_source_code": excerpt.numbered_text,
+                "source_outline": render_source_outline(
+                    code_by_id[node_id], code_by_id,
+                ),
+                "direct_table_usages": list(
+                    function_table_usage_prompt_assignments(
+                        profile,
+                        concerns["table_usage_meanings"],
+                        exact_direct_table_ids(context, "READ"),
+                        exact_direct_table_ids(context, "WRITE"),
+                    ).values()
+                ),
+                "referenced_symbols": _project_referenced_symbols(context),
                 "external_source_text_by_id": {
                     item.id: item.text for item in context.external_evidence
                 },
-                "callee_outcomes_by_id": _direct_callee_outcomes_by_id(
+                "callee_effects_by_id": _direct_callee_effects_by_id(
                     context,
                     contexts,
                 ),
@@ -666,6 +677,12 @@ async def _collect_keyed_concern(
                 queued_at = time.monotonic()
                 waiting_before = llm_slots.waiting
                 async with llm_slots.at(SUMMARY_WAKE_PRIORITY, SUMMARY_LANE):
+                    payload_chars = sum(
+                        len(str(value)) for value in summary_values.values()
+                    )
+                    queue_wait_ms = round(
+                        (time.monotonic() - queued_at) * 1000, 3,
+                    )
                     log_info(
                         _STEP,
                         "llm_slot_acquired",
@@ -675,10 +692,8 @@ async def _collect_keyed_concern(
                         node_count=1,
                         node_id=node_id,
                         priority=SUMMARY_WAKE_PRIORITY,
-                        payload_chars=sum(
-                            len(str(value)) for value in summary_values.values()
-                        ),
-                        queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+                        payload_chars=payload_chars,
+                        queue_wait_ms=queue_wait_ms,
                         waiting_before=waiting_before,
                         slots_in_use=llm_slots.in_use,
                         slots_capacity=llm_slots.capacity,
@@ -689,6 +704,17 @@ async def _collect_keyed_concern(
                         user_values=summary_values,
                         response_model=summary_model,
                         budget=cost_budget,
+                        request_metrics={
+                            "concern": "summary",
+                            "lane": SUMMARY_LANE,
+                            "queue_wait_ms": queue_wait_ms,
+                            "payload_chars": payload_chars,
+                            "node_count": 1,
+                            "input_sections": {
+                                "source": len(summary_values["code_body"]),
+                                "context": len(summary_values["summary_context"]),
+                            },
+                        },
                     )
 
             return node_id, await _run_frame_summary(
@@ -742,6 +768,7 @@ async def _collect_keyed_concern(
     values = build_table_usage_meaning_batch_values(
         batch=Batch(parent_id, tuple(node_ids)),
         contexts=contexts,
+        code_by_id=code_by_id,
         table_descriptions=table_descriptions,
         cache=source_cache,
     )
@@ -752,6 +779,7 @@ async def _collect_keyed_concern(
     payload_chars = sum(len(str(value)) for value in values.values())
     queue_lane = TABLE_USAGE_MEANINGS_LANE
     async with llm_slots.at(queue_priority, queue_lane):
+        queue_wait_ms = round((time.monotonic() - queued_at) * 1000, 3)
         log_info(
             _STEP,
             "llm_slot_acquired",
@@ -761,7 +789,7 @@ async def _collect_keyed_concern(
             node_count=len(node_ids),
             priority=queue_priority,
             payload_chars=payload_chars,
-            queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+            queue_wait_ms=queue_wait_ms,
             waiting_before=waiting_before,
             slots_in_use=llm_slots.in_use,
             slots_capacity=llm_slots.capacity,
@@ -772,6 +800,14 @@ async def _collect_keyed_concern(
             user_values=values,
             response_model=effective_response_model,
             budget=cost_budget,
+            request_metrics={
+                "concern": concern,
+                "lane": queue_lane,
+                "queue_wait_ms": queue_wait_ms,
+                "payload_chars": payload_chars,
+                "node_count": len(node_ids),
+                "input_sections": {"table_packets": payload_chars},
+            },
         )
     output = normalize_batch_function_table_usages_response(
         output, table_usage_assignments,
@@ -882,11 +918,8 @@ async def _collect_dbms_rule_meanings(
         active_assignments[node_key] = evidence
         packets[node_key] = build_rule_meaning_packet(
                 evidence,
-                numbered_source=source_cache.excerpt(
-                    context.file_path, context.start_line, context.end_line,
-                ).numbered_text,
                 referenced_symbols=context.referenced_symbols,
-                callee_outcomes_by_id=_direct_callee_outcomes_by_id(
+                callee_effects_by_id=_direct_callee_effects_by_id(
                     context, dict(contexts),
                 ),
                 table_descriptions=table_descriptions,
@@ -910,6 +943,7 @@ async def _collect_dbms_rule_meanings(
         waiting_before = llm_slots.waiting
         try:
             async with llm_slots.at(0, RULES_LANE):
+                queue_wait_ms = round((time.monotonic() - queued_at) * 1000, 3)
                 log_info(
                     _STEP,
                     "llm_slot_acquired",
@@ -918,7 +952,7 @@ async def _collect_dbms_rule_meanings(
                     parent_id=parent_id,
                     node_count=len(active_assignments),
                     payload_chars=len(values["rule_packets"]),
-                    queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+                    queue_wait_ms=queue_wait_ms,
                     waiting_before=waiting_before,
                     slots_in_use=llm_slots.in_use,
                     slots_capacity=llm_slots.capacity,
@@ -931,6 +965,16 @@ async def _collect_dbms_rule_meanings(
                     user_values=values,
                     response_model=batch_rule_meaning_response_model(active_assignments),
                     budget=cost_budget,
+                    request_metrics={
+                        "concern": "rules",
+                        "lane": RULES_LANE,
+                        "queue_wait_ms": queue_wait_ms,
+                        "payload_chars": len(values["rule_packets"]),
+                        "node_count": len(active_assignments),
+                        "input_sections": {
+                            "rule_packets": len(values["rule_packets"]),
+                        },
+                    },
                 )
             projected_by_key = project_batch_rule_meanings(
                 output, active_assignments,

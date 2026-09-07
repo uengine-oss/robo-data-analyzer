@@ -48,10 +48,8 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             {
                 **rule["static_values"],
                 "response_locale": locale,
-                "linked_external_sources": "[]",
-                "linked_callee_outcomes": "[]",
                 "code_body": body,
-                "structural_profile": "{}",
+                "summary_context": "## [STRUCTURE]\n1 : FUNCTION",
             },
         )
 
@@ -62,9 +60,9 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                 rendered = self._render_framework_summary(body, locale)
                 self.assertIn(body, rendered)
                 self.assertIn(f"response_locale: {locale}", rendered)
-                self.assertIn("structural_profile_json:", rendered)
+                self.assertIn("## [STRUCTURE]", rendered)
                 self.assertNotIn("applicable_slots_json:", rendered)
-                self.assertIn("linked_external_sources_json:", rendered)
+                self.assertNotIn("## [LINKED PROJECT CONTRACTS]", rendered)
                 self.assertNotIn("module_intent:", rendered)
                 self.assertNotIn("direct_data_object_usages_json:", rendered)
                 self.assertNotIn("`slots`", rendered)
@@ -83,18 +81,16 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
             {
                 **rule["static_values"],
                 "response_locale": "fr",
-                "structural_profile": "{}",
-                "linked_callee_outcomes": "[]",
-                "linked_external_sources": "[]",
+                "summary_context": "## [STRUCTURE]\n1 : PROCEDURE",
                 "code_body": body,
             },
         )
         self.assertIn(body, rendered)
         self.assertIn("response_locale: fr", rendered)
-        self.assertIn("structural_profile_json:", rendered)
+        self.assertIn("## [STRUCTURE]", rendered)
         self.assertNotIn("applicable_slots_json:", rendered)
-        self.assertIn("linked_callee_outcomes_json:", rendered)
-        self.assertIn("linked_external_sources_json:", rendered)
+        self.assertNotIn("## [DIRECT CALLEE EFFECTS]", rendered)
+        self.assertNotIn("## [LINKED PROJECT CONTRACTS]", rendered)
         self.assertIn(stereotype_prompt_options("dbms"), rendered)
         self.assertNotIn("`ApplicationService`, `DomainService`", rendered)
 
@@ -136,10 +132,10 @@ class SemanticPromptGeneralityTest(unittest.TestCase):
                         expanded = expanded.replace("{" + key + "}", value)
                     self.assertTrue(template.lstrip().startswith("# [TASK"))
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
-                    for contract_marker in (
-                        "[OUTPUT CONTRACT", "[DECISION", "[SELF CHECK]",
-                    ):
+                    for contract_marker in ("[OUTPUT CONTRACT", "[DECISION"):
                         self.assertIn(contract_marker, expanded)
+                    if "summary" not in name:
+                        self.assertIn("[SELF CHECK]", expanded)
                     self.assertLess(template.index("# [TASK"), template.index("# [INPUT"))
 
         self.assertFalse(

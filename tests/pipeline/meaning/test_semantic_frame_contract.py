@@ -24,7 +24,6 @@ from pipeline.models.semantic_frame import (
     evidence_id,
     mark_semantic_frame_insufficient,
     merge_semantic_frames,
-    profile_prompt_json,
     target_digest,
 )
 from pipeline.meaning.summary.response_schema import (
@@ -308,14 +307,13 @@ return rc;
             if unavailable_refs.intersection(spec.evidence_refs)
         )
         self.assertEqual(1, len(dependency_specs))
-        prompt_profile = json.loads(profile_prompt_json(profile, dependency_specs))
         self.assertEqual(
             "unavailable_cycle",
             next(
-                fact["dependency_status"]
-                for fact in prompt_profile["facts"]
-                if fact["kind"] == "CALL"
-                and fact.get("dependency_status")
+                fact.attributes["dependency_status"]
+                for fact in profile.evidence.values()
+                if fact.kind == "CALL"
+                and fact.attributes.get("dependency_status")
             ),
         )
 
@@ -512,8 +510,6 @@ END;"""
         profile, specs = build_code_semantic_plan(_routine(), context)
         summary_specs = semantic_concern_slots(specs)["summary"]
 
-        full = json.loads(profile_prompt_json(profile))
-        projected = json.loads(profile_prompt_json(profile, summary_specs))
         assigned_refs = {
             ref
             for spec in summary_specs
@@ -531,8 +527,6 @@ END;"""
             if ref in statement_refs
         ]
 
-        self.assertIsInstance(projected["facts"], list)
-        self.assertGreater(len(full["evidence"]), 500)
         self.assertEqual(statement_refs, set(processing_refs))
         self.assertEqual(len(statement_refs), len(processing_refs))
 
@@ -623,7 +617,9 @@ END;"""
         observed_external_refs: list[str] = []
 
         async def invoke(values, response_model):
-            payload = json.loads(values["linked_external_sources"])
+            payload = json.loads(values["summary_context"].split(
+                "## [LINKED PROJECT CONTRACTS]\n", 1,
+            )[1])
             self.assertTrue(all(set(item) == {"kind", "matched_key", "text"} for item in payload))
             observed_payloads.extend(item["text"] for item in payload)
             observed_external_refs.extend(item["matched_key"] for item in payload)
@@ -659,12 +655,9 @@ END;"""
         source_lines = [f"source line {line}" for line in range(10, 17)]
         source_lines[3] = r'''call("\\t", 'quoted');'''
         source = "\n".join(source_lines)
-        observed_profiles: list[dict] = []
+        observed_contexts: list[str] = []
 
         async def invoke(values, response_model):
-            prompt_profile = json.loads(values["structural_profile"])
-            self.assertIsInstance(prompt_profile["facts"], list)
-
             expected_lines = list(range(10, 17))
             expected_source = "\n".join(
                 f"{line} | {source_lines[line - 10]}" for line in expected_lines
@@ -673,12 +666,13 @@ END;"""
             self.assertEqual(
                 {
                     "target_id",
-                    "code_body", "structural_profile",
-                    "linked_callee_outcomes", "linked_external_sources",
+                    "code_body", "summary_context",
                 },
                 set(values),
             )
-            observed_profiles.append(prompt_profile)
+            self.assertIn("10-16 : FUNCTION", values["summary_context"])
+            self.assertNotIn('"facts"', values["summary_context"])
+            observed_contexts.append(values["summary_context"])
             payload = {
                 "summary": "입력을 검사하고 처리 결과를 반환한다.",
                 "stereotype": "Validator",
@@ -694,7 +688,7 @@ END;"""
         ))
 
         self.assertTrue(result.summary)
-        self.assertEqual(1, len(observed_profiles))
+        self.assertEqual(1, len(observed_contexts))
 
     def test_routine_summary_roles_follow_actual_structure_and_stay_bounded(self):
         source = "int check(void *ctx) {\nreturn RC_NRM;\n}"

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import json
-
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import (
     AnalysisContext,
     CallArgumentFact,
     CallOccurrenceFact,
-)
-from pipeline.models.semantic_frame import (
-    profile_prompt_json,
 )
 from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
@@ -20,7 +15,7 @@ from pipeline.meaning.three_split_llm_fanout import (
 )
 
 
-def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
+def test_summary_packet_replaces_fact_dump_with_compact_source_outline() -> None:
     fn = CodeNode(
         id="code:sample.c:work",
         signature="void work(void)",
@@ -58,51 +53,35 @@ def test_summary_packet_keeps_one_canonical_copy_of_assigned_facts() -> None:
         summary_specs,
         {
             "raw_source_code": "send(value);",
-            "callee_outcomes_by_id": {
+            "source_outline": "1 : FUNCTION\n  1 : CALL",
+            "direct_table_usages": [],
+            "referenced_symbols": [],
+            "callee_effects_by_id": {
                 "code:sample.c:send": {
                     "callee": "int send(int value)",
-                    "meaning": "값을 전송하고 성공 여부를 반환한다.",
+                    "returns": ["0", "-1"],
                 },
             },
         },
     )
 
-    projected = json.loads(values["structural_profile"])
-    assert "file" not in projected["target"]
-    assert "lines" not in projected["target"]
-    assert "evidence" not in projected
-    assert isinstance(projected["facts"], list)
-    assert all("file" not in fact for fact in projected["facts"])
-    assert sum(
-        fact["kind"] == "CALL"
-        for fact in projected["facts"]
-    ) == 1
-    projected_call = next(
-        fact for fact in projected["facts"] if fact["kind"] == "CALL"
-    )
-    assert projected_call == {
-        "kind": "CALL",
-        "line": 1,
-        "callee": "send",
-        "role": "effect",
-    }
     canonical_call = next(
         fact for fact in profile.evidence.values() if fact.kind == "CALL"
     )
     assert canonical_call.attributes["occurrence_id"] == "call-1"
     assert canonical_call.attributes["source_range"] == [0, 11]
-    assert "occurrence_id" not in values["structural_profile"]
-    assert "call-1" not in values["structural_profile"]
-    assert len(values["structural_profile"]) < len(profile_prompt_json(profile))
+    assert "occurrence_id" not in values["summary_context"]
+    assert "call-1" not in values["summary_context"]
+    assert '"facts"' not in values["summary_context"]
+    assert "1 : FUNCTION\n  1 : CALL" in values["summary_context"]
     assert "applicable_slots" not in values
-    assert json.loads(values["linked_callee_outcomes"]) == [{
-        "callee": "int send(int value)",
-        "meaning": "값을 전송하고 성공 여부를 반환한다.",
-    }]
+    assert "DIRECT CALLEE EFFECTS" in values["summary_context"]
+    assert '"returns":["0","-1"]' in values["summary_context"]
+    assert "DIRECT TABLE ACCESS" not in values["summary_context"]
+    assert "EXTERNAL SYMBOLS" not in values["summary_context"]
+    assert "LINKED PROJECT CONTRACTS" not in values["summary_context"]
     assert set(values) == {
         "target_id",
         "code_body",
-        "structural_profile",
-        "linked_callee_outcomes",
-        "linked_external_sources",
+        "summary_context",
     }

@@ -31,3 +31,12 @@
 - 허용된 기존 Neo4j DB에서 transaction·검색·API·UI 연결을 검증한다.
 - OpenAI 소규모 확인 뒤 GPU 5만 LOC를 한 번 측정한다.
 - 결과 문서와 저장소별 커밋을 만들고 push한다.
+
+## 6. LLM 입력과 지연 재검증
+
+- 실제 prompt builder를 concern별 최소 projection으로 바꾸고 prompt 계약·schema·테스트를 함께 맞춘다.
+- Summary의 구조 fact dump를 들여쓰기 구조 트리로 교체하고, 빈 section과 전체 callee Summary를 제거한다.
+- Rule의 source 중복 condition/effect와 누적 row 경로를 구조 참조로 교체한다.
+- Table Usage는 직접 접근의 원인·조건·결과에 연결된 source만 투영한다.
+- 각 요청의 Analyzer queue, first chunk, generation, validation과 token을 한 record에서 비교한다.
+- 기존 봉인 GPU 실행은 재실행하지 않고 회귀·작은 실제 입력·승인된 실호출 순으로 검증한다.

@@ -68,9 +68,9 @@ def test_unicode_quotes_and_commas_survive_context():
 def test_framework_and_dbms_consumers_use_same_json_contract():
     framework = (_ROOT / "pipeline/meaning/three_split_llm_fanout.py").read_text(encoding="utf-8")
     dbms = (_ROOT / "pipeline/meaning/batch_analyze.py").read_text(encoding="utf-8")
-    # Framework와 DBMS 모두 같은 단일 summary builder를 사용한다. SYMBOL facts는
-    # structural_profile에 한 번만 들어가며 별도 flat dump로 중복하지 않는다.
-    assert "profile_prompt_json(profile, specs)" in framework
+    # Framework와 DBMS 모두 같은 단일 summary builder를 사용한다. source 밖에서만
+    # 필요한 symbol 값은 한 번만 projection하고 전체 structural fact dump는 보내지 않는다.
+    assert "_project_referenced_symbols(ctx)" in framework
     assert "_run_frame_summary" in framework
     assert "_run_frame_summary" in dbms
 

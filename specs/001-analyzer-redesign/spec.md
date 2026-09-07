@@ -22,6 +22,27 @@ Parser가 만든 구조 사실을 Analyzer가 의미로 해석하여 사람이 �
 
 세 응답은 하나로 합치지 않는다. 각 결과를 자신이 소유한 함수·관계·Rule에 적용한다. 입력에는 판단에 필요한 원문과 구조만 넣고 저장 ID, 해시, 경로, byte offset, 실행 상태, 중복 설명은 넣지 않는다.
 
+### 요청별 최소 입력
+
+- Summary는 줄 번호가 붙은 함수 전체 원문, `라인 범위 : 구문 타입` 형식의 들여쓰기 구조 트리,
+  확정된 직접 Table·Column·READ/WRITE, 원문 밖 필수 symbol, 호출자가 관찰하는 직접 callee 결과와
+  현재 함수의 의미를 바꾸는 프로젝트 고유 계약만 받는다.
+- 구조 트리는 부모·자식을 들여쓰기로 표현한다. 조건식, 호출문, 대입식, 누적 실행 경로, 내부 ID와
+  원문에서 다시 읽을 수 있는 값을 반복하지 않는다.
+- Rule은 의미를 채울 condition·effect·row의 source 위치와 중첩 구조, 관련 source 구간 및 원문 밖
+  필수 symbol·callee·Table/API 계약만 받는다. source에 이미 있는 condition/effect 문자열과 부모
+  `when` 경로를 각 row에 누적 복제하지 않는다.
+- Table Usage는 확정된 Table·READ/WRITE·Column·발생 위치와 그 접근의 입력 구성·실행 조건·결과
+  소비를 판단하는 source 구간만 받는다. 무관한 함수 본문은 보내지 않는다.
+- 선택 section이 비면 section 이름과 빈 배열·객체를 모두 보내지 않는다.
+
+### 요청별 성능 증거
+
+각 실제 요청은 Analyzer 슬롯 대기, 첫 응답 chunk까지의 시간, 첫 chunk 이후 완료까지의 시간,
+응답 검증 시간, 입력·출력 token과 결과 상태를 같은 요청 좌표로 기록한다. 첫 chunk 시간은 서버 queue와
+prefill이 합쳐진 관측값이므로 서버가 별도 지표를 제공하지 않는 한 순수 prefill이라고 부르지 않는다.
+전체 wall time만으로 모델·서버·Analyzer 중 어느 하나를 원인으로 단정하지 않는다.
+
 ## 그래프
 
 - Parser의 실제 label을 source 노드 label로 사용한다.
@@ -56,3 +77,4 @@ Parser가 만든 구조 사실을 Analyzer가 의미로 해석하여 사람이 �
 5. OpenAI 소규모 실호출 결과와 토큰 사용량을 확인한다.
 6. GPU 모델로 약 5만 LOC를 정확히 한 번 실행해 시간·토큰·결과를 기록한다.
 7. 최종 문서, 작업 보고, 커밋과 원격 push가 완료된다.
+8. LLM 요청별 queue·first-chunk·generation·validation 지연과 입력 section 크기를 감사할 수 있다.

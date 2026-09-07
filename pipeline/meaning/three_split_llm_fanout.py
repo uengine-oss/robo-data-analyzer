@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from pipeline.meaning.source_body import exact_source_body
+from pipeline.meaning.source_outline import render_source_outline
 from pipeline.meaning.table.rule_tables import (
     serialize_rules,
 )
@@ -60,7 +61,6 @@ from pipeline.meaning.summary.response_schema import (
 from pipeline.models.semantic_frame import (
     mark_semantic_frame_insufficient,
     merge_semantic_frames,
-    profile_prompt_json,
 )
 from pipeline.meaning.semantic_frame_planner import (
     build_code_semantic_plan,
@@ -71,6 +71,7 @@ from pipeline.meaning.table.response_schema import (
     function_table_usages_response_model,
     normalize_function_table_usages_response,
 )
+from pipeline.meaning.table.source_projection import render_table_source
 from pipeline.meaning.rule.meaning_frame import (
     build_rule_meaning_packet,
     prepare_rule_meaning_assignment,
@@ -151,31 +152,54 @@ def _assigned_external_source_texts(
     return source_texts
 
 
-def _direct_callee_outcomes_by_id(
+def _direct_callee_effects_by_id(
     ctx: AnalysisContext,
     contexts: dict[str, AnalysisContext],
-) -> dict[str, dict[str, str]]:
-    """Return the direct callee outcomes that source and CALL facts cannot recover."""
-    meanings: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, object]]:
+    """Return only deterministic caller-visible effects absent from caller source."""
+    outcomes: dict[str, dict[str, object]] = {}
     for callee_id in ctx.callees:
         callee = contexts.get(callee_id)
         if callee is None:
             continue
-        meaning = (callee.summary or "").strip()
-        if not meaning:
-            continue
         signature = (callee.signature or "").strip()
         if not signature:
-            raise ValueError("linked callee meaning lacks a model-safe signature")
-        meanings[callee_id] = {
-            "callee": signature,
-            "meaning": meaning,
-        }
-    return meanings
+            raise ValueError("linked callee effect lacks a model-safe signature")
+        value: dict[str, object] = {"callee": signature}
+        returns = tuple(callee.extra.get("return_expressions") or ())
+        if returns:
+            value["returns"] = list(returns)
+        if callee.writes:
+            value["writes"] = list(callee.writes)
+        terminations = tuple(callee.extra.get("termination_effects") or ())
+        if terminations:
+            value["terminations"] = list(terminations)
+        if len(value) > 1:
+            outcomes[callee_id] = value
+    return outcomes
+
+
+def _project_referenced_symbols(ctx: AnalysisContext) -> list[dict[str, object]]:
+    """Keep only source-external symbol facts that can change code meaning."""
+    projected: list[dict[str, object]] = []
+    for symbol in ctx.referenced_symbols:
+        value: dict[str, object] = {"name": symbol.name, "kind": symbol.kind}
+        for key, item in (
+            ("type", symbol.data_type),
+            ("value", symbol.declared_value),
+            ("value_meaning", symbol.value_semantics),
+        ):
+            if str(item).strip():
+                value[key] = item
+        if symbol.initialization_sources:
+            value["initialization_sources"] = list(symbol.initialization_sources)
+        if len(value) > 2:
+            projected.append(value)
+    return projected
 
 
 def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
-    """Build one model packet from only its assigned facts and exact source lines."""
+    """Build the minimal Summary packet without repeating source expressions."""
     specs = tuple(slot_specs)
     source_text = str(analysis_inputs.get("raw_source_code") or "")
     external_by_chunk = dict(analysis_inputs.get("external_source_text_by_id") or {})
@@ -192,19 +216,37 @@ def _summary_prompt_values(profile, slot_specs, analysis_inputs: dict) -> dict:
         specs,
         external_by_chunk,
     )
-    callee_meanings_by_id = dict(analysis_inputs.get("callee_outcomes_by_id") or {})
-    linked_callee_outcomes = list(callee_meanings_by_id.values())
+    callee_effects_by_id = dict(analysis_inputs.get("callee_effects_by_id") or {})
+    linked_callee_effects = list(callee_effects_by_id.values())
     def _dump(value: object) -> str:
         return json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
+    outline = str(analysis_inputs.get("source_outline") or "").strip()
+    if not outline:
+        span = (
+            str(profile.target.start_line)
+            if profile.target.start_line == profile.target.end_line
+            else f"{profile.target.start_line}-{profile.target.end_line}"
+        )
+        outline = f"{span} : {profile.target.type}"
+    sections = [
+        "## [STRUCTURE — line range : syntax type]\n"
+        + outline,
+    ]
+    for title, value in (
+        ("DIRECT TABLE ACCESS", analysis_inputs.get("direct_table_usages") or ()),
+        ("EXTERNAL SYMBOLS", analysis_inputs.get("referenced_symbols") or ()),
+        ("DIRECT CALLEE EFFECTS", linked_callee_effects),
+        ("LINKED PROJECT CONTRACTS", external_source_texts),
+    ):
+        if value:
+            sections.append(f"## [{title}]\n{_dump(value)}")
     return {
         # Recorder identity only. No prompt template references this value.
         "target_id": profile.target.id,
         "code_body": source_packet,
-        "structural_profile": profile_prompt_json(profile, specs),
-        "linked_callee_outcomes": _dump(linked_callee_outcomes),
-        "linked_external_sources": _dump(external_source_texts),
+        "summary_context": "\n\n".join(sections),
     }
 
 
@@ -229,7 +271,7 @@ def _table_usage_meaning_values(
             sort_keys=True,
             separators=(",", ":"),
         ),
-        "code_body": analysis_inputs["numbered_source_code"],
+        "code_body": analysis_inputs["table_source"],
     }
 
 
@@ -265,8 +307,8 @@ async def analyze_code_three_split(
     """코드노드 1개의 관심사 분석 결과를 ``CodeNode``에 적용해 반환.
 
     흐름: summary/rule-atom/table-usage meaning LLM을 독립 실행한다.
-    ``precomputed_summary``가 있으면 summary만 재호출하지 않는다. 확정된 callee summary는
-    summary와 Rule 입력에는 각 concern이 직접 소비하는 callee 결과만 한 번 남는다.
+    ``precomputed_summary``가 있으면 summary만 재호출하지 않는다. Summary와 Rule에는
+    각 concern이 실제로 소비하는 결정론적 callee 효과만 한 번 전달한다.
 
     Args:
         table_descriptions: ``{table_fqn: DDL 설명}`` — reads/writes 렌더에 의미 부여.
@@ -326,11 +368,13 @@ async def analyze_code_three_split(
         priority: int = 0,
         lane: str,
         payload_chars: int = 0,
+        input_sections: dict[str, int] | None = None,
     ):
         async with track_processing("CodeNode", code_id, sub_action=sub_action):
             queued_at = time.monotonic()
             waiting_before = llm_slots.waiting
             async with llm_slots.at(priority, lane):
+                queue_wait_ms = round((time.monotonic() - queued_at) * 1000, 3)
                 log_info(
                     _STEP,
                     "llm_slot_acquired",
@@ -339,13 +383,19 @@ async def analyze_code_three_split(
                     lane=lane,
                     priority=priority,
                     payload_chars=payload_chars,
-                    queue_wait_ms=round((time.monotonic() - queued_at) * 1000, 3),
+                    queue_wait_ms=queue_wait_ms,
                     waiting_before=waiting_before,
                     slots_in_use=llm_slots.in_use,
                     lane_slots_in_use=llm_slots.in_use_for(lane),
                     slots_capacity=llm_slots.capacity,
                 )
-                return await invoke()
+                return await invoke({
+                    "concern": sub_action,
+                    "lane": lane,
+                    "queue_wait_ms": queue_wait_ms,
+                    "payload_chars": payload_chars,
+                    "input_sections": dict(input_sections or {}),
+                })
 
     # Server logs confirm KV caching, but recorded prompt bytes show that the three
     # concerns share only the global system prompt; their user prompts diverge immediately.
@@ -364,16 +414,21 @@ async def analyze_code_three_split(
                 async def _invoke(values, response_model):
                     return await _track_split(
                         "split_summary",
-                        lambda: run_yaml_rule(
+                        lambda request_metrics: run_yaml_rule(
                             prompts_dir=summary_prompts_dir,
                             rule_name="code_summary",
                             user_values=values,
                             response_model=response_model,
                             budget=cost_budget,
+                            request_metrics=request_metrics,
                         ),
                         priority=SUMMARY_WAKE_PRIORITY,
                         lane=SUMMARY_LANE,
                         payload_chars=sum(len(str(value)) for value in values.values()),
+                        input_sections={
+                            "source": len(values["code_body"]),
+                            "context": len(values["summary_context"]),
+                        },
                     )
 
                 summary_out = await _run_frame_summary(
@@ -417,12 +472,12 @@ async def analyze_code_three_split(
                     on_summary_ready(code_id)
                 return findings
             summary_out.summary = normalize_canonical_summary(summary_out.summary)
-            callee_outcomes = _direct_callee_outcomes_by_id(ctx, contexts)
             copied_from = copied_callee_summary_id(
                 summary_out.summary,
                 (
-                    (callee_id, item["meaning"])
-                    for callee_id, item in callee_outcomes.items()
+                    (callee_id, contexts[callee_id].summary)
+                    for callee_id in ctx.callees
+                    if callee_id in contexts
                 ),
             )
             if copied_from is not None:
@@ -577,9 +632,8 @@ async def analyze_code_three_split(
             )
         packet = build_rule_meaning_packet(
             model_evidence,
-            numbered_source=analysis_inputs["numbered_source_code"],
             referenced_symbols=ctx.referenced_symbols,
-            callee_outcomes_by_id=_direct_callee_outcomes_by_id(ctx, contexts),
+            callee_effects_by_id=_direct_callee_effects_by_id(ctx, contexts),
             table_descriptions=table_descriptions or {},
             api_contracts=tuple(ctx.extra.get("api_contracts") or ()),
         )
@@ -597,7 +651,7 @@ async def analyze_code_three_split(
         try:
             output = await _track_split(
                 "split_rules",
-                lambda: run_yaml_rule(
+                lambda request_metrics: run_yaml_rule(
                     prompts_dir=rule_prompts_dir,
                     rule_name="code_rule_meanings",
                     user_values=values,
@@ -605,9 +659,11 @@ async def analyze_code_three_split(
                         packet.get("conditions", {}), packet["effects"], packet["rows"],
                     ),
                     budget=cost_budget,
+                    request_metrics=request_metrics,
                 ),
                 lane=RULES_LANE,
                 payload_chars=len(values["rule_packet"]),
+                input_sections={"rule_packet": len(values["rule_packet"])},
             )
         except ModelOutputError as error:
             return apply_rule_meaning_projections(
@@ -653,17 +709,24 @@ async def analyze_code_three_split(
                 )
                 output = await _track_split(
                     "split_table_usage_meanings",
-                    lambda: run_yaml_rule(
+                    lambda request_metrics: run_yaml_rule(
                         prompts_dir=table_prompts_dir,
                         rule_name="code_table_usage_meanings",
                         user_values=usage_values,
                         response_model=usage_model,
                         budget=cost_budget,
+                        request_metrics=request_metrics,
                     ),
                     payload_chars=sum(
                         len(str(value)) for value in usage_values.values()
                     ),
                     lane=TABLE_USAGE_MEANINGS_LANE,
+                    input_sections={
+                        "table_assignments": len(
+                            usage_values["assigned_table_usages"]
+                        ),
+                        "source": len(usage_values["code_body"]),
+                    },
                 )
                 return output, None
             except ModelOutputError as error:
@@ -856,11 +919,14 @@ def _prepare_analysis_inputs(
     cache: SourceFileCache,
 ) -> tuple[dict, object]:
     """Prepare one canonical source/context packet and its branch inventory."""
-    excerpt = cache.excerpt(ctx.file_path, ctx.start_line, ctx.end_line)
     raw_body = exact_source_body(ctx, cache)
     inventory = build_control_inventory(fn, ctx, cache)
     # 상태 추적 없이 소스에 직접 쓰인 반환 표현식만 bottom-up 인터페이스로 전달한다.
     ctx.extra["return_expressions"] = sorted(inventory.return_expressions)
+    ctx.extra["termination_effects"] = [
+        {"line": line, "kind": kind}
+        for line, kind, _source in inventory.termination_rows
+    ]
     persist_branch_table(fn, inventory)
     persist_rule_audit(
         fn,
@@ -882,11 +948,19 @@ def _prepare_analysis_inputs(
     ctx.extra["_semantic_frame_plan"] = (profile, slot_specs, concerns)
     values = {
         "raw_source_code": raw_body,
-        "numbered_source_code": excerpt.numbered_text,
+        "source_outline": render_source_outline(fn, code_by_id),
+        "direct_table_usages": list(function_table_usage_prompt_assignments(
+            profile,
+            concerns["table_usage_meanings"],
+            exact_direct_table_ids(ctx, "READ"),
+            exact_direct_table_ids(ctx, "WRITE"),
+        ).values()),
+        "referenced_symbols": _project_referenced_symbols(ctx),
+        "table_source": render_table_source(ctx, code_by_id, cache),
         "external_source_text_by_id": {
             item.id: item.text for item in ctx.external_evidence
         },
-        "callee_outcomes_by_id": _direct_callee_outcomes_by_id(ctx, contexts),
+        "callee_effects_by_id": _direct_callee_effects_by_id(ctx, contexts),
         "control_branch_index": inventory.branch_index(),
     }
     return values, inventory

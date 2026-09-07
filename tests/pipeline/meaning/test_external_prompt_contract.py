@@ -19,9 +19,9 @@ class ExternalPromptContractTest(unittest.TestCase):
     def test_linked_external_sources_live_only_in_user_template(self) -> None:
         summary = load_semantic_rule("framework", "code_summary")
         table = load_semantic_rule("framework", "code_table_usage_meanings")
-        self.assertNotIn("{linked_external_sources}", summary.get("system", ""))
-        self.assertIn("{linked_external_sources}", summary.get("user_template", ""))
-        self.assertNotIn("{linked_external_sources}", table.get("user_template", ""))
+        self.assertNotIn("{summary_context}", summary.get("system", ""))
+        self.assertIn("{summary_context}", summary.get("user_template", ""))
+        self.assertNotIn("{summary_context}", table.get("user_template", ""))
 
     def test_system_prefix_is_static_and_byte_identical_across_loads(self) -> None:
         for rule_name in RULES:
@@ -37,9 +37,9 @@ class ExternalPromptContractTest(unittest.TestCase):
         system = rule.get("system", "")
         user = rule.get("user_template", "")
         contract = rule["static_values"]["summary_grounding_contract"]
-        self.assertNotIn("linked_external_sources", system)
-        self.assertIn("linked_external_sources_json", user)
-        self.assertIn("request-local 결합 key", contract)
+        self.assertNotIn("LINKED PROJECT CONTRACTS", system)
+        self.assertIn("{summary_context}", user)
+        self.assertIn("LINKED PROJECT CONTRACTS", contract)
         for removed in ("CALLS_SQL", "USES_CONFIG", "MENTIONS"):
             self.assertNotIn(removed, system + user + contract)
 
@@ -47,12 +47,16 @@ class ExternalPromptContractTest(unittest.TestCase):
         rule = load_semantic_rule("framework", "code_summary")
         template = rule.get("user_template", "")
         values = {
-            "structural_profile": "{}",
-            "linked_callee_outcomes": "[]",
             "code_body": "void a() {}",
         }
-        left = _safe_format(template, {**values, "linked_external_sources": '[{"text":"first text"}]'})
-        right = _safe_format(template, {**values, "linked_external_sources": '[{"text":"second text"}]'})
+        left = _safe_format(template, {
+            **values,
+            "summary_context": '## [LINKED PROJECT CONTRACTS]\n[{"text":"first text"}]',
+        })
+        right = _safe_format(template, {
+            **values,
+            "summary_context": '## [LINKED PROJECT CONTRACTS]\n[{"text":"second text"}]',
+        })
         self.assertNotEqual(left, right)
         self.assertIn('"text":"first text"', left)
         self.assertNotIn("second text", left)

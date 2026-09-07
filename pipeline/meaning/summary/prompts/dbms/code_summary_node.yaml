@@ -35,27 +35,13 @@ user_template_specific: |
   - 코드·마스터·설정 조회 자체가 목적이면 `MetadataLookup`, 허용/정합 판정이면 `Validator`다.
   - 다수 행 일괄 처리가 골격이면 `BatchProcessor`, 커서 순회·행별 위임이 골격이면 `CursorLooper`다.
 
-  ## [SELF CHECK]
-
-  - required 필드를 전부 정확히 한 번 썼는가
-  - summary는 structural facts와 exact SOURCE만 설명하는가
-  - summary는 현재 TARGET 전체의 자연스러운 한 흐름인가
-  - stereotype을 ontology 값 하나로 정확히 한 번 출력했는가
-
 user_template_dynamic_inputs: |
   # [INPUT — SUMMARY meaning packet]
 
   response_locale: {response_locale}
   자연어 의미 값만 이 언어로 작성한다. 원문 리터럴과 물리 식별자는 번역하지 않는다.
 
-  structural_profile_json:
-  {structural_profile}
-
-  linked_callee_outcomes_json:
-  {linked_callee_outcomes}
-
-  linked_external_sources_json:
-  {linked_external_sources}
+  {summary_context}
 
   ## [SOURCE]
   각 줄은 `절대 파일 줄번호 | 원문`이다. 줄번호는 근거를 맞추는 좌표일 뿐 실행 코드가 아니다.

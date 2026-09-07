@@ -120,7 +120,6 @@ class LlmBoundaryContractTest(unittest.TestCase):
         for relative_path in (
             "agents/prompts/residual.yaml",
             "pipeline/meaning/summary/prompts/framework/_common.yaml",
-            "pipeline/meaning/summary/prompts/dbms/_common.yaml",
         ):
             with self.subTest(relative_path=relative_path):
                 self.assertNotIn(

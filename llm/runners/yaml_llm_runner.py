@@ -45,8 +45,9 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional, TypeVar
+from typing import Any, Mapping, Optional, TypeVar
 
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
 
@@ -69,6 +70,81 @@ from pipeline.execution.run_output_context import get_run_dir
 T = TypeVar("T", bound=BaseModel)
 
 
+class _RequestTimingCallback(AsyncCallbackHandler):
+    """Observe client-visible stream timing without claiming provider internals."""
+
+    def __init__(self, started_at: float) -> None:
+        self.started_at = started_at
+        self.first_chunk_at: float | None = None
+        self.last_chunk_at: float | None = None
+        self.chunk_count = 0
+
+    async def on_llm_new_token(
+        self, token: str, *, chunk: Any = None, **kwargs: Any,
+    ) -> None:
+        now = time.monotonic()
+        if self.first_chunk_at is None:
+            self.first_chunk_at = now
+        self.last_chunk_at = now
+        self.chunk_count += 1
+
+    def fields(self) -> dict[str, object]:
+        first = self.first_chunk_at
+        last = self.last_chunk_at
+        return {
+            "streaming_observed": first is not None,
+            "time_to_first_chunk_ms": (
+                int((first - self.started_at) * 1000) if first is not None else None
+            ),
+            "generation_ms": (
+                int((last - first) * 1000)
+                if first is not None and last is not None else None
+            ),
+            "stream_chunk_count": self.chunk_count,
+        }
+
+
+def _request_timing_metadata(
+    request_metrics: Mapping[str, object] | None,
+    callback: _RequestTimingCallback,
+    *,
+    model_latency_ms: int,
+    validation_ms: int,
+) -> dict[str, object]:
+    metadata = {
+        **dict(request_metrics or {}),
+        **callback.fields(),
+        "model_latency_ms": model_latency_ms,
+        "validation_ms": validation_ms,
+    }
+    queue_wait = metadata.get("queue_wait_ms")
+    if isinstance(queue_wait, (int, float)) and not isinstance(queue_wait, bool):
+        metadata["request_total_ms"] = round(
+            float(queue_wait) + model_latency_ms + validation_ms, 3,
+        )
+    candidates: dict[str, float] = {
+        "queue_wait": float(queue_wait or 0),
+        "validation": float(validation_ms),
+    }
+    first_chunk = metadata.get("time_to_first_chunk_ms")
+    generation = metadata.get("generation_ms")
+    if isinstance(first_chunk, (int, float)) and isinstance(generation, (int, float)):
+        candidates.update({
+            "first_chunk_wait": float(first_chunk),
+            "stream_generation": float(generation),
+            "stream_finish": max(
+                float(model_latency_ms) - float(first_chunk) - float(generation),
+                0.0,
+            ),
+        })
+    else:
+        candidates["model_total"] = float(model_latency_ms)
+    largest_stage, largest_ms = max(candidates.items(), key=lambda item: item[1])
+    metadata["largest_observed_stage"] = largest_stage
+    metadata["largest_observed_stage_ms"] = round(largest_ms, 3)
+    return metadata
+
+
 from llm.runners.prompt_rules import _load_rule, render_rule_user_content
 from llm.runners.prompt_values import _extract_target_and_sort
 from llm.runners.model_invocation import _write_error_record
@@ -89,6 +165,7 @@ async def run_yaml_rule(
     response_model: type[T] | None,
     budget: Optional[CostBudget] = None,
     model_override: Optional[str] = None,
+    request_metrics: Mapping[str, object] | None = None,
 ) -> T | str:
     """yaml 룰 로딩 + LLM 호출 → Pydantic 응답 (또는 평문 텍스트).
 
@@ -115,6 +192,23 @@ async def run_yaml_rule(
     response_schema = (
         response_model.model_json_schema() if response_model is not None else None
     )
+    request_metrics = dict(request_metrics or {})
+    if "payload_chars" in request_metrics:
+        request_metrics["input_value_chars"] = request_metrics["payload_chars"]
+    prompt_chars = len(system_prompt) + len(user_content)
+    response_schema_chars = len(
+        json.dumps(
+            response_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    ) if response_schema is not None else 0
+    request_metrics.update({
+        "prompt_chars": prompt_chars,
+        "response_schema_chars": response_schema_chars,
+        "payload_chars": prompt_chars + response_schema_chars,
+    })
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(SETTINGS.analysis_llm.config)
@@ -180,10 +274,35 @@ async def run_yaml_rule(
                 int((time.monotonic() - cache_start) * 1000),
                 response_schema,
                 structured_output_method,
+                request_metadata=request_metrics,
             )
             raise error
     if cached is not None:
         lookup_ms = int((time.monotonic() - cache_start) * 1000)
+        queue_wait = request_metrics.get("queue_wait_ms")
+        queue_wait_value = (
+            float(queue_wait)
+            if isinstance(queue_wait, (int, float)) and not isinstance(queue_wait, bool)
+            else 0.0
+        )
+        cache_timing: dict[str, object] = {
+            **request_metrics,
+            "streaming_observed": False,
+            "time_to_first_chunk_ms": None,
+            "generation_ms": None,
+            "stream_chunk_count": 0,
+            "model_latency_ms": 0,
+            "validation_ms": 0,
+            "cache_lookup_ms": lookup_ms,
+        }
+        if isinstance(queue_wait, (int, float)) and not isinstance(queue_wait, bool):
+            cache_timing["request_total_ms"] = round(queue_wait_value + lookup_ms, 3)
+        if queue_wait_value >= lookup_ms:
+            cache_timing["largest_observed_stage"] = "queue_wait"
+            cache_timing["largest_observed_stage_ms"] = queue_wait_value
+        else:
+            cache_timing["largest_observed_stage"] = "cache_lookup"
+            cache_timing["largest_observed_stage_ms"] = lookup_ms
         # 적중도 LLM 호출이다 — 적재를 건너뛰면 "모든 LLM 호출을 usage.jsonl 에 적재"
         # (Plan §4 M0) 가 깨지고 사용량 통계가 호출 수를 과소 보고한다.
         # 서버를 안 불렀으므로 토큰·비용은 0 이고, model 은 키를 만든 요청측 이름이다
@@ -211,6 +330,7 @@ async def run_yaml_rule(
                 ),
             },
             metadata={
+                **cache_timing,
                 "model": cache_model,
                 "response_cache_hit": True,
                 "latency_ms": lookup_ms,
@@ -246,11 +366,14 @@ async def run_yaml_rule(
     repetition_guard = (
         RepetitionGuardCallback(f"rule:{rule_name}") if guard_on else None
     )
-    invoke_config = (
-        {"callbacks": [repetition_guard]} if repetition_guard is not None else None
-    )
 
     start = time.monotonic()
+    timing_callback = _RequestTimingCallback(start)
+    callbacks = [
+        callback for callback in (repetition_guard, timing_callback)
+        if callback is not None
+    ]
+    invoke_config = {"callbacks": callbacks}
     log_info("llm.call", "start", agent=f"rule:{rule_name}")
     try:
         result = await runnable.ainvoke(messages, config=invoke_config)
@@ -281,6 +404,12 @@ async def run_yaml_rule(
             rule_name, system_prompt, user_content, user_values, e, elapsed_ms,
             response_schema, structured_output_method,
             streamed_partial=streamed_partial,
+            request_metadata=_request_timing_metadata(
+                request_metrics,
+                timing_callback,
+                model_latency_ms=elapsed_ms,
+                validation_ms=0,
+            ),
         )
         if partial_stream_stall:
             raise ModelOutputError(
@@ -299,6 +428,7 @@ async def run_yaml_rule(
             ) from e
         raise
     latency_ms = int((time.monotonic() - start) * 1000)
+    validation_started = time.monotonic()
 
     if response_model is None:
         raw_msg, parsed, parsing_error = result, result.content, None
@@ -333,6 +463,8 @@ async def run_yaml_rule(
             parsed = None
             parsing_error = error
 
+    validation_ms = int((time.monotonic() - validation_started) * 1000)
+
     if raw_msg is None:
         error = UnmeteredLlmCallError(
             f"yaml rule {rule_name!r} response has no raw AI message; "
@@ -347,11 +479,23 @@ async def run_yaml_rule(
         _write_error_record(
             rule_name, system_prompt, user_content, user_values, error, latency_ms,
             response_schema, structured_output_method,
+            request_metadata=_request_timing_metadata(
+                request_metrics,
+                timing_callback,
+                model_latency_ms=latency_ms,
+                validation_ms=validation_ms,
+            ),
         )
         raise error
 
     # 비용 추적 — Agent 외부라 미들웨어 안 붙음. 직접 처리 + usage.jsonl 적재.
     metadata: dict = {
+        **_request_timing_metadata(
+            request_metrics,
+            timing_callback,
+            model_latency_ms=latency_ms,
+            validation_ms=validation_ms,
+        ),
         "latency_ms": latency_ms,
         "structured_output_method": (
             structured_output_method if response_schema is not None else None

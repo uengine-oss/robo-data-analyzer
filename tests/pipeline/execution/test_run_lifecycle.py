@@ -198,6 +198,60 @@ class UsageSummaryContractTest(unittest.TestCase):
         self.assertEqual(1, summary["total"]["calls"])
         self.assertEqual(0, summary["total"]["response_cache_hits"])
 
+    def test_request_performance_reports_stage_and_correlations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory)
+            (run_dir / "usage.jsonl").write_text(
+                json.dumps({
+                    "agent": "rule:code_summary", "model": "m",
+                    "input_tokens": 10, "output_tokens": 2,
+                    "cached_tokens": 0, "total_tokens": 12, "cost_usd": 0,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            prompt_dir = run_dir / "llm-prompts"
+            prompt_dir.mkdir()
+            rows = [
+                {
+                    "target_id": f"code:{index}",
+                    "metadata": {
+                        "queue_wait_ms": index * 10,
+                        "time_to_first_chunk_ms": index * 20,
+                        "generation_ms": index * 30,
+                        "validation_ms": 1,
+                        "model_latency_ms": index * 50,
+                        "request_total_ms": index * 60,
+                        "input_tokens": index * 100,
+                        "output_tokens": index * 10,
+                        "payload_chars": index * 400,
+                        "input_sections": {"source": index * 300},
+                        "largest_observed_stage": "stream_generation",
+                    },
+                }
+                for index in (1, 2)
+            ]
+            (prompt_dir / "code_summary.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+
+            run_executor._summarize_usage(run_dir)
+            summary = json.loads(
+                (run_dir / "usage_summary.json").read_text(encoding="utf-8")
+            )["request_performance"]
+
+        self.assertEqual(2, summary["calls"])
+        self.assertEqual(
+            {"stream_generation": 2}, summary["largest_observed_stage_counts"],
+        )
+        self.assertEqual("code:2", summary["slowest_requests"][0]["target_id"])
+        self.assertEqual(
+            1.0,
+            summary["per_rule"][0]["correlations"][
+                "input_tokens_to_model_latency"
+            ],
+        )
+
 
 class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod

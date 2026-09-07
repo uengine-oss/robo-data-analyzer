@@ -21,8 +21,8 @@ user_template_dynamic_inputs: |
 
   assigned_table_usages_json: {assigned_table_usages}
 
-  ## 번호가 붙은 원문
-  각 줄은 literal delimiter와 escape를 바꾸지 않은 exact text다.
+  ## 직접 접근 관련 원문
+  각 줄은 Parser/링커가 접근에 결속한 exact text다. 임의 주변 줄은 포함하지 않는다.
   ```
   {code_body}
   ```

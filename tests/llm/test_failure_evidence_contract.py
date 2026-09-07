@@ -20,7 +20,11 @@ from llm.repetition_guard import RepetitionLoopAborted
 from llm.structured_output import STRUCTURED_RESPONSE_NAME
 from llm.runners.model_output_error import ModelOutputError
 from llm.runners.model_invocation import _extract_partial_content, _write_error_record
-from llm.runners.yaml_llm_runner import run_yaml_rule
+from llm.runners.yaml_llm_runner import (
+    _RequestTimingCallback,
+    _request_timing_metadata,
+    run_yaml_rule,
+)
 from llm.usage.token_usage import TokenUsageRecord
 from pipeline.execution.run_output_context import (
     reset_response_locale,
@@ -39,6 +43,32 @@ class _LocaleAwareAsyncTestCase(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         reset_response_locale(self._response_locale_token)
+
+
+class RequestTimingContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_observation_separates_first_chunk_and_generation(self) -> None:
+        callback = _RequestTimingCallback(started_at=10.0)
+        with patch(
+            "llm.runners.yaml_llm_runner.time.monotonic",
+            side_effect=(11.25, 14.75),
+        ):
+            await callback.on_llm_new_token("first")
+            await callback.on_llm_new_token("last")
+
+        metadata = _request_timing_metadata(
+            {"queue_wait_ms": 500, "payload_chars": 1234},
+            callback,
+            model_latency_ms=6000,
+            validation_ms=25,
+        )
+
+        self.assertTrue(metadata["streaming_observed"])
+        self.assertEqual(1250, metadata["time_to_first_chunk_ms"])
+        self.assertEqual(3500, metadata["generation_ms"])
+        self.assertEqual(2, metadata["stream_chunk_count"])
+        self.assertEqual(6525, metadata["request_total_ms"])
+        self.assertEqual("stream_generation", metadata["largest_observed_stage"])
+        self.assertEqual(3500, metadata["largest_observed_stage_ms"])
 
 
 class ParsingErrorEvidenceTest(_LocaleAwareAsyncTestCase):
@@ -190,7 +220,7 @@ class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
         return prompts_dir, with_structured_output, record
 
     async def test_provider_receives_binding_copy_and_internal_model_returns(self) -> None:
-        prompts_dir, boundary, _record = await self._invoke({"value": "parsed"})
+        prompts_dir, boundary, record = await self._invoke({"value": "parsed"})
         canonical = _Response.model_json_schema()
 
         result = await run_yaml_rule(
@@ -198,6 +228,11 @@ class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
             rule_name="boundary",
             user_values={"value": "input"},
             response_model=_Response,
+            request_metrics={
+                "concern": "summary",
+                "queue_wait_ms": 12.5,
+                "payload_chars": 321,
+            },
         )
 
         schema_arg = boundary.call_args.args[0]
@@ -213,6 +248,28 @@ class ProviderSchemaBoundaryTest(_LocaleAwareAsyncTestCase):
         self.assertTrue(boundary.call_args.kwargs["strict"])
         self.assertIsInstance(result, _Response)
         self.assertEqual("parsed", result.value)
+        metadata = record.call_args.kwargs["metadata"]
+        self.assertEqual("summary", metadata["concern"])
+        self.assertEqual(12.5, metadata["queue_wait_ms"])
+        self.assertEqual(321, metadata["input_value_chars"])
+        self.assertGreater(metadata["prompt_chars"], 0)
+        self.assertGreater(metadata["response_schema_chars"], 0)
+        self.assertEqual(
+            metadata["prompt_chars"] + metadata["response_schema_chars"],
+            metadata["payload_chars"],
+        )
+        self.assertIn("model_latency_ms", metadata)
+        self.assertIn("validation_ms", metadata)
+        self.assertFalse(metadata["streaming_observed"])
+        self.assertIsNone(metadata["time_to_first_chunk_ms"])
+        self.assertIsNone(metadata["generation_ms"])
+        self.assertEqual(0, metadata["stream_chunk_count"])
+        self.assertIn(
+            metadata["largest_observed_stage"],
+            {"queue_wait", "model_total", "validation"},
+        )
+        self.assertIn("largest_observed_stage_ms", metadata)
+        self.assertIn("request_total_ms", metadata)
 
     async def test_internal_validation_failure_keeps_raw_and_fails_closed(self) -> None:
         prompts_dir, _boundary, record = await self._invoke({})

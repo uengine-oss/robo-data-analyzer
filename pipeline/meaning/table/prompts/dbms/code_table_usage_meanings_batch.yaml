@@ -19,7 +19,7 @@ user_template_dynamic_inputs: |
   # [INPUT]
 
   response_locale: {response_locale}
-  각 packet의 `numbered_source`는 literal delimiter와 escape를 바꾸지 않은 exact text다.
+  각 packet의 `relevant_source`는 Parser/링커가 직접 접근에 결속한 exact text다.
 
   table_usage_packets_json:
   {table_usage_packets}

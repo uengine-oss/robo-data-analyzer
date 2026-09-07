@@ -214,9 +214,7 @@ class ProductionProviderRequestInventoryTest(unittest.TestCase):
             "rows": {"R1": {"when": ["C1"], "direct": ["E1"]}},
         }
         summary_values = {
-            "structural_profile": '{"target":{"signature":"f()"},"facts":[]}',
-            "linked_callee_outcomes": "[]",
-            "linked_external_sources": "[]",
+            "summary_context": "## [STRUCTURE]\n1 : FUNCTION",
             "code_body": "1 | return 0;",
         }
         framework_summary = prompt_dir("framework", "code_summary")

@@ -1,16 +1,8 @@
-## [FUNCTION SUMMARY ROLE CONTRACT]
-
 Summary는 호출자가 관측하는 target의 전체 책임을 한 흐름으로 쓴다. 선행 검증, 조건별 처리,
 직접 CALL/RW, 상태 변화와 결과를 연결하되 callee 내부 책임이나 일부 오류 경로를 전체 정책으로
 일반화하지 않는다. cycle로 callee 결과가 unavailable이면 호출 경계만 보존하고 보이지 않는 결과를
 만들지 않는다.
 
-## [DECISION]
-
 선언됐지만 사용되지 않는 파라미터는 미사용 자체가 완전한 interface 사실이다. write-only/output-only
 parameter를 입력으로 읽는다고 만들지 말고 SOURCE의 출력 변경과 조건만 쓴다. 즉시 상수 반환 no-op도
 보이는 그대로 완전하다. 이름에서 예상한 검사·변환이 없거나 호출자 문맥 부재를 이유로 낮추지 않는다.
-
-## [SELF CHECK]
-
-SOURCE에 없는 역할이나 결과를 만들지 않았는지 확인한다.

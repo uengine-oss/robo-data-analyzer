@@ -79,6 +79,7 @@ def _write_error_record(
     response_schema: dict | None = None,
     structured_output_method: str | None = None,
     streamed_partial: str = "",
+    request_metadata: dict | None = None,
 ) -> None:
     """LLM 호출 실패 시에도 prompt + error 적재 — 사후 디버깅 (silent skip 차단).
 
@@ -99,6 +100,7 @@ def _write_error_record(
             user_content=user_content,
             response=partial_content if partial_content else None,
             metadata={
+                **(request_metadata or {}),
                 "error": f"{type(error).__name__}: {error}",
                 "latency_ms": elapsed_ms,
                 "partial_chars": len(partial_content) if partial_content else 0,

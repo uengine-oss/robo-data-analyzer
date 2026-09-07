@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
-
 from graph.schema.graph_nodes import CodeNode
 from pipeline.models.analysis_context import (
     AnalysisContext,
     ControlSubtreeNode,
     StatementFact,
 )
-from pipeline.models.semantic_frame import profile_prompt_json
 from pipeline.checks.branch_inventory import build_inventory
 from pipeline.checks.rule_obligations import required_rule_rows
 from pipeline.meaning.semantic_frame_planner import (
@@ -36,7 +33,7 @@ def _expression(
     }
 
 
-def test_processing_slot_keeps_expression_canonical_without_duplicate_model_input() -> None:
+def test_processing_slot_keeps_expression_canonical() -> None:
     fn = CodeNode(
         id="routine",
         signature="void routine(void)",
@@ -95,26 +92,10 @@ def test_processing_slot_keeps_expression_canonical_without_duplicate_model_inpu
         and spec.role in {"RESPONSIBILITY", "INPUT_ROLE"}
         for spec in specs
     )
-    canonical_prompt = json.loads(profile_prompt_json(profile))
-    assert set(canonical_prompt["expression_refs"]) == set(profile.expression_refs)
-    assert all(
-        canonical_prompt["evidence"][ref]["kind"] == "EXPRESSION"
-        for ref in profile.expression_refs
-    )
-    assert "expression_closure" not in canonical_prompt
-    prompt = json.loads(profile_prompt_json(profile, (effect,)))
-    assert "expression_closure" not in prompt
-    target_only_prompt = json.loads(profile_prompt_json(profile, ()))
-    assert target_only_prompt["facts"] == []
-    assert not any(
-        fact["kind"] == "EXPRESSION" for fact in prompt["facts"]
-    )
-    # Full nested provenance remains canonical and is not overwritten by the prompt view.
+    # Full nested provenance remains canonical for deterministic consumers.
     assert profile.evidence[profile.expression_refs[0]].attributes["expression"][
         "source_range"
     ] == {"char_offset": 40, "char_length": 1}
-
-    assert all("source_range" not in fact for fact in prompt["facts"])
 
 
 def test_case_slot_relates_parent_subject_to_case_value_by_structure() -> None:

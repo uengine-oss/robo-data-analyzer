@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1043,6 +1044,9 @@ def _summarize_usage(run_dir: Path) -> None:
             for (agent, model), stats in sorted(per_agent_model.items())
         ],
     }
+    request_performance = _summarize_request_performance(run_dir)
+    if request_performance is not None:
+        summary["request_performance"] = request_performance
     (run_dir / "usage_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1133,3 +1137,152 @@ def _summarize_analysis_findings(
         by_status=counts["by_status"] or None,
     )
     return counts
+
+
+def _summarize_request_performance(run_dir: Path) -> dict[str, object] | None:
+    """Aggregate request traces while keeping every raw request in llm-prompts."""
+    prompt_dir = run_dir / "llm-prompts"
+    if not prompt_dir.is_dir():
+        return None
+    rows: list[dict[str, object]] = []
+    for path in sorted(prompt_dir.glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            metadata = record.get("metadata") or {}
+            if "model_latency_ms" not in metadata:
+                continue
+            rows.append({
+                "rule": path.stem,
+                "target_id": str(record.get("target_id") or ""),
+                **metadata,
+            })
+    if not rows:
+        return None
+
+    stage_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        stage_counts[str(row.get("largest_observed_stage") or "unknown")] += 1
+    numeric_fields = (
+        "queue_wait_ms",
+        "time_to_first_chunk_ms",
+        "generation_ms",
+        "validation_ms",
+        "model_latency_ms",
+        "request_total_ms",
+        "input_tokens",
+        "output_tokens",
+        "input_value_chars",
+        "prompt_chars",
+        "response_schema_chars",
+        "payload_chars",
+    )
+    by_rule: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        by_rule[str(row["rule"])].append(row)
+    per_rule = []
+    for rule, rule_rows in sorted(by_rule.items()):
+        per_rule.append({
+            "rule": rule,
+            "calls": len(rule_rows),
+            "metrics": {
+                field: stats
+                for field in numeric_fields
+                if (stats := _numeric_distribution(rule_rows, field)) is not None
+            },
+            "correlations": {
+                "input_tokens_to_first_chunk_wait": _correlation(
+                    rule_rows, "input_tokens", "time_to_first_chunk_ms",
+                ),
+                "output_tokens_to_stream_generation": _correlation(
+                    rule_rows, "output_tokens", "generation_ms",
+                ),
+                "input_tokens_to_model_latency": _correlation(
+                    rule_rows, "input_tokens", "model_latency_ms",
+                ),
+                "output_tokens_to_model_latency": _correlation(
+                    rule_rows, "output_tokens", "model_latency_ms",
+                ),
+            },
+        })
+    slowest = sorted(
+        rows,
+        key=lambda row: float(
+            row.get("request_total_ms") or row.get("model_latency_ms") or 0
+        ),
+        reverse=True,
+    )[:20]
+    return {
+        "measurement_boundary": {
+            "queue_wait_ms": "Analyzer semaphore wait",
+            "time_to_first_chunk_ms": (
+                "client-visible wait including network, provider queue, and prefill"
+            ),
+            "generation_ms": "first through last observed stream chunk",
+            "validation_ms": "local parse and schema validation",
+        },
+        "calls": len(rows),
+        "largest_observed_stage_counts": dict(sorted(stage_counts.items())),
+        "per_rule": per_rule,
+        "slowest_requests": [
+            {
+                key: row[key]
+                for key in (
+                    "rule", "target_id", "largest_observed_stage",
+                    "queue_wait_ms", "time_to_first_chunk_ms", "generation_ms",
+                    "validation_ms", "model_latency_ms", "request_total_ms",
+                    "input_tokens", "output_tokens", "payload_chars",
+                    "input_value_chars", "prompt_chars", "response_schema_chars",
+                    "input_sections", "error",
+                )
+                if row.get(key) is not None
+            }
+            for row in slowest
+        ],
+    }
+
+
+def _numeric_distribution(
+    rows: Sequence[Mapping[str, object]], field: str,
+) -> dict[str, float] | None:
+    values = sorted(
+        float(row[field])
+        for row in rows
+        if isinstance(row.get(field), (int, float))
+        and not isinstance(row.get(field), bool)
+    )
+    if not values:
+        return None
+    return {
+        "avg": round(sum(values) / len(values), 3),
+        "p50": round(values[(len(values) - 1) // 2], 3),
+        "p95": round(values[int((len(values) - 1) * 0.95)], 3),
+        "max": round(values[-1], 3),
+    }
+
+
+def _correlation(
+    rows: Sequence[Mapping[str, object]], left: str, right: str,
+) -> float | None:
+    pairs = [
+        (float(row[left]), float(row[right]))
+        for row in rows
+        if isinstance(row.get(left), (int, float))
+        and not isinstance(row.get(left), bool)
+        and isinstance(row.get(right), (int, float))
+        and not isinstance(row.get(right), bool)
+    ]
+    if len(pairs) < 2:
+        return None
+    left_avg = sum(value for value, _ in pairs) / len(pairs)
+    right_avg = sum(value for _, value in pairs) / len(pairs)
+    numerator = sum(
+        (left_value - left_avg) * (right_value - right_avg)
+        for left_value, right_value in pairs
+    )
+    denominator = math.sqrt(
+        sum((value - left_avg) ** 2 for value, _ in pairs)
+        * sum((value - right_avg) ** 2 for _, value in pairs)
+    )
+    return round(numerator / denominator, 3) if denominator else None
