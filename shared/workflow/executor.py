@@ -52,6 +52,7 @@ async def execute_run(
     strategy: Any,
     codebase: Codebase,
     stream: Optional[NDJSONStream] = None,
+    database: Optional[str] = None,
 ) -> AnalysisRun:
     """AnalysisRun 1회 실행 — 매 호출이 독립 run (``run_id`` 가 유일 식별자).
 
@@ -81,13 +82,18 @@ async def execute_run(
         run_id=run.run_id,
     )
     try:
-        neo_client = Neo4jClient()
+        # 호출자가 대상 graph 를 정하면 그것을, 아니면 ENV 를 쓴다. **아래 wipe 의
+        # 범위가 이 한 줄로 정해진다** — 대상이 주변 환경에서 조용히 정해지면
+        # 한 프로젝트를 분석했을 뿐인데 다른 프로젝트의 결과가 사라진다.
+        target_db = database or ENV.neo4j.database
+        neo_client = Neo4jClient(target_db)
         try:
             # 매 run 시작 — 옛 노드/엣지 wipe (테스트 정책: 깨끗 상태).
             # schema (제약/인덱스) 는 wipe 무관 — ensure_schema 가 idempotent.
             await wipe_graph(neo_client)
             await ensure_schema(neo_client)
-            log_info("run", "neo4j_ready", database=ENV.neo4j.database, wiped=True)
+            log_info("run", "neo4j_ready", database=target_db, wiped=True,
+                     from_request=bool(database))
 
             cost_budget = CostBudget()
             checkpointer = MemorySaver()

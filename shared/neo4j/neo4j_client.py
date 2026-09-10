@@ -35,12 +35,21 @@ class Neo4jClient:
         await client.close()
     """
 
-    def __init__(self):
+    def __init__(self, database: str | None = None):
+        """``database`` 를 주면 그 graph 에 붙는다. 없으면 ``ENV`` 를 쓴다.
+
+        **wipe 범위가 여기서 정해진다.** 매 run 시작에 대상 graph 를 통째로 비우므로,
+        대상이 주변 환경에서 조용히 정해지면 프로젝트 하나를 분석했을 뿐인데 다른
+        프로젝트의 분석 결과가 사라진다. 실제로 그 사고가 있었다.
+
+        ``ENV`` 는 import 시점에 frozen 이라 런타임에 못 바꾼다 — 그래서 **바꾸지
+        않는다.** 값을 여기로 넘길 뿐이고, 안 넘기면 지금까지와 똑같이 동작한다.
+        """
         self._driver = AsyncGraphDatabase.driver(
             ENV.neo4j.uri,
             auth=(ENV.neo4j.user, ENV.neo4j.password),
         )
-        self._database = ENV.neo4j.database
+        self._database = database or ENV.neo4j.database
         self._closed = False
 
         # SIGTERM graceful close (메인 스레드에서만 가능 — 백그라운드 thread 면 실패).

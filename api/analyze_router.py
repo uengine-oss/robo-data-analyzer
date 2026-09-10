@@ -3,6 +3,12 @@
 API key: ``.env`` 의 ``ROBO_LLM_API_KEY`` 단일 진실. 헤더 override 미지원
 (``ENV.llm.api_key`` 는 import 시점에 frozen 되어 런타임 변경 불가 — 글로벌 write 위험 회피).
 
+**대상 graph 는 예외다.** ``X-Neo4j-Database`` 를 받으면 그 run 만 그 graph 에 쓴다.
+``ENV`` 를 바꾸지 않고 값을 run 으로 넘길 뿐이라 위의 "글로벌 write 위험"에 해당하지
+않는다. 매 run 이 대상 graph 를 통째로 비우므로, 대상이 프로세스 환경 하나로
+고정되면 **한 프로젝트를 분석했을 뿐인데 다른 프로젝트의 결과가 사라진다.**
+헤더가 없으면 지금까지처럼 ``ROBO_NEO4J_DATABASE`` 를 쓴다.
+
 엔드포인트 2개::
 
     POST /robo/analyze          — 분석 시작 (NDJSON 스트림 반환)
@@ -17,7 +23,7 @@ import asyncio
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -43,6 +49,8 @@ class AnalyzeRequest(BaseModel):
     """
     project_root: Optional[str] = None
     strategy: str                            # "framework" / "dbms"
+    # 대상 graph. 헤더로도 받는다(헤더 우선) — 본문을 못 고치는 호출자를 위해 둘 다 연다.
+    database: Optional[str] = None
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
     locale: str = "ko"
@@ -53,8 +61,21 @@ class ControlRequest(BaseModel):
     action: Literal["pause", "resume", "stop"]
 
 
+def _target_database(request: Request, req: "AnalyzeRequest") -> Optional[str]:
+    """이 run 이 쓸 graph. 없으면 None → ``ENV`` 폴백.
+
+    ``system`` 은 거부한다 — 실수로 그리로 향하면 wipe 가 저장소 메타를 지운다.
+    """
+    value = (request.headers.get("x-neo4j-database") or req.database or "").strip()
+    if not value:
+        return None
+    if value.lower() == "system":
+        raise HTTPException(status_code=400, detail="system database is forbidden")
+    return value
+
+
 @router.post("/analyze")
-async def analyze(req: AnalyzeRequest) -> StreamingResponse:
+async def analyze(request: Request, req: AnalyzeRequest) -> StreamingResponse:
     """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
 
     매 호출이 독립 run. 클라이언트가 stream 을 끊으면 그 run 은 종료된다.
@@ -82,13 +103,16 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
         locale=req.locale,
     )
 
+    target_db = _target_database(request, req)
+
     stream = NDJSONStream()
 
     async def _run_in_background():
         # execute_run 이 error emit + stream close(finally) 를 책임짐 — 여기선 background
         # task 의 unhandled 예외만 흡수(중복 emit 금지).
         try:
-            await execute_run(strategy=pipeline, codebase=codebase, stream=stream)
+            await execute_run(strategy=pipeline, codebase=codebase, stream=stream,
+                              database=target_db)
         except Exception:
             pass
 
