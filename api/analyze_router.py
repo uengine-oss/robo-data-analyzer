@@ -30,6 +30,8 @@ from pydantic import BaseModel
 from analysis_pipelines import get_pipeline
 from data_models.codebase import Codebase
 from shared.config.env_catalog import ENV
+from shared.config.workspace import current_workspace, data_dir, set_workspace
+from shared.log.logger import log_info
 from shared.log.ndjson_stream import NDJSONStream
 from shared.workflow.executor import execute_run
 from shared.workflow.run_registry import get_active
@@ -89,21 +91,45 @@ async def analyze(request: Request, req: AnalyzeRequest) -> StreamingResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # project_root 미전달 = 업로드 모드 → 공유 data/source. 전달 = 경로 모드(로컬 폴더).
-    root_str = req.project_root or str(ENV.data.dir / "source")
+    # **작업 폴더를 프로젝트마다 가른다.** 예전에는 서버에 하나라, 뒤에 올린
+    # 사람의 소스를 앞사람이 분석했다 — 자기 프로젝트 graph 에 남의 코드가 들어가고
+    # 오류는 안 난다. 대상 graph 와 **같은 값**으로 가르고, 파서도 같은 헤더로 같은
+    # 자리를 쓴다. 값이 없으면 예전 자리 그대로다.
+    set_workspace(_target_database(request, req))
+
+    # project_root 미전달 = 업로드 모드 → 이 프로젝트의 source. 전달 = 경로 모드.
+    root_str = req.project_root or str(data_dir() / "source")
     project_root = Path(root_str)
     if not project_root.exists():
+        # **작업 폴더가 프로젝트마다 갈린 뒤로, "아직 안 올렸다"가 흔한 경우가 됐다.**
+        # 예전에는 공유 폴더에 누군가 올려 둔 것이 있어 그냥 돌았다 — 그게 남의
+        # 코드를 분석하던 원인이다. 이제는 막는 게 맞지만, 경로만 던지면 사람이
+        # 무엇을 해야 할지 알 수 없다.
+        if current_workspace():
+            raise HTTPException(
+                status_code=400,
+                detail=("이 프로젝트에 올린 소스가 없습니다. 먼저 소스를 업로드한 뒤 "
+                        f"분석을 시작하세요. (작업 폴더: {root_str})"),
+            )
         raise HTTPException(status_code=400, detail=f"project_root not found: {root_str}")
+
+    # DDL 도 같은 자리에서 찾는다 — 안 그러면 TABLE 이 조용히 0건이 된다.
+    ddl_dir = Path(req.ddl_dir) if req.ddl_dir else (data_dir() / "ddl")
+    if not ddl_dir.exists():
+        ddl_dir = None
 
     codebase = Codebase(
         root=project_root,
         strategy=req.strategy,  # type: ignore[arg-type]
-        ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
+        ddl_dir=ddl_dir,
         has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
     )
 
     target_db = _target_database(request, req)
+
+    log_info("run", "workspace_scoped", workspace=current_workspace() or "(없음)",
+             root=str(project_root), ddl=str(ddl_dir) if ddl_dir else "(없음)")
 
     stream = NDJSONStream()
 

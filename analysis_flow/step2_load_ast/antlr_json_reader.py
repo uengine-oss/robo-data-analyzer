@@ -26,6 +26,7 @@ from data_models.graph_edges import (
 )
 from data_models.graph_nodes import Constant, DataType, Function, Module, Package, Variable
 from shared.config.env_catalog import ENV
+from shared.config.workspace import data_dir
 from shared.lang.ontology import role_of, sub_label_of
 from shared.lang.source_extension import EXT_TO_LANG
 from shared.log.logger import log_error, log_warning
@@ -69,7 +70,10 @@ def ast_and_source_roots(source_path: Path) -> tuple[Path, Path]:
     ``data/source``, 경로 모드(Electron)면 사용자가 고른 로컬 폴더. 둘 다 ``project_root``
     로 들어오므로 모드 무관하게 동일 처리.
     """
-    analysis_root = ENV.data.dir / "analysis"
+    # **이 요청의 작업 폴더에서 읽는다.** 예전에는 `ENV.data.dir / "analysis"` 로
+    # 고정이라, 소스 경로를 c-src 로 지정해도 **마지막에 파싱된 남의 AST** 를
+    # 읽었다. 오류 없이 남의 코드가 내 프로젝트에 들어간다.
+    analysis_root = data_dir() / "analysis"
     return analysis_root, source_path.resolve()
 
 
