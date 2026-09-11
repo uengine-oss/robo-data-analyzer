@@ -5,6 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from graph.neo4j_client import Neo4jClient
+from shared.config.app_settings import SETTINGS
 from graph.product_graph import GRAPH_OWNER, ProductGraph
 
 
@@ -31,6 +32,14 @@ async def ensure_product_schema(client: Neo4jClient, graph: ProductGraph) -> Non
             f"FOR (n:{label}) REQUIRE n._id IS UNIQUE"
         )
     present = set(labels)
+    if not SETTINGS.analysis_pipeline.embed_enabled:
+        # **임베딩을 끄면 벡터 색인은 채울 것이 없다.** 그런데도 만들면,
+        # 저장소가 벡터 색인을 다르게 받는 경우 run 이 발행 직전에 통째로 죽는다.
+        # Ontological 은 `vector.dimensions` 를 필수로 요구한다:
+        #   Neo.ClientError.Statement.ArgumentError
+        #   CREATE VECTOR INDEX needs OPTIONS {indexConfig: {`vector.dimensions`: N}}
+        # 차원은 임베딩 모델이 정하는 값이라, 임베딩이 꺼진 run 에는 정답이 없다.
+        return
     for label in ROUTINE_LABELS:
         if label not in present:
             continue

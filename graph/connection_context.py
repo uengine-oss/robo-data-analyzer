@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Mapping, Optional
 from urllib.parse import urlsplit
 
+from shared.config.app_settings import SETTINGS
+
 
 @dataclass(frozen=True)
 class Neo4jOverride:
@@ -42,7 +44,22 @@ class Neo4jOverride:
         """
         uri = headers.get("x-neo4j-uri")
         if not uri:
-            return None
+            # **대상 graph 만 정해 주는 호출자가 있다.** 브라우저에서 도는 호스트는
+            # 연결 자격을 클라이언트로 내보내지 않으므로 URI·비밀번호를 실을 수
+            # 없고, 프로젝트마다 분석 graph 를 가르기 위해 `X-Neo4j-Database` 만
+            # 보낸다.
+            #
+            # 여기서 `None` 을 돌려주면 그 run 이 **`.env` 의 공용 graph** 로 가고,
+            # 매 run 이 대상을 통째로 비우므로 다른 프로젝트의 분석이 사라진다.
+            # 오류는 안 난다 — 프로젝트 분리가 조용히 풀린다.
+            database = headers.get("x-neo4j-database") or None
+            if not database:
+                return None
+            if database.lower() == "system":
+                raise ValueError("Neo4j system database is forbidden")
+            fallback = SETTINGS.graph_database
+            return cls(uri=fallback.uri, user=fallback.user,
+                       password=fallback.password, database=database)
         parsed = urlsplit(uri)
         if parsed.scheme not in {
             "bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc"
