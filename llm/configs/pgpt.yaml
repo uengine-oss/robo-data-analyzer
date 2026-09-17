@@ -1,0 +1,43 @@
+# P-GPT — 사내 AI 게이트웨이 (POSCO)
+# ─────────────────────────────────────────────────────────────
+# 분석기는 Architect 백엔드와 **별개 프로세스**라 `PGPT_BASE_URL` 이 안 닿는다.
+# 이 갈래는 코드가 아니라 이 파일로 옮긴다.
+#
+#     ROBO_LLM_CONFIG=pgpt
+#     ROBO_LLM_API_KEY=<게이트웨이 키>      # yaml 에 박지 않는다
+#
+# Architect 쪽 진단(GET /api/auth/provider 의 aiGateway)에서 이 갈래는
+# status=config-only 로 뜬다 — 우리가 못 보는 프로세스라 "돌고 있다"고
+# 말하지 않는다. 실제로 옮겨졌는지는 분석기 기동 로그에서 확인한다.
+#
+# 개발계 http://taigpt.posco.net/gpgpta01-gpt/v1
+# 운영계 http://aigpt.posco.net/gpgpta01-gpt/v1
+#
+# **현재는 OpenAI 본점을 쓴다.** 이 파일은 전환 대상이 준비됐을 때 켜는 자리다.
+# 켜기 전에 게이트웨이가 내는 model slug 를 먼저 확인한다.
+
+provider: openai
+
+api_base: http://aigpt.posco.net/gpgpta01-gpt/v1
+
+# 게이트웨이가 노출하는 slug 로 바꾼다. 본점 이름을 그대로 두면 404 가 난다.
+model: gpt-4.1
+
+# 게이트웨이는 본점보다 컨텍스트가 좁은 경우가 많다. 넘치면 **조용히 잘린 응답**이
+# 오는 쪽이라(ENT-AI-001) 넉넉하게 잡지 않는다.
+max_tokens: 16000
+timeout_seconds: 300
+
+# 사내 게이트웨이가 사설 CA 인증서를 쓰면 false 로 둔다. 기본은 검증한다.
+verify_ssl: true
+
+sampling:
+  temperature: 0.3
+  top_p: 0.8
+
+reasoning_effort: none
+
+# **`json_schema` 를 기본으로 켜지 않는다.** 게이트웨이가 중개하는 모델이 구조화
+# 출력을 지원하는지는 배포마다 다르고, 안 되면 400 이 아니라 **형식이 어긋난 응답**이
+# 온다. 실제 게이트웨이에서 확인한 뒤에 올린다.
+structured_output_method: provider_default
