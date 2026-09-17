@@ -322,13 +322,32 @@ class RuntimeEventSettings:
             )
 
 
+# 이 파일은 ``<repo>/shared/config/app_settings.py`` 다. 그래서 저장소 뿌리는
+# ``parents[2]``, 개발 체크아웃의 작업 트리 뿌리는 ``parents[4]`` 다.
+_REPO_ROOT_DEPTH = 2
+_WORKTREE_ROOT_DEPTH = 4
+
+
+def _run_output_default(config_file: Path) -> Path:
+    """``ROBO_RUN_OUTPUT_DIR`` 이 없을 때 쓸 자리.
+
+    기본은 개발 체크아웃 기준(``parents[4]``)이다 — 저장소 **밖**의 ``_playground``.
+    그런데 컨테이너에서는 이 파일이 ``/app/shared/config/`` 에 있어 위로 4 칸이 없다.
+    그대로 두면 **import 시점에** ``IndexError`` 가 나고, `SETTINGS` 가 모듈 최상위에서
+    만들어지므로 **앱이 아예 안 뜬다** (2026-09-17 실측: 저장소의 Dockerfile 로 구운
+    이미지가 그 자리에서 죽었다).
+
+    위로 4 칸이 없으면 저장소 뿌리 안으로 접는다. 깊은 트리(개발)에서는 값이 그대로다.
+    """
+    parents = config_file.parents
+    depth = _WORKTREE_ROOT_DEPTH if len(parents) > _WORKTREE_ROOT_DEPTH else _REPO_ROOT_DEPTH
+    return parents[depth] / "_playground" / "analyzer" / "runs" / "live"
+
+
 def _resolve_run_output_dir() -> Path:
     raw = os.environ.get("ROBO_RUN_OUTPUT_DIR")
     if raw is None:
-        return (
-            Path(__file__).resolve().parents[4]
-            / "_playground" / "analyzer" / "runs" / "live"
-        )
+        return _run_output_default(Path(__file__).resolve())
     if not raw.strip():
         raise ValueError("ROBO_RUN_OUTPUT_DIR must not be blank")
     return Path(raw)
