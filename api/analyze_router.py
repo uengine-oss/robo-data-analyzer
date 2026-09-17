@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pipeline.pipeline_strategies import get_pipeline
 from pipeline.models.analysis_meta import Codebase
 from shared.config.app_settings import SETTINGS
+from shared.config.workspace import current_workspace, data_dir, set_workspace
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.runtime_logger import log_warning
 from graph.connection_context import Neo4jOverride, set_override
@@ -71,9 +72,17 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
     # Neo4j override 를 이 run 컨텍스트에 설정 — create_task 가 컨텍스트를 복사하므로
     # 파이프라인 전 단계의 Neo4jClient 가 그대로 본다. 헤더 없으면 None → SETTINGS 폴백.
     try:
-        set_override(Neo4jOverride.from_headers(request.headers))
+        override = Neo4jOverride.from_headers(request.headers)
     except ValueError as error:
         raise HTTPException(status_code=400, detail="Invalid Neo4j override headers") from error
+    set_override(override)
+
+    # **작업 폴더를 프로젝트마다 가른다.** 예전에는 서버에 하나라, 뒤에 올린 사람의
+    # 소스를 앞사람이 분석했다 — 자기 프로젝트 graph 에 남의 코드가 들어가고 오류는
+    # 안 난다. 대상 graph 와 **같은 값**으로 가르고, 파서도 같은 헤더로 같은 자리를
+    # 쓴다(`antlr-code-parser` 의 `intake/WorkspaceScope.java`). 값이 없으면
+    # (CLI·브라우저 기본) 예전 자리 그대로다.
+    set_workspace(override.database if override else None)
 
     try:
         pipeline = get_pipeline(req.strategy)
@@ -81,18 +90,30 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
     # 입구 통일: 입력 모드와 무관하게 표준 data/ 만 소비. 소스의 data/ 반입·내용 분류는
-    # 상류 Parser가 책임진다.
-    source_root = SETTINGS.analysis_data.dir / "source"
+    # 상류 Parser가 책임진다. **다만 그 data/ 는 이 run 의 프로젝트 것이다.**
+    corpus_root = data_dir()
+    source_root = corpus_root / "source"
     if not source_root.exists():
+        # **작업 폴더가 프로젝트마다 갈린 뒤로 "아직 안 올렸다"가 흔한 경우가 됐다.**
+        # 예전에는 공용 폴더에 누군가 올려 둔 것이 있어 그냥 돌았다 — 그게 남의 코드를
+        # 분석하던 원인이다. 이제는 막는 게 맞지만, 경로만 던지면 사람이 무엇을 해야
+        # 할지 알 수 없다.
+        if current_workspace():
+            raise HTTPException(
+                status_code=400,
+                detail=("이 프로젝트에 올린 소스가 없습니다. 먼저 소스를 업로드한 뒤 "
+                        f"분석을 시작하세요. (작업 폴더: {source_root})"),
+            )
         raise HTTPException(status_code=400, detail=f"source dir not found: {source_root}")
 
     codebase = Codebase(
         root=source_root,
         strategy=req.strategy,  # type: ignore[arg-type]
-        ddl_dir=SETTINGS.analysis_data.dir / "ddl",
+        # DDL 도 **같은 뿌리에서** 찾는다 — 어긋나면 TABLE 이 조용히 0건이 된다.
+        ddl_dir=corpus_root / "ddl",
         locale=req.locale,
         datasource=req.datasource,
-        corpus_root=SETTINGS.analysis_data.dir,
+        corpus_root=corpus_root,
         selected_source_ids=tuple(req.selected_source_ids),
     )
 
