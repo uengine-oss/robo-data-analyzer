@@ -266,12 +266,16 @@ def _fw_variable(child: dict, ctx: _FwCtx, module_id: str,
                  parent_fid: str | None, owner_routine_id: str | None) -> None:
     vid = _node_id(child, ctx, module_id)
     ctx.result.variables.append(_make_variable(child, vid, module_id, ctx.src_path))
+    # Parser evidence includes calls nested in initializer expressions.  Keep walking
+    # the structural children so the call population remains identical to evidence.
+    _walk_framework(child, ctx, module_id, parent_fid, owner_routine_id)
 
 
 def _fw_constant(child: dict, ctx: _FwCtx, module_id: str,
                  parent_fid: str | None, owner_routine_id: str | None) -> None:
     cid = _node_id(child, ctx, module_id)
     ctx.result.constants.append(_make_constant(child, cid, module_id, ctx.src_path))
+    _walk_framework(child, ctx, module_id, parent_fid, owner_routine_id)
 
 
 def _fw_data_type(child: dict, ctx: _FwCtx, module_id: str,

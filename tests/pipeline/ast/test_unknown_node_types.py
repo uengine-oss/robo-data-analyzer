@@ -82,6 +82,34 @@ class UnknownNodeTypeContractTest(unittest.TestCase):
             with self.assertRaises((ValueError, json.JSONDecodeError)):
                 read_antlr_json(artifact, root)
 
+    def test_initializer_calls_are_preserved_for_evidence_population(self):
+        raw = with_identifier_contract({
+            "type": "FILE", "fileName": "sample.py", "filePath": "sample.py",
+            "packageName": "root",
+            "children": [
+                {
+                    "type": "CONSTANT_FIELD", "name": "PATTERN",
+                    "startLine": 1, "endLine": 1,
+                    "children": [{
+                        "type": "FUNCTION_CALL", "name": "compile",
+                        "startLine": 1, "endLine": 1,
+                    }],
+                },
+                {
+                    "type": "VARIABLE", "name": "cleaned",
+                    "startLine": 2, "endLine": 2,
+                    "children": [{
+                        "type": "FUNCTION_CALL", "name": "sub",
+                        "startLine": 2, "endLine": 2,
+                    }],
+                },
+            ],
+        })
+
+        result = _read_framework(raw, "python", Path("."), Path("sample.py.json"))
+
+        self.assertEqual(["compile", "sub"], [call["call_text"] for call in result.call_sites])
+
 
 if __name__ == "__main__":
     unittest.main()
