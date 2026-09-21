@@ -8,6 +8,7 @@ import hashlib
 from typing import Any, Iterable, Mapping, Sequence
 
 from graph.schema.graph_edges import Calls
+from graph.schema.graph_nodes import CodeNode, Variable
 from pipeline.parsing.adapters.call_adapter import (
     LanguageSemanticCandidateSet,
     SemanticCallableCandidate,
@@ -48,6 +49,7 @@ def resolve_call_sites(
     scope_directive_facts: Sequence[Mapping[str, Any]] = (),
     import_refs: Sequence[Mapping[str, Any]] = (),
     code_nodes: Sequence[CodeNode] = (),
+    variables: Sequence[Variable] = (),
     *,
     evidence_sources: Iterable[Mapping[str, Any]],
     evidence_completeness: Iterable[Mapping[str, Any]],
@@ -124,6 +126,7 @@ def resolve_call_sites(
                     candidate_set = adapter.adapt(
                         semantic_call, callable_facts, parameter_facts, binding_target_facts,
                         scope_directive_facts, import_refs, code_nodes,
+                        variables,
                     )
                     _validate_candidate_set(
                         candidate_set, call_id=call_id,

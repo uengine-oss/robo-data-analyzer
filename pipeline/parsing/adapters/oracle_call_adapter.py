@@ -150,9 +150,10 @@ class OracleSemanticAdapter:
         scope_directive_facts: Sequence[Mapping[str, Any]] = (),
         import_refs: Sequence[Mapping[str, Any]] = (),
         code_nodes: Sequence[CodeNode] = (),
+        variables: Sequence[Any] = (),
     ) -> LanguageSemanticCandidateSet:
         del parameter_facts, binding_target_facts, scope_directive_facts
-        del import_refs, code_nodes
+        del import_refs, code_nodes, variables
         if call.get("callee_kind") != "named":
             return self._terminal(call, "unsupported", "unsupported_oracle_callee_kind")
 

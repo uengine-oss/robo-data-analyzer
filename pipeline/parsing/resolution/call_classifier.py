@@ -7,7 +7,7 @@ import fnmatch
 from typing import Any, Iterable
 
 from graph.schema.graph_edges import Calls
-from graph.schema.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode, Variable
 from pipeline.models.call_resolution import build_call_resolution_ledger
 from pipeline.parsing.resolution.call_resolution import (
     ResolutionInvariantError,
@@ -56,6 +56,7 @@ def classify_call_sites(
     import_refs: Iterable[dict] = (),
     evidence_sources: Iterable[dict] = (),
     evidence_completeness: Iterable[dict] = (),
+    variables: Iterable[Variable] = (),
 ) -> CallClassifyResult:
     """Resolve every canonical call exactly once without name-only fallback.
 
@@ -79,6 +80,7 @@ def classify_call_sites(
             list(scope_directive_facts),
             list(import_refs),
             code_nodes,
+            list(variables),
             evidence_sources=evidence_sources,
             evidence_completeness=evidence_completeness,
             wrapper_contracts=wrapper_contracts,

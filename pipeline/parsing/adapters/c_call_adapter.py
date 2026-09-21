@@ -128,13 +128,14 @@ class CSemanticAdapter:
 
     def adapt(
         self, call, callables, parameter_facts=(), binding_target_facts=(),
-        scope_directive_facts=(), import_refs=(), code_nodes=(),
+        scope_directive_facts=(), import_refs=(), code_nodes=(), variables=(),
     ):
         del parameter_facts
         del binding_target_facts
         del scope_directive_facts
         del import_refs
         del code_nodes
+        del variables
         call_id = str(call.get("call_id") or "")
         if call.get("callee_kind") == "expression" or call.get("receiver_range"):
             return self._terminal(

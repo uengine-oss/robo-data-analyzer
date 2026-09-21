@@ -69,6 +69,7 @@ async def link_parser_calls_step(
         import_refs=state.get("import_refs", []),
         evidence_sources=state.get("evidence_sources", []),
         evidence_completeness=state.get("evidence_completeness", []),
+        variables=state.get("variables", []),
     )
 
     # 라이브 스트림은 임시 진행 표시일 뿐 제품 graph를 쓰지 않는다.

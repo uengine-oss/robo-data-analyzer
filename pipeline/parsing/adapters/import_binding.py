@@ -31,6 +31,7 @@ class ImportBindingEnvironment:
     selected_sources: tuple[ImportBindingSource, ...]
     module_ids_by_source: tuple[tuple[str, tuple[str, ...]], ...]
     c_include_roots: tuple[str, ...] = ()
+    java_module_ids: tuple[str, ...] = ()
 
     def language_by_source(self) -> dict[str, str]:
         return {item.source_id: item.language for item in self.selected_sources}
@@ -93,6 +94,11 @@ def build_import_binding_environment(
         )
         sealed_modules.append((source.source_id, projected))
 
+    java_module_ids = tuple(
+        module_id for module_id, module in zip(module_ids, modules, strict=True)
+        if module.label in {"CLASS", "INTERFACE", "ENUM", "RECORD"}
+    )
+
     roots = tuple(
         _relative_path(root, field="c_include_root", allow_root=True)
         for root in c_include_roots
@@ -103,6 +109,7 @@ def build_import_binding_environment(
         selected_sources=tuple(selected),
         module_ids_by_source=tuple(sealed_modules),
         c_include_roots=roots,
+        java_module_ids=java_module_ids,
     )
 
 
@@ -181,6 +188,43 @@ def _bind_c(
     return "external", "target_outside_selected_source_closure", ()
 
 
+def _java_type_name(module_id: str) -> str:
+    return module_id.removeprefix("code:").replace(":", ".").strip(".")
+
+
+def _bind_java(
+    entry: Mapping[str, Any],
+    environment: ImportBindingEnvironment,
+) -> tuple[str, str, tuple[str, ...]]:
+    kind = str(entry.get("import_kind") or "")
+    components = entry.get("path_components")
+    if not isinstance(components, (list, tuple)) or not components or any(
+        not isinstance(component, str) or not component for component in components
+    ):
+        return "unresolved", "invalid_java_import_target", ()
+    imported_name = ".".join(components)
+    modules_by_name = {
+        _java_type_name(module_id): module_id
+        for module_id in environment.java_module_ids
+    }
+
+    if kind in {"type", "static_member"}:
+        module_id = modules_by_name.get(imported_name)
+        if module_id is not None:
+            return "internal", "", (module_id,)
+        return "external", "target_outside_selected_source_closure", ()
+    if kind == "namespace" and entry.get("wildcard") is True:
+        prefix = imported_name + "."
+        matches = tuple(
+            module_id for type_name, module_id in sorted(modules_by_name.items())
+            if type_name.startswith(prefix) and "." not in type_name[len(prefix):]
+        )
+        if matches:
+            return "internal", "", matches
+        return "external", "target_outside_selected_source_closure", ()
+    return "unresolved", "invalid_java_import_target", ()
+
+
 def _environment_outcome(
     ref: Mapping[str, Any],
     entry: Mapping[str, Any],
@@ -197,6 +241,8 @@ def _environment_outcome(
         return "unresolved", "source_outside_import_binding_environment", ()
     if language == "c":
         return _bind_c(ref, entry, environment)
+    if language == "java":
+        return _bind_java(entry, environment)
     return "unresolved", "unsupported_import_binding_language", ()
 
 

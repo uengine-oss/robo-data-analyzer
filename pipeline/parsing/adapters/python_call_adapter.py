@@ -30,8 +30,10 @@ class PythonSemanticAdapter:
         scope_directive_facts: Sequence[Mapping[str, Any]] = (),
         import_refs: Sequence[Mapping[str, Any]] = (),
         code_nodes: Sequence[CodeNode] = (),
+        variables: Sequence[Any] = (),
     ) -> LanguageSemanticCandidateSet:
         del code_nodes
+        del variables
         del callables
         callee_kind = str(call.get("callee_kind") or "")
         if callee_kind not in {"named", "constructor", "expression"}:

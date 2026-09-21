@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
-from graph.schema.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode, Variable
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,7 @@ class LanguageSemanticAdapter(Protocol):
         scope_directive_facts: Sequence[Mapping[str, Any]],
         import_refs: Sequence[Mapping[str, Any]],
         code_nodes: Sequence[CodeNode],
+        variables: Sequence[Variable],
     ) -> LanguageSemanticCandidateSet: ...
 
 

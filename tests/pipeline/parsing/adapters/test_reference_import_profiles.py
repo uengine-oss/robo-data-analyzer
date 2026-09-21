@@ -158,6 +158,44 @@ class ImportResolutionLedgerTest(unittest.TestCase):
             "insufficient_computed_import_target", ledger[0]["reason"],
         )
 
+    def test_java_type_import_binds_exact_selected_module(self) -> None:
+        environment = build_import_binding_environment(
+            [
+                {"source_id": "app/Sample.java", "language": "java"},
+                {"source_id": "data/Repository.java", "language": "java"},
+            ],
+            [Module(
+                id="code:sample.data:Repository", name="Repository",
+                file_path="data/Repository.java", label="CLASS",
+            )],
+        )
+        entry = {
+            "entry_ordinal": 0, "import_kind": "type",
+            "target_kind": "qualified", "target": "sample.data.Repository",
+            "target_range": {"charOffset": 7, "charLength": 22},
+            "path_components": ["sample", "data", "Repository"],
+            "path_component_ranges": [
+                {"charOffset": 7, "charLength": 6},
+                {"charOffset": 14, "charLength": 4},
+                {"charOffset": 19, "charLength": 10},
+            ],
+            "member": None, "member_range": None, "alias": None,
+            "alias_range": None, "relative_level": 0, "wildcard": False,
+            "locality": "unspecified",
+        }
+        ref = self._ref(
+            source_id="app/Sample.java", import_kind="type",
+            target_kind="qualified", entries=[entry],
+        )
+        ref["directive_kind"] = "import"
+
+        ledger = build_import_resolution_ledger([ref], environment=environment)
+
+        self.assertEqual("internal", ledger[0]["outcome"])
+        self.assertEqual(
+            ["code:sample.data:Repository"], ledger[0]["internal_module_ids"],
+        )
+
     def test_inactive_import_is_excluded_not_used_as_scope(self) -> None:
         ledger = build_import_resolution_ledger([
             self._ref(presence_status="inactive"),

@@ -1,9 +1,9 @@
 """Java call candidates derived only from ANTLR structural facts.
 
-The closed cases are same-type direct methods, verified static imports, and constructors
-whose owner type is proved by Parser components or an exact import. Receiver dispatch,
-inheritance, and overload type conversion require a sealed Java binding environment and
-remain explicit.
+The closed cases include same-type methods, verified imports, constructors, and receiver
+dispatch whose declared field/local/parameter type binds to one selected-source module.
+Inheritance, expression receivers, and overload type conversion remain explicit when the
+Parser evidence cannot prove one target.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
-from graph.schema.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode, Variable
 from pipeline.parsing.adapters.call_adapter import (
     LanguageSemanticCandidateSet,
     SemanticCallableCandidate,
@@ -207,6 +207,144 @@ def _constructor_type_is_visible(
     return False
 
 
+def _visible_java_type_owner(
+    type_name: str,
+    *,
+    source_id: str,
+    caller_owner_id: str,
+    import_refs: Sequence[Mapping[str, Any]],
+    available_owner_ids: frozenset[str],
+) -> str:
+    """Bind one Parser-owned declared type without reparsing Java source."""
+    exact = tuple(
+        owner_id for owner_id in available_owner_ids
+        if _java_type_name(owner_id) == type_name
+    )
+    if len(exact) == 1:
+        return exact[0]
+    if "." in type_name:
+        return ""
+
+    caller_package = _java_package_name(caller_owner_id)
+    same_package = {
+        owner_id for owner_id in available_owner_ids
+        if _java_package_name(owner_id) == caller_package
+        and _java_simple_type_name(owner_id) == type_name
+    }
+    imported: set[str] = set()
+    for ref in import_refs:
+        if (
+            str(ref.get("source_id") or "") != source_id
+            or ref.get("presence_status") != "active"
+        ):
+            continue
+        for entry in ref.get("entries") or ():
+            components = [str(value) for value in entry.get("path_components") or ()]
+            imported_name = ".".join(components)
+            if entry.get("import_kind") == "type" and components[-1:] == [type_name]:
+                imported.update(
+                    owner_id for owner_id in available_owner_ids
+                    if _java_type_name(owner_id) == imported_name
+                )
+            if entry.get("import_kind") == "namespace" and entry.get("wildcard") is True:
+                imported.update(
+                    owner_id for owner_id in available_owner_ids
+                    if _java_package_name(owner_id) == imported_name
+                    and _java_simple_type_name(owner_id) == type_name
+                )
+    candidates = same_package | imported
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _receiver_owner(
+    call: Mapping[str, Any],
+    caller: CodeNode,
+    callables: Sequence[Mapping[str, Any]],
+    variables: Sequence[Variable],
+    import_refs: Sequence[Mapping[str, Any]],
+    available_owner_ids: frozenset[str],
+) -> tuple[str, bool]:
+    receiver = str(call.get("receiver_source") or "")
+    source_id = str(call.get("source_id") or "")
+    call_line = int(call.get("line") or 0)
+    parameter_types: set[str] = set()
+    for fact in callables:
+        if str(fact.get("code_node_id") or "") != caller.id:
+            continue
+        declarator = (fact.get("syntax") or {}).get("declarator") or {}
+        for component in _walk_components(declarator):
+            if component.get("grammar_rule") not in {
+                "formalParameter", "variableArityParameter",
+            }:
+                continue
+            names = [
+                str(token.get("text") or "")
+                for nested in _walk_components(component)
+                if nested.get("grammar_rule") == "variableDeclaratorId"
+                for token in nested.get("direct_tokens") or ()
+                if token.get("token_kind") == "Identifier"
+            ]
+            types = [
+                "".join(
+                    str(token.get("text") or "")
+                    for nested in _walk_components(type_component)
+                    for token in nested.get("direct_tokens") or ()
+                )
+                for type_component in _walk_components(component)
+                if type_component.get("grammar_rule") == "unannType"
+            ]
+            if names == [receiver] and len(types) == 1 and types[0]:
+                parameter_types.add(types[0])
+    if parameter_types:
+        if len(parameter_types) != 1:
+            return "", False
+        return _visible_java_type_owner(
+            next(iter(parameter_types)), source_id=source_id,
+            caller_owner_id=caller.owner_id, import_refs=import_refs,
+            available_owner_ids=available_owner_ids,
+        ), False
+
+    declarations = [
+        variable for variable in variables
+        if variable.name == receiver
+        and variable.owner_id == caller.owner_id
+        and (
+            variable.label in {"FIELD", "MEMBER"}
+            or (
+                variable.label in {"VARIABLE", "LOCAL_VARIABLE"}
+                and caller.start_line <= variable.start_line <= call_line
+                and call_line <= caller.end_line
+            )
+        )
+        and variable.file_path.replace("\\", "/").endswith(source_id)
+        and variable.var_type
+    ]
+    if declarations:
+        local_declarations = [
+            variable for variable in declarations
+            if variable.label in {"VARIABLE", "LOCAL_VARIABLE"}
+        ]
+        selected = local_declarations or declarations
+        latest_line = max(variable.start_line for variable in selected)
+        declared_types = {
+            variable.var_type for variable in selected
+            if variable.start_line == latest_line
+        }
+        if len(declared_types) != 1:
+            return "", False
+        return _visible_java_type_owner(
+            next(iter(declared_types)), source_id=source_id,
+            caller_owner_id=caller.owner_id, import_refs=import_refs,
+            available_owner_ids=available_owner_ids,
+        ), False
+
+    owner_id = _visible_java_type_owner(
+        receiver, source_id=source_id, caller_owner_id=caller.owner_id,
+        import_refs=import_refs, available_owner_ids=available_owner_ids,
+    )
+    return owner_id, bool(owner_id)
+
+
 class JavaSemanticAdapter:
     schema = _SCHEMA
 
@@ -219,6 +357,7 @@ class JavaSemanticAdapter:
         scope_directive_facts: Sequence[Mapping[str, Any]] = (),
         import_refs: Sequence[Mapping[str, Any]] = (),
         code_nodes: Sequence[CodeNode] = (),
+        variables: Sequence[Variable] = (),
     ) -> LanguageSemanticCandidateSet:
         del parameter_facts
         del binding_target_facts
@@ -230,11 +369,6 @@ class JavaSemanticAdapter:
         is_constructor = call.get("callee_kind") == "constructor"
         has_receiver = call.get("receiver_range") is not None
         receiver_is_this = has_receiver and call.get("receiver_source") == "this"
-        if has_receiver and not receiver_is_this and not is_constructor:
-            return self._terminal(
-                call, "dynamic", "java_receiver_type_binding_environment_required",
-            )
-
         name = str(call.get("call_text") or "")
         source_id = str(call.get("source_id") or "")
         call_scope = scope_identity(call.get("scope_path") or ())
@@ -246,6 +380,20 @@ class JavaSemanticAdapter:
         caller = nodes_by_id.get(str(call.get("caller_id") or ""))
         if caller is None or not caller.owner_id:
             return self._terminal(call, "unsupported", "missing_java_caller_owner")
+        available_owner_ids = frozenset(
+            node.owner_id for node in code_nodes if node.owner_id
+        )
+        receiver_owner_id = caller.owner_id if receiver_is_this else ""
+        receiver_is_type = False
+        if has_receiver and not receiver_is_this and not is_constructor:
+            receiver_owner_id, receiver_is_type = _receiver_owner(
+                call, caller, callables, variables, import_refs,
+                available_owner_ids,
+            )
+            if not receiver_owner_id:
+                return self._terminal(
+                    call, "dynamic", "java_receiver_type_binding_environment_required",
+                )
         imported_static_owners = _visible_static_import_owners(call, import_refs)
         candidates: list[SemanticCallableCandidate] = []
         for fact in callables:
@@ -267,6 +415,11 @@ class JavaSemanticAdapter:
                 call, candidate_owner_id, caller.owner_id, import_refs,
             )
             compatibility = _arity_compatibility(call, fact)
+            receiver_visible = (
+                bool(receiver_owner_id)
+                and candidate_owner_id == receiver_owner_id
+                and (not receiver_is_type or _is_static_callable(fact))
+            )
             candidates.append(SemanticCallableCandidate(
                 fact_id=str(fact.get("fact_id") or ""),
                 source_id=str(fact.get("source_id") or ""),
@@ -278,7 +431,9 @@ class JavaSemanticAdapter:
                 linkage_visibility=(
                     "visible"
                     if constructor_visible or (not is_constructor and (
-                        same_class or statically_imported
+                        receiver_visible or (not has_receiver and (
+                            same_class or statically_imported
+                        ))
                     ))
                     else "not_visible"
                 ),

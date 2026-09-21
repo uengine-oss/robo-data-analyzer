@@ -2,6 +2,7 @@
 
 ## 완료 결과
 
+- Java import는 선택된 source의 CLASS/INTERFACE/ENUM/RECORD 모듈 closure에 결합한다. Java receiver 호출은 Parser가 제공한 필드·지역변수 타입과 callable parameter 구조를 exact import/같은 package 타입에 결합하며, expression receiver·상속·타입 변환이 필요한 overload는 추측하지 않고 명시적으로 미확정한다.
 - 함수 의미 LLM은 Summary와 Rule만 호출한다. 사용되지 않던 Function Table Usage 호출·prompt·schema·임시 저장은 제거했다.
 - 직접 Table Usage는 Parser·Analyzer가 확정한 `READS`·`WRITES`와 operation에서만 투영한다.
 - Summary 입력은 줄 번호가 붙은 함수 전체 원문, 간결한 구문 트리, 원문 밖 최소 근거만 담는다. 저장 ID·해시·byte 위치·중복 사실은 보내지 않는다.

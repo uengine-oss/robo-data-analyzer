@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graph.schema.graph_nodes import CodeNode
+from graph.schema.graph_nodes import CodeNode, Variable
 from pipeline.parsing.resolution.call_classifier import classify_call_sites
 
 
@@ -62,13 +62,27 @@ def _callable(
     static: bool = False,
     grammar_rule: str = "methodDeclaration",
     source_id: str = "Sample.java",
+    parameter_names: list[str] | None = None,
 ) -> dict:
+    parameter_names = parameter_names or [f"value{index}" for index in range(parameter_count)]
     parameters = [
         _component("formalParameter", children=[
-            _component("unannType"),
-            _component("variableDeclaratorId"),
+            {
+                **_component("unannType"),
+                "direct_tokens": [{
+                    "token_kind": "Identifier", "text": "Repository",
+                    "range": _range(11, 10),
+                }],
+            },
+            {
+                **_component("variableDeclaratorId"),
+                "direct_tokens": [{
+                    "token_kind": "Identifier", "text": parameter_names[index],
+                    "range": _range(22, len(parameter_names[index])),
+                }],
+            },
         ])
-        for _ in range(parameter_count)
+        for index in range(parameter_count)
     ]
     return {
         "fact_id": fact_id,
@@ -109,6 +123,7 @@ def _call(
         "call_id": call_id,
         "caller_id": caller.id,
         "source_id": "Sample.java",
+        "line": 2,
         "call_text": name,
         "callee_kind": callee_kind,
         "range": _range(50, 10),
@@ -132,6 +147,7 @@ def _call(
 def _classify(
     call: dict, nodes: list[CodeNode], callables: list[dict],
     *, import_refs: list[dict] | None = None,
+    variables: list[Variable] | None = None,
 ):
     return classify_call_sites(
         [call],
@@ -154,6 +170,7 @@ def _classify(
             }
             for kind in ("call", "callable")
         ],
+        variables=variables or [],
     )
 
 
@@ -238,6 +255,104 @@ def test_this_receiver_resolves_same_type_without_a_type_environment() -> None:
 
     assert [edge.callee_id for edge in result.edges] == [target.id]
     assert result.ledger[0]["resolution_status"] == "internal"
+
+
+def test_receiver_uses_parser_variable_type_and_exact_import() -> None:
+    caller = _node("code:Sample.java:run", "run")
+    target = _node(
+        "code:Repository.java:find", "find", start=10,
+        owner_id="code:sample.data:Repository",
+    )
+    variable = Variable(
+        id="code:sample:Sample:repository", owner_id=caller.owner_id,
+        name="repository", file_path="Sample.java", start_line=1, end_line=1,
+        label="FIELD", var_type="Repository",
+    )
+
+    result = _classify(
+        _call(
+            "java-bound-receiver", caller, "find",
+            receiver=True, receiver_source="repository",
+        ),
+        [caller, target],
+        [_callable(
+            "java-find", target, class_start=250, source_id="Repository.java",
+        )],
+        import_refs=[_type_import(
+            "java-repository-import",
+            path_components=["sample", "data", "Repository"],
+        )],
+        variables=[variable],
+    )
+
+    assert [edge.callee_id for edge in result.edges] == [target.id]
+    assert result.ledger[0]["resolution_status"] == "internal"
+
+
+def test_receiver_uses_local_variable_only_inside_caller_range() -> None:
+    caller = _node("code:Sample.java:run", "run", start=2)
+    caller.end_line = 20
+    target = _node(
+        "code:Repository.java:find", "find", start=30,
+        owner_id="code:sample.data:Repository",
+    )
+    local = Variable(
+        id="code:sample:Sample:repository", owner_id=caller.owner_id,
+        name="repository", file_path="Sample.java", start_line=2, end_line=2,
+        label="VARIABLE", var_type="Repository",
+    )
+    call = _call(
+        "java-local-receiver", caller, "find",
+        receiver=True, receiver_source="repository",
+    )
+    call["line"] = 3
+
+    result = _classify(
+        call, [caller, target],
+        [_callable(
+            "java-local-find", target, class_start=250,
+            source_id="Repository.java",
+        )],
+        import_refs=[_type_import(
+            "java-local-import",
+            path_components=["sample", "data", "Repository"],
+        )],
+        variables=[local],
+    )
+
+    assert [edge.callee_id for edge in result.edges] == [target.id]
+
+
+def test_receiver_uses_callable_parameter_structure() -> None:
+    caller = _node("code:Sample.java:run", "run", start=2)
+    target = _node(
+        "code:Repository.java:find", "find", start=30,
+        owner_id="code:sample.data:Repository",
+    )
+    call = _call(
+        "java-parameter-receiver", caller, "find",
+        receiver=True, receiver_source="repository",
+    )
+
+    result = _classify(
+        call, [caller, target],
+        [
+            _callable(
+                "java-caller", caller, parameter_count=1,
+                parameter_names=["repository"],
+            ),
+            _callable(
+                "java-parameter-find", target, class_start=250,
+                source_id="Repository.java",
+            ),
+        ],
+        import_refs=[_type_import(
+            "java-parameter-import",
+            path_components=["sample", "data", "Repository"],
+        )],
+    )
+
+    assert [edge.callee_id for edge in result.edges] == [target.id]
 
 
 def test_same_type_constructor_is_internal_and_missing_definition_is_external() -> None:
