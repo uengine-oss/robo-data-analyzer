@@ -1,7 +1,6 @@
 .git/
 .github/
 .claude/
-.specify/
 .venv/
 venv/
 __pycache__/
@@ -16,7 +15,6 @@ __pycache__/
 !.env.example
 output/
 module_test/
-specs/
 deploy/
 *.log
 *.tmp

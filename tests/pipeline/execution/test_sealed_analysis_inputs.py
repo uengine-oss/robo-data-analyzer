@@ -97,6 +97,15 @@ class SealedAnalysisInputsTest(unittest.TestCase):
     def setUp(self) -> None:
         load_model_runtime_capabilities.cache_clear()
 
+    def test_docker_build_context_contains_every_sealed_contract(self) -> None:
+        ignored = {
+            line.strip().rstrip("/")
+            for line in (REAL_REPOSITORY / ".dockerignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertNotIn(".specify", ignored)
+        self.assertNotIn("specs", ignored)
+
     def _repository(
         self, root: Path,
     ) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
