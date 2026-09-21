@@ -128,7 +128,7 @@ class ProductNode:
         return cls(category, normalized_label, normalized_id, cleaned)
 
     def write_properties(self) -> dict[str, object]:
-        return {"_id": self.node_id, "_owner": GRAPH_OWNER, **self.properties}
+        return {"product_id": self.node_id, "_owner": GRAPH_OWNER, **self.properties}
 
 
 @dataclass(frozen=True)

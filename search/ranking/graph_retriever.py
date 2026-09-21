@@ -49,9 +49,9 @@ class Retriever:
             return
         rows = self.s.run(
             "MATCH (node) WHERE node._owner = 'analyzer' "
-            "AND node._id IN $ids "
+            "AND node.product_id IN $ids "
             "AND any(label IN labels(node) WHERE label IN $routine_labels) "
-            "RETURN node._id AS id, node._search_embedding AS v",
+            "RETURN node.product_id AS id, node._search_embedding AS v",
             ids=list(missing), routine_labels=sorted(ROUTINE_LABELS),
         ).data()
         for r in rows:
@@ -155,10 +155,10 @@ class Retriever:
             rows = self.s.run(
                 "MATCH (x)-[:CALLS]-(y) "
                 "WHERE x._owner = 'analyzer' AND y._owner = 'analyzer' "
-                "AND x._id IN $ids "
+                "AND x.product_id IN $ids "
                 "AND any(label IN labels(x) WHERE label IN $routine_labels) "
                 "AND any(label IN labels(y) WHERE label IN $routine_labels) "
-                "RETURN DISTINCT y._id AS id",
+                "RETURN DISTINCT y.product_id AS id",
                 ids=list(frontier), routine_labels=sorted(ROUTINE_LABELS),
             ).data()
             reached = {r["id"] for r in rows} - seen

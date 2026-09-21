@@ -16,7 +16,7 @@ class CurrentPublicationReaderContractTests(unittest.TestCase):
             corpus, evidence_reader, node_detail, graph_access, recall, retriever,
         ))
         for required in (
-            "_id", "_owner", "_search_embedding", ":TABLE", ":COLUMN",
+            "product_id", "_owner", "_search_embedding", ":TABLE", ":COLUMN",
             ":RULE", "HAS_RULE", "CALLS", "READS", "WRITES",
         ):
             with self.subTest(required=required):

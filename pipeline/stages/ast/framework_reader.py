@@ -35,10 +35,10 @@ from pipeline.parsing.facts.evidence_ir import (
     ValidatedCommonEvidence,
 )
 from pipeline.parsing.resolution.structural_call_projection import (
-    build_call_occurrence_record,
     physical_line,
     physical_line_starts,
     project_callable_definitions,
+    project_scope_owned_calls,
 )
 from pipeline.parsing.adapters.c_structural_expression_adapter import (
     StructuralExpressionAdapterError,
@@ -94,8 +94,11 @@ def _read_framework(
     # 파일(FILE) 진입 — 아직 구조 부모도 소유 routine 도 없다(둘 다 None). 함수 진입 시 갱신.
     _walk_framework(raw, ctx, module_id, None, None)
     if evidence is not None:
-        _bind_call_evidence(result, evidence)
-        _bind_callable_evidence(result, evidence)
+        owner_id_by_definition_range = _bind_callable_evidence(result, evidence)
+        _bind_call_evidence(
+            result, evidence,
+            owner_id_by_definition_range=owner_id_by_definition_range,
+        )
         _bind_parameter_evidence(result, evidence)
         _bind_binding_target_evidence(result, evidence)
         _bind_scope_directive_evidence(result, evidence)
@@ -348,6 +351,8 @@ def _collect_internal(
 def _bind_call_evidence(
     result: ParseResult,
     evidence: ValidatedCommonEvidence,
+    *,
+    owner_id_by_definition_range: dict[tuple[int, int], str],
 ) -> None:
     """Bind grammar occurrences to enclosing routines without source reparsing.
 
@@ -356,7 +361,13 @@ def _bind_call_evidence(
     Analyzer only adds its owner mapping.
     """
     structural_calls = list(result.call_sites)
-    facts = list(evidence.call_facts)
+    # Java's structural AST intentionally does not emit NEW_INSTANCE nodes, while
+    # canonical evidence does include constructor calls. Validate the legacy tree
+    # against the call kinds it owns, then project the complete evidence population.
+    facts = [
+        fact for fact in evidence.call_facts
+        if fact.callee_kind != "constructor"
+    ]
     if len(structural_calls) != len(facts):
         raise CommonEvidenceContractError(
             "common evidence call population: "
@@ -364,7 +375,6 @@ def _bind_call_evidence(
         )
     line_starts = physical_line_starts(evidence.decoded_text)
 
-    bound: list[dict] = []
     for index, (observed, fact) in enumerate(zip(structural_calls, facts, strict=True)):
         line = physical_line(line_starts, fact.call_range.char_offset)
         if int(observed.get("line") or 0) != line:
@@ -380,27 +390,23 @@ def _bind_call_evidence(
                 f"terminal mismatch at index={index}, tree={tree_name!r}, "
                 f"canonical={fact.terminal_name!r}, factId={fact.fact_id}"
             )
-        bound.append(build_call_occurrence_record(
-            fact,
-            evidence,
-            caller_id=str(observed.get("caller_id") or ""),
-            file_path=str(observed.get("file") or ""),
-            line_starts=line_starts,
-        ))
-    ids = [site["call_id"] for site in bound]
-    if len(ids) != len(set(ids)):
-        raise CommonEvidenceContractError(
-            f"common evidence call population: duplicate fact IDs in {evidence.source_id}"
-        )
-    result.call_sites[:] = bound
+    file_path = str(structural_calls[0].get("file") or "") if structural_calls else (
+        result.modules[0].file_path if result.modules else ""
+    )
+    project_scope_owned_calls(
+        result,
+        evidence,
+        owner_id_by_definition_range=owner_id_by_definition_range,
+        file_path=file_path,
+    )
 
 
 def _bind_callable_evidence(
     result: ParseResult,
     evidence: ValidatedCommonEvidence,
-) -> None:
+) -> dict[tuple[int, int], str]:
     """Bind structural definition facts to their exact AST CodeNode."""
-    project_callable_definitions(
+    return project_callable_definitions(
         result,
         evidence,
         is_routine_node=lambda node: (

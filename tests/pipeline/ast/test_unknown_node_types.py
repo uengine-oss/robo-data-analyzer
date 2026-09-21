@@ -110,6 +110,32 @@ class UnknownNodeTypeContractTest(unittest.TestCase):
 
         self.assertEqual(["compile", "sub"], [call["call_text"] for call in result.call_sites])
 
+    def test_java_constructor_evidence_does_not_require_legacy_new_instance_node(self):
+        source = 'class Sample { void run() { throw new Problem("x"); } }\n'
+        raw = add_common_evidence(
+            with_identifier_contract({
+                "type": "FILE", "fileName": "Sample.java", "filePath": "Sample.java",
+                "packageName": "root", "children": [],
+            }),
+            source,
+            calls=[{
+                "expression": 'new Problem("x")', "callee": "Problem",
+                "callee_kind": "constructor", "terminal_name": "Problem",
+                "arguments": ['"x"'],
+            }],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "Sample.java").write_text(source, encoding="utf-8")
+            artifact = root / "Sample.json"
+            artifact.write_text(json.dumps(raw), encoding="utf-8")
+
+            result = read_antlr_json(artifact, root)
+
+        self.assertEqual(1, len(result.call_sites))
+        self.assertEqual("constructor", result.call_sites[0]["callee_kind"])
+        self.assertEqual("Problem", result.call_sites[0]["call_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

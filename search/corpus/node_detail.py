@@ -8,7 +8,7 @@ from search.corpus.evidence_reader import read_columns, read_rules, semantic_rul
 from search.corpus.neo4j_reader import read_driver
 
 
-_INTERNAL_PROPERTIES = {"_id", "_owner", "_search_embedding"}
+_INTERNAL_PROPERTIES = {"_id", "product_id", "_owner", "_search_embedding"}
 
 
 def _error(code: str, message: str) -> dict:
@@ -40,7 +40,7 @@ def build_node_detail(
     row = node_rows[0]
     labels = sorted(set(row.get("labels") or []))
     properties = dict(row.get("props") or {})
-    if str(properties.get("_id") or "") != node_id:
+    if str(properties.get("product_id") or "") != node_id:
         return _error("NODE_ID_MISMATCH", "queried _id does not match result")
     public_relationships = []
     for relationship in relationships:
@@ -176,7 +176,7 @@ def read_node_detail(node_id: str, *, view: str = "frame") -> dict:
                 "(other {_owner:'analyzer'}) "
                 "RETURN type(rel) AS type, "
                 "CASE WHEN startNode(rel) = node THEN 'out' ELSE 'in' END AS direction, "
-                "other._id AS other_id, coalesce(other.name,'') AS other_name, "
+                "other.product_id AS other_id, coalesce(other.name,'') AS other_name, "
                 "labels(other) AS other_labels, properties(other) AS other_properties, "
                 "properties(rel) AS properties "
                 "ORDER BY type, direction, other_id",

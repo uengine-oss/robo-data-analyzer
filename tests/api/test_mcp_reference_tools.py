@@ -48,7 +48,7 @@ def _clusters() -> list:
 
 def _function_properties(node_id: str, name: str, summary: str) -> dict:
     return {
-        "_id": node_id, "_owner": "analyzer", "name": name, "file_path": "a.c",
+        "product_id": node_id, "_owner": "analyzer", "name": name, "file_path": "a.c",
         "start_line": 1, "end_line": 3,
         "code_text": "1 | void fa() {\n2 |   return;\n3 | }",
         "summary": summary, "stereotype": "Service",
@@ -116,7 +116,7 @@ class DetailPayloadTests(unittest.TestCase):
         node = payload["node"]
         self.assertEqual("code:a.c:fa", node["id"])
         self.assertNotIn("source", node)
-        self.assertFalse({"_id", "_owner", "_search_embedding"} & set(node["properties"]))
+        self.assertFalse({"_id", "product_id", "_owner", "_search_embedding"} & set(node["properties"]))
         self.assertEqual({}, node["relationships"][0]["properties"])
 
     def test_semantic_detail_contains_callee_meaning_and_current_rules(self):
@@ -154,11 +154,11 @@ class DetailPayloadTests(unittest.TestCase):
     def test_table_and_column_use_direct_product_properties(self):
         cases = (
             ("TABLE", {
-                "_id": "db:orders", "_owner": "analyzer", "name": "orders",
+                "product_id": "db:orders", "_owner": "analyzer", "name": "orders",
                 "logical_name": "주문", "summary": "주문 저장소",
             }),
             ("COLUMN", {
-                "_id": "db:orders.status", "_owner": "analyzer", "name": "status",
+                "product_id": "db:orders.status", "_owner": "analyzer", "name": "status",
                 "summary": "주문 상태",
             }),
         )
@@ -166,7 +166,7 @@ class DetailPayloadTests(unittest.TestCase):
             with self.subTest(label=label):
                 detail = build_node_detail(
                     [{"labels": [label], "props": properties}], [], [], [],
-                    node_id=properties["_id"],
+                    node_id=properties["product_id"],
                 )
                 packet = build_semantic_detail(detail, [])
                 self.assertEqual(
@@ -183,7 +183,7 @@ class DetailPayloadTests(unittest.TestCase):
         self.assertEqual("NODE_NOT_FOUND", build_node_detail(
             [], [], [], [], node_id="x",
         )["error"]["code"])
-        duplicate = [{"labels": ["FUNCTION"], "props": {"_id": "x"}}] * 2
+        duplicate = [{"labels": ["FUNCTION"], "props": {"product_id": "x"}}] * 2
         self.assertEqual("NODE_ID_NOT_UNIQUE", build_node_detail(
             duplicate, [], [], [], node_id="x",
         )["error"]["code"])

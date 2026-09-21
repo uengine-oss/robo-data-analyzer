@@ -22,7 +22,7 @@ class _Transaction:
         self.calls.append((query, parameters))
         items = parameters.get("items") or parameters.get("ids") or []
         if "AS written" in query:
-            return _Result({"written": len(items)})
+            return _Result({"written": len(items) if items else 1})
         if "AS matched" in query:
             return _Result({"matched": len(items)})
         return _Result()
@@ -87,12 +87,54 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("node._owner = $owner", all_queries)
         self.assertIn("relationship._owner = $owner", all_queries)
-        self.assertIn("MATCH (source:METHOD {_id: item.source_id})", all_queries)
-        self.assertIn("MATCH (target:RULE {_id: item.target_id})", all_queries)
-        self.assertIn("MATCH (node:METHOD {_id: id, _owner: $owner})", all_queries)
+        self.assertIn("MATCH (source:METHOD {product_id: $source_id})", all_queries)
+        self.assertIn("MATCH (target:RULE {product_id: $target_id})", all_queries)
+        self.assertIn("MATCH (node:METHOD {product_id: id, _owner: $owner})", all_queries)
         self.assertNotIn("MATCH (source {_id: item.source_id})", all_queries)
-        self.assertIn("relationship[item.from_column_key]", all_queries)
-        self.assertIn("SET node = item", all_queries)
+        self.assertIn("CREATE (source:METHOD)-[relationship:HAS_RULE", all_queries)
+        self.assertIn("SET node = item.properties", all_queries)
+        self.assertIn("{product_id: item.node_id}", all_queries)
+        self.assertIn("node.product_id = item.node_id", all_queries)
+        self.assertIn("`vector.dimensions`: 2", all_queries)
+        node_batches = [
+            parameters["items"]
+            for query, parameters in client.transaction.calls
+            if "RETURN count(node) AS written" in query
+        ]
+        for item in (item for batch in node_batches for item in batch):
+            self.assertIn("node_id", item)
+            self.assertNotIn("_id", item["properties"])
+
+    async def test_inconsistent_embedding_dimensions_fail_before_write(self) -> None:
+        graph = ProductGraph.build(
+            nodes=(
+                ProductNode.build(
+                    category="source",
+                    label="METHOD",
+                    node_id="Service.first",
+                    properties={
+                        "code_text": "1 | void first() {}",
+                        "_search_embedding": [0.1, 0.2],
+                    },
+                ),
+                ProductNode.build(
+                    category="source",
+                    label="METHOD",
+                    node_id="Service.second",
+                    properties={
+                        "code_text": "2 | void second() {}",
+                        "_search_embedding": [0.1, 0.2, 0.3],
+                    },
+                ),
+            ),
+            relationships=(),
+        )
+        client = _Client()
+
+        with self.assertRaisesRegex(Exception, "single dimension"):
+            await replace_product_graph(client, graph)
+
+        self.assertEqual(0, client.write_count)
 
 
 if __name__ == "__main__":

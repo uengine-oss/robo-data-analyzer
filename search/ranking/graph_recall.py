@@ -53,7 +53,7 @@ def _dense_index(session, corpus, qv, k: int) -> list[tuple[str, float]]:
             f"SEARCH node IN (VECTOR INDEX {label.lower()}_search_embedding "
             "FOR $qv LIMIT $k) SCORE AS score "
             "WHERE node._owner = 'analyzer' "
-            "RETURN node._id AS id, score ORDER BY score DESC",
+            "RETURN node.product_id AS id, score ORDER BY score DESC",
             k=k,
             qv=[float(x) for x in qv],
         ).data()

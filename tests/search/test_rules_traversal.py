@@ -52,7 +52,7 @@ class RulesTraversalTest(unittest.TestCase):
         retriever._rules_for("member.c::checkout")
         self.assertEqual("member.c::checkout", retriever.s.last_params["node_id"])
         self.assertIn("ORDER BY rule_order, line", retriever.s.last_cypher)
-        self.assertIn("r._id", retriever.s.last_cypher)
+        self.assertIn("r.product_id", retriever.s.last_cypher)
         self.assertIn("HAS_RULE", retriever.s.last_cypher)
 
     def test_no_rules_returns_empty(self):

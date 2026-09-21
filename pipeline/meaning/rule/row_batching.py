@@ -124,13 +124,32 @@ def apply_rule_meaning_projections(
     """Publish only sufficiently grounded business rows; account for every other row."""
     by_line = {projection.anchor_line: projection for projection in projections}
     expected = {rule.anchor_line for rule in collection.rules}
-    if len(by_line) != len(projections) or set(by_line) != expected:
+    actual = set(by_line)
+    if len(by_line) != len(projections) or not expected.issubset(actual):
         raise ValueError(
             f"{target_scope}: Rule meaning row coverage mismatch: "
-            f"expected={sorted(expected)}, actual={sorted(by_line)}"
+            f"expected={sorted(expected)}, actual={sorted(actual)}"
         )
     rules: list[RuleItem] = []
     findings = list(collection.findings)
+    for line in sorted(actual - expected):
+        projection = by_line[line]
+        findings.append(AnalysisFinding(
+            concern="rules",
+            status="rejected",
+            target_id=f"{target_scope}::R-{line}",
+            coordinates=(line,),
+            reasons=(
+                "Model returned a Rule meaning row outside the parser-assigned obligations",
+            ),
+            candidate={
+                "row_disposition": projection.disposition,
+                "condition_description": projection.condition_description,
+                "effect_descriptions": list(projection.effect_descriptions),
+                "atom_coverage_status": projection.status,
+            },
+            evidence_rule="code_rule_meanings_unassigned_row",
+        ))
     for rule in collection.rules:
         projection = by_line[rule.anchor_line]
         if (
@@ -167,10 +186,12 @@ def apply_rule_meaning_projections(
             evidence_rule="code_rule_meanings",
         ))
     published_rows = {rule.anchor_line for rule in rules}
+    new_expected_findings = findings[len(collection.findings):]
     accounted_rows = Counter(
         row
-        for finding in findings[len(collection.findings):]
+        for finding in new_expected_findings
         for row in finding.coordinates
+        if row in expected
     )
     if (
         published_rows & set(accounted_rows)

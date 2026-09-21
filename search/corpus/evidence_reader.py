@@ -80,7 +80,7 @@ def read_rules(session, node_id: str) -> list[dict]:
     rows = session.run(
         "MATCH (x {_id:$node_id, _owner:'analyzer'})-[hr:HAS_RULE]->"
         "(r:RULE {_owner:'analyzer'}) "
-        "RETURN r._id AS rule_id, coalesce(hr.order,0) AS rule_order, "
+        "RETURN r.product_id AS rule_id, coalesce(hr.order,0) AS rule_order, "
         "r.line AS line, coalesce(r.condition,'') AS condition, "
         "coalesce(r.effects,[]) AS effects, "
         "coalesce(r.condition_description,'') AS condition_description, "
@@ -96,11 +96,11 @@ def read_columns(session, table_id: str) -> list[dict]:
     return session.run(
         f"MATCH (t:TABLE {{_id:$node_id, _owner:'analyzer'}})-[:{HAS_COLUMN}]->"
         "(c:COLUMN {_owner:'analyzer'}) "
-        "RETURN c._id AS id, c.name AS name, "
+        "RETURN c.product_id AS id, c.name AS name, "
         "coalesce(c.data_type,'') AS dtype, "
         "coalesce(c.primary_key,false) AS is_primary_key, "
         "coalesce(c.logical_name,'') AS logical_name, "
         "coalesce(c.summary, c.description, '') AS description "
-        "ORDER BY c._id",
+        "ORDER BY c.product_id",
         node_id=table_id,
     ).data()

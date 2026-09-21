@@ -175,6 +175,30 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         self.assertEqual([], result.rules)
         self.assertEqual("unverified", result.findings[0].status)
 
+    def test_unassigned_model_row_is_rejected_without_aborting_sibling_rules(self):
+        structural = materialize_and_validate_rules(
+            inventory=_inventory(),
+            target_scope="code:sample:fn",
+            source=SOURCE,
+        )
+        projections = (
+            RuleMeaningProjection("R1", 1, "첫 조건", ("첫 처리",), "business_rule", "sufficient"),
+            RuleMeaningProjection("R2", 2, "창작 조건", ("창작 처리",), "business_rule", "sufficient"),
+            RuleMeaningProjection("R5", 5, "", (), "implementation_detail", "not_business"),
+            RuleMeaningProjection("R9", 9, "", (), "implementation_detail", "not_business"),
+        )
+
+        result = apply_rule_meaning_projections(
+            structural, projections, target_scope="code:sample:fn",
+        )
+
+        self.assertEqual([1], [rule.anchor_line for rule in result.rules])
+        rejected = [item for item in result.findings if item.status == "rejected"]
+        self.assertEqual([(2,)], [item.coordinates for item in rejected])
+        self.assertEqual(
+            "code_rule_meanings_unassigned_row", rejected[0].evidence_rule,
+        )
+
     def test_unavailable_meaning_call_publishes_no_structural_rule(self):
         structural = materialize_and_validate_rules(
             inventory=_inventory(),

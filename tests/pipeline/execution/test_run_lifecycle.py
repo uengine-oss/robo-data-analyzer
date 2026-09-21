@@ -333,6 +333,19 @@ class FinalProductStateContractTest(unittest.IsolatedAsyncioTestCase):
                 import_resolution_ledger=[],
             )
 
+    def test_publication_ignores_empty_optional_external_record_placeholder(self) -> None:
+        state = self._complete_state()
+        record = SimpleNamespace(source_record_id="external:1")
+        state["external_source_records"] = [None, record]
+
+        product_input = run_publication.build_product_graph_input(
+            final_state=state,
+            call_resolution_ledger=[],
+            import_resolution_ledger=[],
+        )
+
+        self.assertEqual((record,), product_input.external_source_records)
+
     def test_performance_artifact_is_canonical_and_content_addressed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

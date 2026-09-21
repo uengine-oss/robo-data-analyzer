@@ -74,7 +74,14 @@ def build_product_graph_input(
         columns=final_state["columns"],
         has_column_edges=final_state["has_column_edges"],
         foreign_key_edges=final_state["fk_edges"],
-        external_source_records=final_state["external_source_records"],
+        # Optional external-format branches can leave a None channel placeholder
+        # in the final checkpoint when no verified chunk was produced.  It is not
+        # a source record and must not be projected as an EXTERNAL_CHUNK node.
+        external_source_records=tuple(
+            record
+            for record in final_state["external_source_records"]
+            if record is not None
+        ),
         resolved_external_reference_links=(
             final_state["resolved_external_reference_links"]
         ),

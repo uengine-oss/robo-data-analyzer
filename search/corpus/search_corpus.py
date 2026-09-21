@@ -13,7 +13,7 @@ MATCH (node)
 WHERE node._owner = 'analyzer'
   AND any(label IN labels(node) WHERE label IN $routine_labels)
   AND node.summary IS NOT NULL AND node.summary <> ''
-RETURN node._id AS id,
+RETURN node.product_id AS id,
        head([label IN labels(node) WHERE label IN $routine_labels]) AS label,
        coalesce(node.name,'') AS name,
        node.summary AS summary,
@@ -28,14 +28,14 @@ MATCH (caller)-[:CALLS]->(callee)
 WHERE caller._owner = 'analyzer' AND callee._owner = 'analyzer'
   AND any(label IN labels(caller) WHERE label IN $routine_labels)
   AND any(label IN labels(callee) WHERE label IN $routine_labels)
-RETURN callee._id AS id, count(DISTINCT caller) AS fi
+RETURN callee.product_id AS id, count(DISTINCT caller) AS fi
 """
 
 _VECTORS_QUERY = """
 MATCH (node)
-WHERE node._owner = 'analyzer' AND node._id IN $ids
+WHERE node._owner = 'analyzer' AND node.product_id IN $ids
   AND any(label IN labels(node) WHERE label IN $routine_labels)
-RETURN node._id AS id, node._search_embedding AS vector
+RETURN node.product_id AS id, node._search_embedding AS vector
 ORDER BY id
 """
 
