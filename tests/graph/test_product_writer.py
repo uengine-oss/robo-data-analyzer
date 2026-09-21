@@ -87,6 +87,10 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("node._owner = $owner", all_queries)
         self.assertIn("relationship._owner = $owner", all_queries)
+        self.assertIn("size(keys(node)) = 2", all_queries)
+        self.assertIn("node.product_id IS NULL", all_queries)
+        self.assertIn("node._id IS NOT NULL", all_queries)
+        self.assertIn("node._type IS NOT NULL", all_queries)
         self.assertIn("MATCH (source:METHOD {product_id: $source_id})", all_queries)
         self.assertIn("MATCH (target:RULE {product_id: $target_id})", all_queries)
         self.assertIn("MATCH (node:METHOD {product_id: id, _owner: $owner})", all_queries)
@@ -104,6 +108,13 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
         for item in (item for batch in node_batches for item in batch):
             self.assertIn("node_id", item)
             self.assertNotIn("_id", item["properties"])
+        relationship_writes = [
+            parameters
+            for query, parameters in client.transaction.calls
+            if "RETURN count(relationship) AS written" in query
+        ]
+        self.assertEqual("analyzer", relationship_writes[0]["properties"]["_owner"])
+        self.assertEqual(1, relationship_writes[0]["properties"]["order"])
 
     async def test_inconsistent_embedding_dimensions_fail_before_write(self) -> None:
         graph = ProductGraph.build(

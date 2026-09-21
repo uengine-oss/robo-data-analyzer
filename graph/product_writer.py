@@ -104,6 +104,25 @@ async def replace_product_graph(
         })
 
     async def _replace(transaction) -> ProductWriteReceipt:
+        # The gateway materializes streamed graph deltas before the validated
+        # product graph is published.  Relationship endpoints can therefore
+        # leave graph-bolt placeholder nodes whose only properties are the
+        # streamed identity (`_id`) and concrete type (`_type`).
+        # They have neither product identity nor ownership and used to survive
+        # every replacement, eventually overwhelming the real graph in reads.
+        # Restrict cleanup to that exact placeholder shape so data owned by
+        # Catalog/Fabric (or user-authored design nodes) is never selected.
+        await transaction.run(
+            """
+MATCH (node)
+WHERE node.product_id IS NULL
+  AND node._owner IS NULL
+  AND node._id IS NOT NULL
+  AND node._type IS NOT NULL
+  AND size(keys(node)) = 2
+DETACH DELETE node
+"""
+        )
         await transaction.run(
             """
 MATCH (source)-[relationship]-(target)
@@ -169,29 +188,21 @@ RETURN count(node) AS written
                     else f"CREATE (source:{source_label})-"
                          f"[relationship:{relationship_type}]->(target:{target_label})"
                 )
-                property_set = (
-                    "SET relationship.order = $order"
-                    if relationship_type == "HAS_RULE"
-                    else "SET relationship.operations = $operations"
-                    if relationship_type in {"READS", "WRITES"}
-                    else ""
-                )
                 try:
                     result = await transaction.run(
                         f"""
 MATCH (source:{source_label} {{product_id: $source_id}})
 MATCH (target:{target_label} {{product_id: $target_id}})
 {create}
-{property_set}
+SET relationship = $properties
 RETURN count(relationship) AS written
 """,
                         source_id=item["source_id"],
                         target_id=item["target_id"],
                         owner=GRAPH_OWNER,
+                        properties=properties,
                         from_column=properties.get("from_column"),
                         to_column=properties.get("to_column"),
-                        order=properties.get("order"),
-                        operations=properties.get("operations"),
                     )
                 except Exception as error:
                     raise ProductWriteError(
