@@ -25,7 +25,12 @@ from agents.agent_contracts import (
 
 # C 문자열 개행 이음 허용 gap — ``"INSERT INTO "\n"TBL"`` (shopmall 형태 승계)
 _STRING_GAP = r'(?:\s|"\s*)+'
-_IDENT_BODY = r"[A-Za-z_][A-Za-z0-9_]*"
+# SQL embedded in application source commonly qualifies physical tables
+# (for example ``HRM.HR_EMPLOYEE``).  Capturing only the first component makes
+# the completeness guard reject the match at the dot, so an otherwise exact
+# JDBC statement silently produces no READS/WRITES edge.
+_IDENT_COMPONENT = r"[A-Za-z_][A-Za-z0-9_$-]*"
+_IDENT_BODY = rf"{_IDENT_COMPONENT}(?:\.{_IDENT_COMPONENT})*"
 
 
 class RuleCompileError(ValueError):

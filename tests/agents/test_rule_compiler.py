@@ -134,6 +134,16 @@ def test_shopmall_sql_fragments():
         assert _match(rule, src) == (entity, kw)
 
 
+def test_sql_fragment_preserves_schema_qualified_entity():
+    rule = SqlFragmentRule(
+        id="jdbc_insert", keyword="INSERT", before_entity="INTO",
+        op_mappings=[OpMapping(token="INSERT", op="INSERT")],
+    )
+    assert _match(
+        rule, 'conn.prepareStatement("INSERT INTO HRM.HR_LEAVE_REQUEST (ID) VALUES (?)")'
+    ) == ("HRM.HR_LEAVE_REQUEST", "INSERT")
+
+
 # ── 컴파일러 계약 (FR-002·FR-006) ────────────────────────────
 
 

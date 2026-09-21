@@ -1034,12 +1034,22 @@ def _resolve_table_hits(
     지표의 재료다. 엣지 생성은 종전대로 첫 해석을 쓴다 — 판정만 강화.
     """
     rule = getattr(transform, "ddl_naming_rule", "as_is")
+    # DDL lookup is keyed by the physical table name while source SQL may use
+    # catalog/schema qualification.  Preserve the exact captured entity for
+    # evidence, but resolve its terminal component against that lookup.
+    terminal_entity = entity.rsplit(".", 1)[-1]
     candidates = [entity]
+    if terminal_entity != entity:
+        candidates.append(terminal_entity)
 
     if rule == "camel_to_snake_upper":
         candidates = [_camel_to_snake(entity).upper()]
+        if terminal_entity != entity:
+            candidates.append(_camel_to_snake(terminal_entity).upper())
     elif rule == "snake_to_camel":
         candidates = [_snake_to_camel(entity)]
+        if terminal_entity != entity:
+            candidates.append(_snake_to_camel(terminal_entity))
 
     # fallback prefix
     for prefix in getattr(transform, "fallback_prefixes", None) or []:

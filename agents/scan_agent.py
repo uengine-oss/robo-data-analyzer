@@ -31,6 +31,8 @@ from agents.agent_contracts import (
     ScanProposal,
     ScanResult,
     TableAccessPattern,
+    SqlFragmentRule,
+    OpMapping,
 )
 from agents.rule_compiler import (
     compile_exclusion_rules,
@@ -154,7 +156,50 @@ async def run_scan_agent(
         hydrated = _hydrate_skill_contract(_proposal_to_scan_result(proposal))
     except ValueError as error:
         raise ScanCandidateRejected(str(error)) from error
-    return await _finalize(hydrated, project_root, code_nodes, tables)
+    finalized = await _finalize(hydrated, project_root, code_nodes, tables)
+    if finalized.table_access_status == "completed":
+        return finalized
+
+    # A framework classifier is advisory; verified physical SQL is stronger
+    # evidence.  A wrong skill choice (for example JPA for plain JDBC) must not
+    # erase table lineage when exact SQL fragments resolve against uploaded DDL.
+    generic = ScanResult(
+        table_access_rules=_generic_sql_fragment_rules(),
+        ddl_transform=DdlTransform(ddl_naming_rule="as_is"),
+    )
+    generic_finalized = await _finalize(
+        generic, project_root, code_nodes, tables,
+    )
+    if generic_finalized.table_access_status == "completed":
+        log_warning(
+            _STEP,
+            "matched_skill_table_access_replaced",
+            "matched SKILL의 테이블 계약 대신 검증된 물리 SQL 계약을 사용",
+            rejected_skill=hydrated.matched_skill,
+        )
+        return generic_finalized
+    return finalized
+
+
+def _generic_sql_fragment_rules() -> list[SqlFragmentRule]:
+    """Deterministic physical-SQL fallback, accepted only after DDL verification."""
+    specs = (
+        ("physical_sql_insert", "INSERT", "INTO", "", "INSERT"),
+        ("physical_sql_update", "UPDATE", "", "SET", "UPDATE"),
+        ("physical_sql_delete", "DELETE", "FROM", "", "DELETE"),
+        ("physical_sql_merge", "MERGE", "INTO", "", "UPDATE"),
+        ("physical_sql_select", "FROM", "", "", "SELECT"),
+    )
+    return [
+        SqlFragmentRule(
+            id=rule_id,
+            keyword=keyword,
+            before_entity=before_entity,
+            after_entity=after_entity,
+            op_mappings=[OpMapping(token=keyword, op=operation)],
+        )
+        for rule_id, keyword, before_entity, after_entity, operation in specs
+    ]
 
 
 def _hydrate_skill_contract(draft: ScanResult) -> ScanResult:
