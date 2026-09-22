@@ -28,6 +28,18 @@ class AnalyzerConnectionContextTest(unittest.TestCase):
         )
         self.assertEqual(override.database, "analysis")
 
+    def test_database_only_uses_container_connection(self):
+        from shared.config.app_settings import SETTINGS
+
+        override = Neo4jOverride.from_headers({"x-neo4j-database": "project_analysis"})
+        self.assertIsNotNone(override)
+        self.assertEqual(override.database, "project_analysis")
+        self.assertEqual(override.uri, SETTINGS.graph_database.uri)
+
+    def test_database_only_rejects_system(self):
+        with self.assertRaises(ValueError):
+            Neo4jOverride.from_headers({"x-neo4j-database": "system"})
+
     def test_static_configuration_rejects_system_database(self):
         with self.assertRaises(ValueError):
             AnalysisGraphDatabaseSettings(database="system")
