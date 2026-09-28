@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Literal, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -26,12 +27,28 @@ from shared.config.app_settings import SETTINGS
 from shared.config.workspace import current_workspace, data_dir, set_workspace
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.runtime_logger import log_warning
+from graph.analysis_lock import AnalysisLock, AnalysisLockBusy
 from graph.connection_context import Neo4jOverride, set_override
 from pipeline.execution.run_executor import execute_run
 from pipeline.execution.run_registry import get_active
 
 
 router = APIRouter(prefix="/robo")
+
+
+def _holder_from(request: Request) -> str:
+    """락을 잡은 사람을 사람이 읽을 수 있게 표시한다.
+
+    거절 메시지에 그대로 들어가므로, 누구를 기다려야 하는지 알 수 있어야 한다.
+    인증이 꺼진 구성에서는 `X-User-*` 가 없을 수 있어 여러 단을 둔다.
+    """
+    headers = request.headers
+    for name in ("x-user-name", "x-user-id", "x-neo4j-user"):
+        value = (headers.get(name) or "").strip()
+        if value:
+            return value
+    client = request.client.host if request.client else None
+    return client or "알 수 없는 사용자"
 
 
 class AnalyzeRequest(BaseModel):
@@ -117,6 +134,20 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
         selected_source_ids=tuple(req.selected_source_ids),
     )
 
+    # **같은 분석 graph 를 두 사람이 동시에 덮어쓰지 못하게 막는다.**
+    #
+    # `run_registry` 의 "동시 분석 1개" 는 이 컨테이너 안에서만 유효하다. 각 PC 가
+    # 자기 analyzer 를 띄우는 구성에서 DB 를 공유하면 그 락들은 서로를 보지 못하고,
+    # 분석이 대상 graph 를 덮어쓰므로 **뒤에 시작한 사람이 앞사람 결과를 지운다.**
+    # 오류는 나지 않는다 — 그래서 여기서 막는다(`graph/analysis_lock.py`).
+    lock = AnalysisLock(run_id=uuid4().hex, holder=_holder_from(request))
+    try:
+        await lock.acquire()
+    except AnalysisLockBusy as busy:
+        # 409 로 준다. 스트림을 열고 그 안에서 알리면 화면이 "분석 시작" 을 먼저
+        # 보여 준 뒤 실패하므로, 사람이 자기 실행이 돌았다고 착각한다.
+        raise HTTPException(status_code=409, detail=str(busy)) from busy
+
     stream = NDJSONStream()
 
     async def _run_in_background():
@@ -133,6 +164,10 @@ async def analyze(req: AnalyzeRequest, request: Request) -> StreamingResponse:
                 "분석 background task가 오류로 종료됨 — 상세 원인은 run_failed 로그 참조",
                 error=f"{type(error).__name__}: {error}",
             )
+        finally:
+            # **어떤 경로로 끝나도 놓는다.** 클라이언트가 스트림을 끊어 이 task 가
+            # 취소되는 경우까지 포함한다 — 안 놓으면 TTL(3분) 동안 다음 사람이 막힌다.
+            await lock.release()
 
     producer = asyncio.create_task(_run_in_background())
     return StreamingResponse(
