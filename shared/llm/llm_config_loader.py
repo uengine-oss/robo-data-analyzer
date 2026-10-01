@@ -4,7 +4,7 @@
 ─────────
 - 운영자가 ``.env`` 에 ``ROBO_LLM_CONFIG=<name>`` 박으면 ``llm_configs/<name>.yaml`` 로딩.
 - 누락 필드 / 잘못된 형식 = 명시 ``RuntimeError`` (silent 처리 X).
-- API key 는 yaml 에 박지 X — ``.env`` 의 ``ROBO_LLM_API_KEY`` 로 별도.
+- API key 는 yaml 에 박지 X — ``.env`` 의 공급자별 표준 이름(``OPENAI_API_KEY`` 등)으로 별도.
 
 새 config 추가 = ``llm_configs/<name>.yaml`` 1개. 코드 무변경.
 """

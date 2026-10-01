@@ -1,6 +1,6 @@
 """FastAPI 분석 라우터 — 분석 시작 단일 엔드포인트.
 
-API key: ``.env`` 의 ``ROBO_LLM_API_KEY`` 단일 진실. 헤더 override 미지원
+API key: ``.env`` 의 공급자별 표준 키(``OPENAI_API_KEY`` 등) 단일 진실. 헤더 override 미지원
 (``ENV.llm.api_key`` 는 import 시점에 frozen 되어 런타임 변경 불가 — 글로벌 write 위험 회피).
 
 **폴링 / 컨트롤 엔드포인트 폐기 (Plan §4 M1)**:
@@ -49,10 +49,10 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
     """분석 시작 — NDJSON 스트림 즉시 반환, 워크플로우는 백그라운드 task.
 
     매 호출이 독립 run. 클라이언트가 stream 을 끊으면 그 run 은 종료된다.
-    API key 는 ``.env`` 의 ``ROBO_LLM_API_KEY`` 가 단일 진실.
+    API key 는 ``.env`` 의 공급자별 표준 키(``OPENAI_API_KEY`` 등)가 단일 진실.
     """
     if not ENV.llm.api_key:
-        raise HTTPException(status_code=401, detail="ROBO_LLM_API_KEY missing in .env")
+        raise HTTPException(status_code=401, detail="LLM API key missing in .env (OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY / LLM_API_KEY)")
 
     try:
         pipeline = get_pipeline(req.strategy)

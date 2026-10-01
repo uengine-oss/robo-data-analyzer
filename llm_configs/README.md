@@ -15,7 +15,7 @@
 ```bash
 # .env
 ROBO_LLM_CONFIG=qwen36_sglang_local    # llm_configs/qwen36_sglang_local.yaml 사용
-ROBO_LLM_API_KEY=<secret>               # 비밀만 별도 (secret manager 친화)
+LLM_API_KEY=<secret>                    # 비밀은 공급자별 표준 이름 (openai 면 OPENAI_API_KEY)
 ```
 
 ## 왜 분리?
@@ -91,7 +91,16 @@ ROBO_LLM_CONFIG=myco_vllm_qwen
 
 ## 비밀 (API key) 분리 정책
 
-YAML 에 API key 박지 **X**. `.env` 의 `ROBO_LLM_API_KEY` 만 사용.
+YAML 에 API key 박지 **X**. `.env` 의 **공급자별 표준 이름**을 쓴다 — 상위 `.env` 를 플랫폼의 다른 서비스와 공유하므로 이름과 값이 같아야 한다.
+
+| provider | 키 |
+|---|---|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| 그 밖의 OpenAI 호환 (sglang · ollama · vllm) | `LLM_API_KEY` |
+
+`ROBO_LLM_API_KEY` 는 하위 호환 별칭으로, 표준 이름이 비었을 때만 읽는다.
 
 이유:
 - YAML 은 git commit 대상 (운영 정책 공유)

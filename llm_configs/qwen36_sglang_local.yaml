@@ -7,7 +7,7 @@
 # provider 종류 — anthropic 외는 모두 OpenAI 호환으로 처리
 provider: sglang
 
-# API endpoint (api_key 는 .env 의 ROBO_LLM_API_KEY 로 별도)
+# API endpoint (api_key 는 .env 의 LLM_API_KEY 로 별도)
 api_base: http://ai-server.dream-flow.com:30000/v1
 
 # 모델 이름 — 사내 SGLang 배포명 (HuggingFace slug 와 다름)

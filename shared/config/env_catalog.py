@@ -42,6 +42,51 @@ def _getenv_float(key: str, default: float) -> float:
     return float(raw)
 
 
+def _getenv_first(keys: tuple[str, ...], default: str) -> str:
+    """앞에서부터 값이 있는 env 를 쓴다 — 표준 이름 먼저, ``ROBO_*`` 는 하위 호환 별칭.
+
+    분석기는 루트 ``.env`` 를 다른 서비스(studio · data-fabric · text2sql · process-gpt)와
+    **공유**한다. 목표는 상위 ``.env`` 하나를 모든 프로젝트가 같은 이름으로 재사용하는 것이다.
+    전용 이름(``ROBO_LLM_API_KEY``)을 따로 두면 같은 비밀이 두 벌이 되어 한쪽만 갱신되고
+    (실측: 두 키가 서로 다른 값으로 각각 무효화돼 있었다), Neo4j 는 ``ROBO_NEO4J_URI`` 가 없어
+    기본값 7687 로 붙어 **카탈로그(공용 ``NEO4J_URI``=7688)와 다른 그래프에 분석 결과를 썼다.**
+    그래서 표준 이름이 기준이고, ``ROBO_*`` 는 표준 이름이 비었을 때만 읽는다.
+    """
+    for key in keys:
+        raw = os.environ.get(key)
+        if raw:
+            return raw
+    return default
+
+
+# LLM 공급자 → 표준 키 이름 (다른 제품·SDK 관례와 같게)
+_LLM_KEY_BY_PROVIDER = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+
+def _llm_provider_of(config_name: str) -> str:
+    """``llm_configs/<name>.yaml`` 의 provider 만 가볍게 읽는다 (키 이름을 고르기 위해)."""
+    if not config_name:
+        return ""
+    path = Path(__file__).resolve().parents[2] / "llm_configs" / f"{config_name}.yaml"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("provider:"):
+                return line.split(":", 1)[1].strip().strip("'\"").lower()
+    except OSError:
+        pass
+    return ""
+
+
+def _resolve_llm_api_key() -> str:
+    provider = _llm_provider_of(os.environ.get("ROBO_LLM_CONFIG", ""))
+    standard = _LLM_KEY_BY_PROVIDER.get(provider, "LLM_API_KEY")
+    return _getenv_first((standard, "LLM_API_KEY", "ROBO_LLM_API_KEY"), "")
+
+
 def _getenv_bool(key: str, default: bool) -> bool:
     raw = os.environ.get(key)
     if raw is None or raw == "":
@@ -53,17 +98,21 @@ def _getenv_bool(key: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class LLMSettings:
-    """ROBO_LLM_* — config 이름 + 비밀만.
+    """LLM — config 이름 + 비밀만.
 
     ``.env`` 에 박는 것:
     - ``ROBO_LLM_CONFIG``: ``llm_configs/<name>.yaml`` 의 ``<name>`` (필수)
-    - ``ROBO_LLM_API_KEY``: 비밀 (secret manager 친화 — yaml 에 박지 X)
+    - 비밀은 **공급자별 표준 이름**: ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` /
+      ``OPENROUTER_API_KEY`` / 그 밖의 OpenAI 호환은 ``LLM_API_KEY``. 다른 서비스와 같은
+      ``.env`` 를 공유하므로 같은 이름 · 같은 값이어야 한다. (``ROBO_LLM_API_KEY`` 는 하위 호환)
 
     그 외 모든 설정 (provider / model / sampling / extra_body / reasoning_effort 등) 은
     ``llm_configs/<name>.yaml`` 안에 있음. 자세한 건 ``llm_configs/README.md``.
     """
     config: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_CONFIG", ""))
-    api_key: str = field(default_factory=lambda: _getenv_str("ROBO_LLM_API_KEY", ""))
+    # 공급자별 표준 이름(OPENAI_API_KEY · ANTHROPIC_API_KEY · OPENROUTER_API_KEY · LLM_API_KEY)이
+    # 기준. ROBO_LLM_API_KEY 는 하위 호환 별칭 — 표준 이름이 비었을 때만 읽는다.
+    api_key: str = field(default_factory=_resolve_llm_api_key)
 
 
 @dataclass(frozen=True)
@@ -95,11 +144,12 @@ class BudgetSettings:
 
 @dataclass(frozen=True)
 class Neo4jSettings:
-    """ROBO_NEO4J_* — 클라이언트 + UNWIND 배치 + 재시도."""
-    uri: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_URI", "bolt://localhost:7687"))
-    user: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_USER", "neo4j"))
-    password: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_PASSWORD", ""))
-    database: str = field(default_factory=lambda: _getenv_str("ROBO_NEO4J_DATABASE", "neo4j"))
+    """Neo4j — 접속은 공용 NEO4J_* (하위 호환 ROBO_NEO4J_*), 배치·재시도는 ROBO_NEO4J_*."""
+    # 플랫폼 공용 NEO4J_* 가 기준 — 카탈로그와 같은 그래프에 쓰기 위해. ROBO_NEO4J_* 는 하위 호환.
+    uri: str = field(default_factory=lambda: _getenv_first(("NEO4J_URI", "ROBO_NEO4J_URI"), "bolt://localhost:7687"))
+    user: str = field(default_factory=lambda: _getenv_first(("NEO4J_USER", "ROBO_NEO4J_USER"), "neo4j"))
+    password: str = field(default_factory=lambda: _getenv_first(("NEO4J_PASSWORD", "ROBO_NEO4J_PASSWORD"), ""))
+    database: str = field(default_factory=lambda: _getenv_first(("NEO4J_DATABASE", "ROBO_NEO4J_DATABASE"), "neo4j"))
     unwind_batch_size: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_UNWIND_BATCH_SIZE", 2000))
     retry_max_attempts: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_RETRY_MAX_ATTEMPTS", 5))
     retry_backoff_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_NEO4J_RETRY_BACKOFF_SECONDS", 2.0))
