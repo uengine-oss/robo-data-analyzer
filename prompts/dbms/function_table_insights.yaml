@@ -109,6 +109,23 @@ user_template_specific: |
     - `returning`  — PG RETURNING 절
     - `output`     — SQL Server OUTPUT 절
 
+  ### description 은 **업무 용어로 시작**한다
+
+  description 의 첫 마디는 그 컬럼이 **무엇인지**를 말하는 짧은 업무 명사구다 (예: "계약번호",
+  "심사 결과", "청구금액"). 쓰임새·처리 방식은 그 뒤에 덧붙인다. 카탈로그 소비자(온톨로지
+  역바인딩·자연어 질의)는 이 첫 마디로 업무 개념과 컬럼을 잇는다. "대상 식별을 위한 항목",
+  "처리 결과 값" 같은 일반어만 쓰면 아무 개념과도 이어지지 않는다.
+
+  **근거의 우선순위** — 레거시는 이름이 코드(`TB05`, `C033`)라 이름에서 얻을 뜻이 없다.
+
+  1. 주석 (`ancestor_context` · 본문 맨 앞의 머리 주석 포함). `업무명(코드)` 꼴 — 예:
+     "보험 청구(TB05)의 심사 결과(C033)" — 이 있으면 **그 업무명을 그대로** 쓴다.
+     머리 주석은 이 range 를 감싼 프로시저 전체의 업무 설명이다.
+  2. 그 컬럼과 주고받는 변수·파라미터 이름 (`v_policy_no` → 계약번호, `p_claim_amt` → 청구금액).
+  3. 비교·대입되는 리터럴 값 (`'APPROVED'/'REJECTED'`, `IN ('AUTO','LIFE')`).
+
+  근거가 셋 다 없으면 등장 맥락만 짧게 쓴다 — 추측해서 업무명을 지어내지 않는다.
+
   ### description 좋은 예 (6가지 도메인)
 
   - 결제 응답: `RESPONSE_CODE` → "외부 PG 응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
@@ -130,6 +147,8 @@ user_template_specific: |
 
   - X: description = "VARCHAR2(4) NOT NULL"
     O: description = "외부 PG 응답 코드 ('0000' = 성공 / '0001' = 한도초과)"
+  - X: 머리 주석에 "보험 청구(TB05)의 심사 결과(C033)" 가 있는데 C033 → "처리 결과 값"
+    O: C033 → "심사 결과 ('APPROVED' / 'REJECTED')"
   - X: description = "WHERE 절에서 비교하는 컬럼" (SQL 문법 표현)
     O: description = "주문 상태 코드" + usage=`where`
   - X: `SEQ_ORDER.NEXTVAL` 을 컬럼으로 출력 (시퀀스 = 컬럼 아님)

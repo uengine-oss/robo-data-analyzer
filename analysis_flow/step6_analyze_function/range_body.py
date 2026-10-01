@@ -90,10 +90,21 @@ def skeleton_body(
 def body_for(
     ctx: AnalysisContext, contexts: dict[str, AnalysisContext], cache: SourceFileCache,
 ) -> str:
-    """분석 입력 본문 — 자식 있으면 compact, 없으면 raw."""
-    if ctx.extra.get("child_ids"):
-        return compact_body(ctx, contexts, cache)
-    return _raw_body(ctx, cache)
+    """분석 입력 본문 — 자식 있으면 compact, 없으면 raw. 바로 위 주석 블록을 앞에 붙인다."""
+    body = compact_body(ctx, contexts, cache) if ctx.extra.get("child_ids") else _raw_body(ctx, cache)
+    return _with_header(ctx, body, cache)
+
+
+def _with_header(ctx: AnalysisContext, body: str, cache: SourceFileCache) -> str:
+    """range 바로 위에 붙은 주석 블록을 본문 앞에 붙인다.
+
+    프로시저면 ``CREATE`` 위 머리 주석(업무 설명), 안쪽 range 면 그 문장 위 한 줄 주석이다.
+    ``SourceFileCache.leading_comment`` 참조 — 업무 설명이 범위 밖에 있어 LLM 이 못 보던 문제.
+    부모 여부로 거르지 않는다: 프로시저 range 도 파일 노드를 ``parent_id`` 로 가질 수 있어,
+    처음에 "부모 없음" 으로 걸렀더니 머리 주석이 한 번도 붙지 않았다.
+    """
+    header = cache.leading_comment(ctx.file_path, ctx.start_line)
+    return f"{header}\n{body}" if header else body
 
 
 def ancestor_context(
@@ -111,7 +122,7 @@ def ancestor_context(
     while pid and pid in contexts and pid not in seen:
         seen.add(pid)
         actx = contexts[pid]
-        skel = skeleton_body(actx, contexts, cache)
+        skel = _with_header(actx, skeleton_body(actx, contexts, cache), cache)
         if skel and estimate_tokens(skel) > threshold and actx.one_liner:
             skel = actx.one_liner.strip()
         if skel:
