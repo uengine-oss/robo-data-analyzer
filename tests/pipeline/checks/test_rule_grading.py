@@ -145,6 +145,74 @@ class CleanOutputPasses(unittest.TestCase):
         )
         self.assertEqual([], report.rejected, [v.reasons for v in report.verdicts])
 
+    def _throw_inventory(self):
+        """분기 본문이 throw 하나인 java 분기 — hr-sample 의 업무 규칙 모양이다."""
+        source = (
+            "void f(Date start, Date deadline) {\n"
+            "  if (start.before(deadline)) {\n"
+            '    throw new HrException("HR2101");\n'
+            "  }\n"
+            "}\n"
+        )
+        inventory = build_inventory(
+            source,
+            (ControlSubtreeNode(
+                node_id="if@2", ntype="IF", start=2, end=4,
+                expression="start.before(deadline)",
+            ),),
+            "java",
+            statements=(StatementFact(
+                "throw@3", "THROW", 3, 3, expression='new HrException("HR2101")',
+            ),),
+            call_occurrences=parser_call_occurrences(((2, "before"),)),
+        )
+        return source, inventory
+
+    def test_throw_branch_rule_is_accepted_not_quarantined(self):
+        # 종전 결함: raise_error 는 무조건 finding → unverified 격리 → 그래프에 안 들어감.
+        # hr-sample 실측으로 throw 가드 46개 중 1개만 살아남았다(2026-10-16).
+        source, inventory = self._throw_inventory()
+        report = grade_rules(
+            RuleCollectionOutput(rules=[
+                _rule(2, 'F("start.before(deadline)")', ["raise_error()"]),
+            ]),
+            inventory,
+            source,
+            assigned=(2,),
+        )
+        self.assertEqual([], report.rejected, [v.reasons for v in report.verdicts])
+        self.assertEqual(
+            [], [f for v in report.verdicts for f in v.findings],
+            "예외 발생은 직접 source 로 증명된다 — 사람 대조 대상이 아니다")
+        self.assertEqual([], report.missing)
+
+    def test_raise_without_throw_in_source_is_rejected(self):
+        # 반대 방향도 막는다 — 소스에 없는 예외를 then 에 쓰면 창작이다.
+        report = _grade([
+            _rule(1, 'F("strncmp(gc_Bank_Cd, \\"03\\", LEN_BANK)") == 0',
+                  ["raise_error()"]),
+        ])
+        self.assertTrue(any(
+            "raise_error 효과가 이 행의 직접 source에 없음" in reason
+            for verdict in report.verdicts for reason in verdict.reasons
+        ), [v.reasons for v in report.verdicts])
+
+    def test_throw_omitted_from_then_is_rejected(self):
+        # ret 과 같은 대칭 — 직접 효과가 있는데 then 이 비면 축퇴다.
+        source, inventory = self._throw_inventory()
+        report = grade_rules(
+            RuleCollectionOutput(rules=[
+                _rule(2, 'F("start.before(deadline)")', []),
+            ]),
+            inventory,
+            source,
+            assigned=(2,),
+        )
+        self.assertTrue(any(
+            "직접 예외 발생 효과가 then에서 누락됨" in reason
+            for verdict in report.verdicts for reason in verdict.reasons
+        ), [v.reasons for v in report.verdicts])
+
     def test_correct_rules_have_no_rejection(self):
         report = _grade([
             _rule(1, 'F("strncmp(gc_Bank_Cd, \\"03\\", LEN_BANK)") == 0',

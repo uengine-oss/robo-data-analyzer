@@ -89,7 +89,16 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
         self.assertEqual([], collection.rules[0].structural_effects)
         self.assertEqual(0, collection.calls)
 
-    def test_unverified_row_is_scoped_and_quarantined_while_sibling_is_trusted(self):
+    def test_throw_row_is_trusted_alongside_its_sibling(self):
+        # 2026-10-16 정정. 종전 이름은
+        # `test_unverified_row_is_scoped_and_quarantined_while_sibling_is_trusted`
+        # 였고, throw 분기가 규칙을 **못 내는 것**을 정답으로 단정하고 있었다.
+        # hr-sample 실측에서 throw 를 막는 IF 46개 중 규칙이 남은 것이 1개였고
+        # ("권한이 없으면 거절" 류 업무 규칙이 거의 전부 사라졌다),
+        # 원인이 `raise_error` 를 무조건 finding 으로 단 것이었다.
+        # raise_error() 는 **인자를 갖지 않으므로** 창작할 내용이 없고, 발생 사실은
+        # parser 의 THROW statement 로 증명된다 — 격리할 근거가 없다.
+        # 격리 메커니즘 자체는 ThenBranchCalleeComparison 쪽에 덮개가 있다.
         source = "if (bad) { throw err; }\nif (ready) { go(); }\n"
         inventory = build_inventory(
             source,
@@ -108,12 +117,12 @@ class DeterministicRuleMaterializationTest(unittest.TestCase):
             source=source,
         )
 
-        self.assertEqual([2], [rule.anchor_line for rule in collection.rules])
-        self.assertEqual(1, len(collection.findings))
-        finding = collection.findings[0]
-        self.assertEqual("unverified", finding.status)
-        self.assertEqual("code:sample:fn::R-1", finding.target_id)
-        self.assertEqual((1,), finding.coordinates)
+        self.assertEqual([1, 2], [rule.anchor_line for rule in collection.rules])
+        self.assertEqual([], list(collection.findings))
+        throw_rule = next(
+            rule for rule in collection.rules if rule.anchor_line == 1
+        )
+        self.assertIn("raise_error()", list(throw_rule.structural_effects))
 
     def test_only_sufficient_business_rows_are_published(self):
         structural = materialize_and_validate_rules(

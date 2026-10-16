@@ -799,6 +799,22 @@ def _compare_then_with_direct_effects(
                 f"ret 값이 이 행의 직접 return 표현식과 다름: {sorted(returns)}"
             )
 
+    # 예외 발생도 ret 과 같은 방식으로 증명된다 — 이 행의 직접 statement 효과에
+    # raise_error 가 있는지 보면 된다(THROW/RAISE → raise_error, ontology_roles.yaml).
+    # 종전에는 raise_error 를 **무조건** finding 으로 달았고, finding 이 하나라도 있으면
+    # split_graded_rules 가 그 규칙을 unverified 로 격리해 그래프에 넣지 않았다.
+    # 결과: hr-sample 에서 throw 를 막는 IF 46개 중 규칙이 남은 것이 **1개**였다.
+    # 업무 규칙("권한이 없으면 거절"·"이미 마감이면 거절")이 거의 전부 사라지는 자리다.
+    raise_calls = [call for call in parsed if call.func.id == "raise_error"]
+    direct_raises = any(
+        op == "raise_error"
+        for op, _target in inventory.direct_statement_effects(rule.anchor_line)
+    )
+    if direct_raises and not raise_calls:
+        verdict.reasons.append("이 행의 직접 예외 발생 효과가 then에서 누락됨")
+    elif raise_calls and not direct_raises:
+        verdict.reasons.append("raise_error 효과가 이 행의 직접 source에 없음")
+
     set_calls = [call for call in parsed if call.func.id == "set"]
     matched_targets: set[str] = set()
     for call in set_calls:
@@ -832,10 +848,6 @@ def _compare_then_with_direct_effects(
                 verdict.findings.append(
                     f"{call.func.id}({table!r}) 를 이 행의 직접 source에서 증명할 수 없음"
                 )
-        elif call.func.id == "raise_error":
-            verdict.findings.append(
-                "raise_error 의미는 이 행의 직접 source와 수동/LLM 의미 대조 필요"
-            )
 
 
 def _grade_rule_content(
