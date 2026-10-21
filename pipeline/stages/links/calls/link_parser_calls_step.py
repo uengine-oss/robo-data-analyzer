@@ -16,12 +16,55 @@ from langchain_core.runnables import RunnableConfig
 
 from pipeline.execution.step_config import step_config
 
+from graph.schema.graph_nodes import Variable
 from pipeline.parsing.resolution.call_classifier import classify_call_sites
 from shared.events.runtime_logger import log_info, log_warning
 from graph.edges.call_edges import emit_calls
 from pipeline.execution.graph_delta_stream import emit_message
 
 _STEP = "step5.link_parser_calls"
+
+
+def _receiver_declarations(variables: list[Any], constants: list[Any]) -> list[Any]:
+    """필드 선언을 **빠짐없이** 수신자 바인딩에 넘긴다.
+
+    ⚠ 2026-10-21 실측(ISS-59). ``private final EmployeeDao employeeDao = …`` 는
+    ``final`` 때문에 ``Constant``(라벨 ``CONSTANT_FIELD``)로 모델링된다. 그런데
+    수신자 타입을 푸는 ``_receiver_owner`` 는 ``variables`` 만 받고 라벨이
+    ``FIELD``/``MEMBER`` 인 것만 본다 — **상수 필드는 쳐다보지도 않는다.**
+
+    그래서 ``employeeDao.selectByEmpNo(conn, empNo)`` 가 전부
+    ``java_receiver_type_binding_environment_required`` 로 떨어졌다:
+    호출 539건 중 **387건 미해결, 그 중 266건이 이 사유** 였다. 결과로
+    서비스→DAO CALLS 가 **한 건도 없고**(남은 85건 중 69건이 `HrException`
+    생성자다), 규칙을 가진 메서드 49개 중 테이블에 닿는 것이 **6개** 뿐이었다.
+    ES 의 Aggregate 출처에 테이블이 안 나오는 **진짜 뿌리**가 여기다.
+
+    **추측이 아니다** — 선언 타입이 원문에 적혀 있고 그래프에도 들어 있다
+    (CONSTANT_FIELD 43개 중 **42개**가 선언 타입을 갖고 있다). 그 선언을
+    필드 선언으로 되돌려 넘길 뿐, 바인딩 규칙 자체는 건드리지 않는다.
+
+    변환은 **이 단계 안에서만** 산다 — 만든 레코드는 분류기로만 가고
+    제품 graph 에는 어떤 노드도 만들지 않는다.
+    """
+    promoted: list[Any] = []
+    for constant in constants or []:
+        if getattr(constant, "label", "") != "CONSTANT_FIELD":
+            continue
+        declared_type = (getattr(constant, "var_type", "") or "").strip()
+        if not declared_type:
+            continue
+        promoted.append(Variable(
+            id=constant.id,
+            owner_id=constant.owner_id,
+            name=constant.name,
+            file_path=constant.file_path,
+            start_line=constant.start_line,
+            end_line=constant.end_line,
+            label="FIELD",
+            var_type=declared_type,
+        ))
+    return [*(variables or []), *promoted]
 
 
 @dataclass(frozen=True)
@@ -69,7 +112,9 @@ async def link_parser_calls_step(
         import_refs=state.get("import_refs", []),
         evidence_sources=state.get("evidence_sources", []),
         evidence_completeness=state.get("evidence_completeness", []),
-        variables=state.get("variables", []),
+        variables=_receiver_declarations(
+            state.get("variables", []), state.get("constants", []),
+        ),
     )
 
     # 라이브 스트림은 임시 진행 표시일 뿐 제품 graph를 쓰지 않는다.
