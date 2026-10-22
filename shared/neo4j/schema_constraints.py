@@ -8,6 +8,8 @@ run 시작 시 1회 호출 (``ensure_schema()``).
 """
 from __future__ import annotations
 
+import re
+
 from shared.neo4j.neo4j_client import Neo4jClient
 
 
@@ -63,11 +65,62 @@ async def ensure_schema(client: Neo4jClient) -> None:
         await client.run_query(stmt)
 
 
-async def wipe_graph(client: Neo4jClient) -> None:
-    """모든 노드 + 엣지 삭제 — 매 run 시작 시 호출 (테스트 정책: 깨끗한 상태에서 분석).
+def _owned_labels() -> list[str]:
+    """analyzer 가 만드는 노드 라벨 — 위 ``CONSTRAINTS`` 에서 뽑는다.
 
-    옛 run 의 잔재 (노드/엣지) 가 새 분석 결과와 섞이면 검증 사각지대.
-    ``DETACH DELETE`` = 노드 + 그 노드의 모든 엣지 동시 삭제.
-    제약 / 인덱스 (schema) 는 보존 — ``ensure_schema`` 가 idempotent.
+    목록을 따로 두지 않는 이유: 이 파일 머리말이 이미 *"새 노드 종류 추가 시 CONSTRAINT
+    1줄 추가"* 를 규칙으로 정해 두었다. 별도 목록을 두면 노드를 추가한 사람이 한쪽만
+    고치게 되고, 그러면 **지워지지 않는 잔재**가 조용히 남는다 — wipe 의 목적 자체가 깨진다.
+
+    복합 라벨(``:FUNCTION:METHOD`` 등)은 따로 챙기지 않아도 된다. 기본 라벨이 항상 함께
+    붙으므로 기본 라벨로 지우면 같이 사라진다 (``nodes/function.py`` 참조).
     """
-    await client.run_query("MATCH (n) DETACH DELETE n")
+    labels = re.findall(r"FOR \(\w+:([A-Z][A-Z_]*)\)", " ".join(CONSTRAINTS))
+    # 유도가 실패하면 조용히 "지울 것이 없다" 가 되어 잔재가 남는다. 차라리 멈춘다.
+    if not labels:
+        raise RuntimeError("CONSTRAINTS 에서 라벨을 뽑지 못했습니다 — wipe 범위를 알 수 없습니다.")
+    return sorted(set(labels))
+
+
+async def wipe_graph(client: Neo4jClient) -> None:
+    """**analyzer 가 만든 노드만** 삭제 — 매 run 시작 시 호출.
+
+    옛 run 의 잔재가 새 분석 결과와 섞이면 검증 사각지대가 생기므로 지우는 것은 맞다.
+    다만 지우는 범위가 문제였다.
+
+    ## 왜 전역 삭제(``MATCH (n) DETACH DELETE n``)를 쓰지 않는가
+
+    이 Neo4j 는 **혼자 쓰는 DB 가 아니다.** 같은 그래프에 data-fabric 의 카탈로그
+    (``:DataSource`` / ``:Table`` / ``:Column``)와 온톨로지가 함께 산다. 전역 삭제는
+    그것들까지 지운다.
+
+    실제로 그렇게 됐다 (2026-08-03 실측): 사용자가 데이터소스를 등록한 뒤 인제스천을
+    돌리자 ``:DataSource`` 가 0건이 되고 데이터소스 목록이 비었다. 매뉴얼 순서
+    (2장 데이터소스 등록 → 3장 인제스천)를 그대로 따르면 **3장이 2장을 지운다.**
+    플랫폼 계약 원칙 IV 가 금지하는 동작이다.
+
+    ## 왜 라벨로 가르는 것이 안전한가 — 그리고 한때 안전하지 않았던 이유
+
+    Neo4j 라벨은 대소문자를 구분한다. analyzer 는 UPPER_SNAKE(``:TABLE``)를 쓰고
+    카탈로그는 PascalCase(``:Table``)를 쓴다 — 이름이 겹쳐 보여도 서로 다른 라벨이다.
+
+    **그런데 이것만으로는 부족했다.** ``nodes/table.py`` 와 ``nodes/column.py`` 가
+    자기 노드에 ``SET t:Table`` 로 **카탈로그 라벨을 함께** 붙이고 있었다. 그러면 같은 노드가
+    두 라벨을 갖고, ``MATCH (n:TABLE) DETACH DELETE n`` 이 노드째 지우므로 **카탈로그
+    정체성까지 사라진다.**
+
+    실측(2026-08-05): ``legacy`` 예제를 분석하자 ``manufacturing`` 스키마의 ``:Table``
+    11개가 0개가 됐다. 라벨 범위 삭제로 바꾼 뒤에도 그랬다 — 범위가 아니라 **소유 표시**가
+    틀려 있었다.
+
+    그래서 이중 라벨을 걷어냈다. analyzer 는 이제 자기 라벨에만 쓰고, 알아낸 설명은
+    ``catalog_projection.py`` 가 기존 카탈로그 노드에 투영한다. 그 뒤로 이 함수의 전제 —
+    *"내 라벨을 지우면 내 것만 사라진다"* — 가 비로소 참이 됐다.
+
+    ``DETACH DELETE`` 는 지우는 노드에 붙은 엣지만 함께 지운다. analyzer 노드와 카탈로그
+    노드를 잇는 엣지가 있다면 그 엣지는 사라지고 카탈로그 노드는 남는다 — 의도한 대로다.
+
+    제약 / 인덱스는 보존한다 — ``ensure_schema`` 가 idempotent.
+    """
+    for label in _owned_labels():
+        await client.run_query(f"MATCH (n:{label}) DETACH DELETE n")

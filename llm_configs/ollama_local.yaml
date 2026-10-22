@@ -1,0 +1,34 @@
+# 로컬 Ollama (OpenAI 호환 /v1) — 검증용
+# ─────────────────────────────────────────────────────────────
+# 왜 있는가: 데스크톱 설치본의 실습(매뉴얼 3장 인제스천)이 **클라우드 LLM 키 없이**
+# 어디까지 가는지 확인하려고 만들었다. Ollama 는 `/v1/chat/completions` 를 OpenAI
+# 호환으로 서빙하므로 provider: openai 로 그대로 붙는다.
+#
+# 쓰는 법 — `<userData>/ontology-studio.env` 에:
+#   ROBO_LLM_CONFIG=ollama_local
+#   LLM_API_KEY=ollama               # Ollama 는 키를 검사하지 않지만 로더가 빈 값을 거부한다
+#
+# 모델을 바꾸려면 아래 `model` 만 고친다 (`ollama list` 로 이름 확인).
+
+provider: openai
+
+api_base: http://127.0.0.1:11434/v1
+
+model: qwen3-coder:30b
+
+# 같은 엔드포인트라 작은 모델을 따로 두지 않는다.
+model_small: ""
+
+# 로컬 모델은 컨텍스트가 짧다. 분석 단계가 큰 출력을 요구하므로 여유를 준다.
+max_tokens: 16384
+# 로컬 추론은 느리다. 클라우드 기본(300초)으로는 한 스텝이 타임아웃날 수 있다.
+timeout_seconds: 900
+
+verify_ssl: true
+
+sampling:
+  temperature: 0.1
+  top_p: 1.0
+
+# 로컬 모델은 OpenAI o-series 의 reasoning_effort 를 모른다. 빈 값 = 인자 미전달.
+reasoning_effort: none

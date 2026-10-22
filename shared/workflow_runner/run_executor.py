@@ -34,6 +34,7 @@ from shared.logging_and_stream.logger import (
     log_info,
 )
 from shared.logging_and_stream.ndjson_stream import NDJSONStream
+from shared.neo4j.catalog_projection import project_to_catalog
 from shared.neo4j.neo4j_client import Neo4jClient
 from shared.neo4j.schema_constraints import ensure_schema, wipe_graph
 from shared.workflow_runner.artifact_dumper import dump_state_artifacts
@@ -126,6 +127,39 @@ async def execute_run(
                 )
                 raise
             _summarize_usage(run.run_dir)
+
+            # 분석으로 알아낸 설명을 카탈로그 노드에 투영한다.
+            #
+            # 분석기는 자기 라벨(`:TABLE`/`:COLUMN`)에만 쓰고, 카탈로그를 읽는 쪽은
+            # `:Table`/`:Column` 을 읽는다. 이 단계가 없으면 **분석 결과가 온톨로지 구축과
+            # 자연어 질의에 영영 보이지 않는다.** 자세한 경위는 catalog_projection.py 참조.
+            #
+            # 투영 실패로 분석 전체를 실패시키지는 않는다 — 분석 산출물은 이미 저장됐고,
+            # 카탈로그가 아직 추출되지 않은 상태(대응 노드 없음)도 정상이기 때문이다.
+            # 다만 **조용히 넘기지 않는다.** 0건은 "카탈로그에 대응 노드가 없다"는 뜻이고,
+            # 그 사실을 모르면 "증강했는데 테이블을 못 찾는다"로만 보인다.
+            try:
+                projected = await project_to_catalog(neo_client)
+                log_info(
+                    "run",
+                    "catalog_projected",
+                    tables=projected["tables"],
+                    columns=projected["columns"],
+                )
+                if projected["tables"] == 0 and projected["columns"] == 0:
+                    log_info(
+                        "run",
+                        "catalog_projection_empty",
+                        hint="카탈로그에 대응 노드가 없습니다 — 데이터소스 메타데이터 추출을 먼저 실행하세요",
+                    )
+            except Exception as e:
+                log_error(
+                    "run",
+                    "catalog_projection_failed",
+                    e,
+                    stream_emit=stream.emit if stream is not None else None,
+                    run_id=run.run_id,
+                )
 
             if stream is not None:
                 stream.emit({"type": "phase_event", "event": "complete", "run_id": run.run_id})

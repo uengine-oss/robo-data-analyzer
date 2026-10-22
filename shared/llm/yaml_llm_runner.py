@@ -41,6 +41,7 @@ usage_metadata 동시 추출 + Pydantic 자동 파싱.
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Optional, TypeVar
@@ -119,7 +120,14 @@ async def run_yaml_rule(
     user_template = rule.get("user_template", "")
     model = model_override or rule.get("model")
 
-    user_content = user_template.format(**user_values)
+    # str.format() 은 프롬프트 본문의 JSON 예시 중괄호(`{ ... }`)를 placeholder 로
+    # 오인해 KeyError 를 던진다 (예: dbms/function_summary.yaml 의 SummaryOutput 예시).
+    # → user_values 에 존재하는 단순 식별자 placeholder 만 치환하고 나머지는 보존.
+    user_content = re.sub(
+        r"\{([A-Za-z_][A-Za-z0-9_]*)\}",
+        lambda m: str(user_values[m.group(1)]) if m.group(1) in user_values else m.group(0),
+        user_template,
+    )
 
     # 현재 LLM config — provider 정보를 cache friendly filter 에 전달
     cfg = load_llm_config(ENV.llm.config)

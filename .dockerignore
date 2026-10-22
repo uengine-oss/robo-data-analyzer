@@ -1,0 +1,37 @@
+# 이미지에 들어가면 안 되는 것들. 두 부류다 — **깨진 심볼릭 링크**와 **덩치**.
+#
+# ## 심볼릭 링크 (기능이 깨진다)
+#
+# `data` 는 호스트 절대경로(`/Users/.../ontologic/data`)를 가리키는 링크다. `COPY . /app`
+# 이 이것을 링크 그대로 옮기면 이미지 안에서 **가리키는 곳이 없는 링크**가 되고, 그 위에
+# 바인드 마운트를 걸면 컨테이너가 아예 뜨지 않는다 (2026-08-09 실측):
+#
+#   crun: creating `/app/data`: openat2 `app/data`: No such file or directory
+#
+# `ls -d /app/data` 는 링크 이름만 보고 성공하므로 이 상태를 놓치기 쉽다. `ls -ld` 로 봐야
+# 정체가 드러난다. 여기서 빼고 Dockerfile 이 빈 디렉터리를 만든다.
+data
+.env
+.env.*
+!.env.example
+
+# ## 덩치 (빌드가 느려지고 배포본이 커진다)
+#
+# `.venv` 만 932MB 다. 이미지는 `requirements.lock.txt` 로 자기 의존성을 따로 설치하므로
+# 호스트 venv 는 쓰이지도 않는다 — 그대로 두면 6.75GB 짜리 이미지가 나온다.
+# 설치본에 `podman save` 로 들어가는 만큼 그대로 배포본 크기가 된다.
+.venv
+venv
+.git
+.gitignore
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+logs
+*.log
+.pytest_cache
+.ruff_cache
+.mypy_cache
+node_modules
+.DS_Store

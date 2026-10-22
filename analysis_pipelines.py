@@ -33,6 +33,7 @@ from analysis_flow.step5_build_context.dbms_context_builder import DbmsContextBu
 from analysis_flow.step5_build_context.framework_context_builder import FrameworkContextBuilder
 from analysis_flow.step6_analyze_function.analyze_function_step import analyze_function_step
 from analysis_flow.step7_post_processing.embed_step import embed_step
+from analysis_flow.step7_post_processing.skill_augment_step import describe_tables_step
 from analysis_flow.step7_post_processing.enrich_table_description_step import (
     enrich_table_description_step,
 )
@@ -121,7 +122,7 @@ DBMS_PIPELINE = Strategy(
         build_context_step,
         analyze_function_step,
         summarize_module_step,
-        enrich_table_description_step,
+        describe_tables_step,                 # ROBO_ANALYZE_ENGINE — controller(YAML) / cliagents(스킬)
         enrich_metadata_from_catalog_step,    # ★ DBMS 만 — catalog metadata
         enrich_lineage_from_catalog_step,     # ★ DBMS 만 — catalog lineage
         embed_step,

@@ -60,6 +60,14 @@ _STORAGE_OPTS = re.compile(
 )
 _SLASH_TERMINATOR = re.compile(r"^\s*/\s*$", re.M)
 
+# ``CREATE TABLE IF NOT EXISTS`` — PostgreSQL·MySQL 문법이고 Oracle 에는 없다.
+# **DDL 과 코드의 방언은 다를 수 있다**: 프로시저가 PL/SQL 이라 호출자가 dialect 를
+# oracle 로 넘겨도, 같은 시스템의 DDL 이 PostgreSQL 로 쓰여 있는 경우가 흔하다. 그때
+# 이 구문이 그대로 남으면 sqlglot 이 첫 테이블에서 ParseError 를 내고 파이프라인이
+# 1단계에서 멈춘다. 스키마 추출에는 의미가 없는 구문이므로 물리 저장옵션과 같은
+# 취급으로 지운다.
+_IF_NOT_EXISTS = re.compile(r"\bIF\s+NOT\s+EXISTS\b", re.I)
+
 # COMMENT ON 추출 — VIEW 도 테이블과 동일 취급 (description 의 출처).
 _COMMENT_TABLE = re.compile(
     r"COMMENT\s+ON\s+(?:TABLE|VIEW)\s+([\w.\"]+)\s+IS\s+'((?:[^']|'')*)'", re.I,
@@ -84,6 +92,7 @@ def _normalize_ddl(sql: str, dialect: str | None) -> tuple[str, str | None]:
     sql = _VARCHAR_LEN_UNIT.sub(r"\1)", sql)     # VARCHAR2(n BYTE) → VARCHAR2(n)
     sql = _STORAGE_OPTS.sub("", sql)             # 물리 저장옵션 제거 (분석 무가치)
     sql = _SLASH_TERMINATOR.sub("", sql)         # SQL*Plus / 종결자 제거
+    sql = _IF_NOT_EXISTS.sub("", sql)            # Oracle 에 없는 구문 (위 주석)
     return sql, effective
 
 

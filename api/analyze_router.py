@@ -33,15 +33,70 @@ router = APIRouter(prefix="/robo")
 
 
 class AnalyzeRequest(BaseModel):
-    """``/analyze`` 요청 모델."""
-    project_name: str
-    project_root: str
+    """``/analyze`` 요청 모델.
+
+    **프론트가 실제로 보내는 것을 받는다.** robo-data-frontend 는
+    ``{strategy, target, nameCase, datasource, inferFkRelations}`` 를 보내고
+    ``project_name`` / ``project_root`` 를 **어떤 경로로도 보내지 않는다.** 둘을 필수로
+    두면 모든 업로드가 422 로 끝나고, 화면에는 "ROBO 백엔드 서비스가 동작하지 않습니다"
+    로만 보여 원인이 계약 불일치인 줄 알 방법이 없다.
+
+    그래서 둘 다 선택 항목으로 두고 여기서 채운다:
+
+    - ``project_name`` ← ``datasource`` → ``project_root`` 의 마지막 조각 → ``"project"``.
+      분석기가 이 값을 Neo4j 의 ``datasource_name`` 으로 박으므로(Project.name),
+      사용자가 고른 데이터소스 이름이 오는 것이 맞다.
+    - ``project_root`` ← 반입된 소스 디렉터리(``ROBO_DATA_DIR/source``,
+      기본 ``~/ontologic/source``).
+      업로드 경로에서는 파일이 이미 거기 있고, 프론트는 경로를 알지 못한다.
+
+    이전에는 데스크톱 셸이 프록시에서 본문을 번역해 우회했다
+    (``desktop/src/main/webserver.js`` ``translateAnalyzeBody``). 그 심은 Electron
+    메인 프로세스 상태에 의존해 서버·브라우저 배포에서는 쓸 수 없었고, 그래서 같은
+    요청이 데스크톱에서만 통했다. 계약을 여기서 맞추면 세 배포가 같은 길을 쓴다.
+    """
     strategy: str                            # "framework" / "dbms"
+    project_name: Optional[str] = None
+    project_root: Optional[str] = None
+    datasource: Optional[str] = None
     ddl_dir: Optional[str] = None
     has_xml_mapper: bool = False
     locale: str = "ko"
     catalog_service_url: Optional[str] = None    # DBMS 만
     catalog_api_key: Optional[str] = None        # DBMS 만
+
+    # 프론트가 함께 보내지만 분석기가 쓰지 않는 항목들. 선언해 두지 않으면 pydantic 이
+    # 거부하는 것이 아니라 조용히 흘리는데, 그러면 계약이 무엇인지 코드에서 읽을 수 없다.
+    target: Optional[str] = None
+    nameCase: Optional[str] = None
+    inferFkRelations: Optional[bool] = None
+
+    def resolved_root(self) -> Path:
+        if self.project_root:
+            return Path(self.project_root)
+        return Path(ENV.data.dir) / "source"
+
+    def resolved_ddl_dir(self) -> Optional[Path]:
+        """``ddl_dir`` 를 안 보내면 반입된 DDL 자리(``ROBO_DATA_DIR/ddl``)를 쓴다.
+
+        ANTLR 파서는 업로드한 DDL 을 ``data/ddl`` 에 둔다. 브라우저 업로드 경로는 이 값을
+        보내지 않아(데스크톱 셸만 프록시에서 채웠다) DDL 파싱이 ``data/source`` 를 뒤져
+        테이블을 하나도 못 찾았다.
+        """
+        if self.ddl_dir:
+            return Path(self.ddl_dir)
+        if self.project_root:
+            return None
+        ddl = Path(ENV.data.dir) / "ddl"
+        return ddl if ddl.is_dir() and any(ddl.iterdir()) else None
+
+    def resolved_name(self) -> str:
+        if self.project_name:
+            return self.project_name
+        if self.datasource:
+            return self.datasource
+        root = self.resolved_root()
+        return root.name or "project"
 
 
 @router.post("/analyze")
@@ -59,15 +114,19 @@ async def analyze(req: AnalyzeRequest) -> StreamingResponse:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    project_root = Path(req.project_root)
+    project_root = req.resolved_root()
     if not project_root.exists():
-        raise HTTPException(status_code=400, detail=f"project_root not found: {req.project_root}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_root not found: {project_root} "
+                   f"(ROBO_DATA_DIR={ENV.data.dir})",
+        )
 
     project = Project(
-        name=req.project_name,
+        name=req.resolved_name(),
         root=project_root,
         strategy=req.strategy,  # type: ignore[arg-type]
-        ddl_dir=Path(req.ddl_dir) if req.ddl_dir else None,
+        ddl_dir=req.resolved_ddl_dir(),
         has_xml_mapper=req.has_xml_mapper,
         locale=req.locale,
         catalog_service_url=req.catalog_service_url,

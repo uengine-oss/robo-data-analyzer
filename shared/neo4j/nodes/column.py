@@ -2,6 +2,10 @@
 
 description          = DDL COMMENT ON 1차 설명.
 analyzed_description = analyze_function 3분할 tableInsights 합성 설명.
+
+카탈로그 라벨(``:Column``)은 붙이지 않는다 — 이유는 ``table.py`` 의 ``MERGE_QUERY`` 주석에
+있다(한 줄 요약: wipe 가 카탈로그를 지우고, 대소문자 차이로 노드가 둘이 된다). 알아낸 설명은
+``catalog_projection.py`` 가 기존 카탈로그 노드에 투영한다.
 """
 from __future__ import annotations
 
@@ -34,7 +38,9 @@ UNWIND $items AS item
 MATCH (c:COLUMN {fqn: item.fqn})
 SET c.analyzed_description = item.analyzed_description,
     c.description_source = CASE WHEN coalesce(c.description, '') = ''
-                                THEN 'source' ELSE c.description_source END
+                                THEN 'code' ELSE c.description_source END,
+    c.description = CASE WHEN coalesce(c.description, '') = ''
+                         THEN item.analyzed_description ELSE c.description END
 """
 
 

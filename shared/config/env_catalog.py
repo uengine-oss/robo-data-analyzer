@@ -202,8 +202,23 @@ class LogSettings:
 
 @dataclass(frozen=True)
 class DataSettings:
-    """ROBO_DATA_* — 분석 대상 프로젝트 베이스."""
-    dir: Path = field(default_factory=lambda: Path(_getenv_str("ROBO_DATA_DIR", "./data")))
+    """ROBO_DATA_* — 분석 대상 프로젝트 베이스.
+
+    기본값이 사용자 홈 아래 ``ontologic/data`` 인 이유: 업로드 경로에서는 프론트가
+    ``project_root`` 를 보내지 않는다(경로를 알 수 없다). 그래서 **서버가 아는 고정
+    자리**가 있어야 반입된 소스를 찾을 수 있다. 상대경로 ``./data`` 는 프로세스를 어느
+    디렉터리에서 띄웠느냐에 따라 달라져 그 자리 노릇을 못 한다.
+
+    **ANTLR 파서와 같은 자리여야 한다.** 파서는 자기 체크아웃의 부모 아래
+    ``data/{source,ddl,analysis}`` 에 반입한다(FileStorageService.resolveBaseDir).
+    두 값이 어긋나면 업로드는 성공하는데 파이프라인이 첫 단계에서 조용히 끝난다 —
+    ``source/`` 가 비어 있으니 파싱할 것이 없기 때문이다.
+    """
+    dir: Path = field(
+        default_factory=lambda: Path(
+            _getenv_str("ROBO_DATA_DIR", str(Path.home() / "ontologic" / "data"))
+        ).expanduser()
+    )
 
 
 # ── 통합 카탈로그 ──────────────────────────────────────────
