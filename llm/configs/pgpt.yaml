@@ -31,8 +31,15 @@ provider: openai
 
 api_base: http://aigpt.posco.net/gpgpta01-gpt/v1
 
-# ⚠ 받은 문서의 **예시**다. `/v1/models` 로 확인한 뒤 확정한다.
-model: gpt-5.2
+# ⚠ 2026-10-29: 받은 문서의 예시(`gpt-5.2`)에서 **gpt-4.1** 로 바꿨다.
+#    근거는 **이 조직이 실제로 쓰는 모델**이다 — msa-ez/platform v1.0.30 의
+#    `docker-compose.yml` 이 `AI_MODEL="openai:gpt-4.1-2025-04-14"` 를 쓴다.
+#    P-GPT 는 OpenAI 모델을 공식 API 형식 그대로 중계한다.
+#    봉인도 함께 있다: `llm/capabilities/gpt41_openai_2025_04_14.yaml`
+#    (context 1,047,576 · max output 32,768 — OpenAI 모델 페이지에서 확인).
+#    ⓘ 날짜 스냅샷은 OpenAI 가 **deprecated** 로 표시했으므로 별칭을 쓴다.
+#    ⚠ 현장에서 `GET {api_base}/models` 로 한 번 확인한다.
+model: gpt-4.1
 
 # 게이트웨이는 본점보다 컨텍스트가 좁은 경우가 많다. 넘치면 **조용히 잘린 응답**이
 # 오는 쪽이라(ENT-AI-001) 넉넉하게 잡지 않는다.

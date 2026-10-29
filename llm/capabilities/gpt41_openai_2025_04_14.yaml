@@ -1,0 +1,42 @@
+sealed_model_runtime_capabilities:
+  runtime_kind: provider_managed
+  provider_id: openai
+  model_id: gpt-4.1
+  model_revision: gpt-4.1-2025-04-14
+  serving_runtime:
+    runtime_id: openai-api
+    runtime_version: v1
+    runtime_config_sha256: d31793357384ef3f0d8da27168c7d6a3da4132ac74391cd3161d31cef7c62a25
+  provider_hard_limits:
+    context_tokens: 1047576
+    max_output_tokens: 32768
+  profile_version: openai-model-page-2026-10-29
+  provider_managed_disclosure:
+    tokenizer_identity: provider_managed_undisclosed
+    quantization: provider_managed_undisclosed
+    infrastructure: provider_managed_undisclosed
+  provenance:
+    model_page: https://developers.openai.com/api/docs/models/gpt-4.1
+    verified_at: 2026-10-29
+    note: >-
+      POSCO 납품용. 이 조직이 실제로 쓰는 모델과 같은 것을 고른 것이다 —
+      msa-ez/platform v1.0.30 의 docker-compose.yml 이
+      AI_MODEL="openai:gpt-4.1-2025-04-14" 를 쓴다. P-GPT(사내 게이트웨이)는
+      OpenAI 모델을 공식 API 형식 그대로 중계하므로 한계는 OpenAI 모델 페이지가
+      출처다. context 1,047,576 · max output 32,768 을 그 페이지에서 확인했다
+      (2026-10-29).
+    model_revision_note: >-
+      OpenAI 페이지가 gpt-4.1-2025-04-14 스냅샷을 **deprecated** 로 표시한다.
+      그래서 호출에는 날짜를 박지 않은 `gpt-4.1` 을 쓴다(LLM_MODEL=gpt-4.1).
+      이 칸은 그 별칭이 가리키는 스냅샷을 **기록**해 둔 것이다.
+    runtime_config_sha256_note: >-
+      ⚠ 이 값의 정본 규약이 저장소에 **문서로 없다**. 기존 두 파일의 쪽지에
+      "canonical deployment_identity snapshot hash" 라고만 적혀 있고 만드는
+      절차가 없어, 그 값들을 재현해 보려 했지만 맞추지 못했다(2026-10-29).
+      지어내지 않기 위해 **규약을 명시해 둔다** — 이 값은
+
+          sha256("openai-api|v1|gpt-4.1|gpt-4.1-2025-04-14|1047576|32768")
+
+      의 16진 요약이다. provider_managed 런타임에는 우리가 쥔 배포 설정이 없으므로
+      "무엇을 호출하는가" 를 그대로 정본으로 삼았다. 다음 사람이 규약을 통일하려면
+      이 줄을 근거로 바꾸면 된다.
