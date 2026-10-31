@@ -81,3 +81,10 @@ models:
   frentis-ai-model:
     input_per_1m: 0.0
     output_per_1m: 0.0
+
+  # ── Robo Architect Lite: Claude Code 다리 (llm/configs/claude_code_bridge.yaml) ──
+  # 다리가 사용자 PC 의 `claude -p` 로 답하고 응답 model 을 "claude-code" 로 돌려준다. 토큰 단가로
+  # 청구되지 않으므로 0 — 없으면 첫 LLM 콜에서 UnknownModelPriceError 로 run 이 죽는다.
+  claude-code:
+    input_per_1m: 0.0
+    output_per_1m: 0.0
