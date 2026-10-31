@@ -9,11 +9,13 @@ progress 콜백은 side-channel(코어 반환 불변) — 게이트/eval 은 Non
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from search.config import Config
 from search.ranking.fusion import infer_types, type_affinity
-from search.ranking.recall import recall
+from search.ranking.recall import recall, tokenize
 from search.ranking.rerank import passage, predict_cached
 from search.corpus.embed_material import SEARCH_VECTOR_PROPERTY, as_vector
 from search.corpus.evidence_reader import read_rules
@@ -39,9 +41,27 @@ class Retriever:
         self.s = session
         self.c = corpus
         self._vecs: dict[str, np.ndarray] = {}
+        # 임베딩 없는 그래프(키 없는 Lite) — 질의 벡터 · 코사인 · CE 대신 BM25 점수(0..1)로 채점한다
+        self.lexical = bool(getattr(corpus, "lexical", False))
+
+    def _qv(self, text: str):
+        if self.lexical:
+            return None
+        return np.array(embedder.encode_texts([text])[0], dtype=np.float32)
+
+    def _lexical_scores(self, query: str, cids: list) -> dict[str, float]:
+        """CE 자리 — 질의의 BM25 점수를 후보 안 최댓값으로 나눈 0..1(결정론)."""
+        if not cids:
+            return {}
+        scores = self.c.bm25.get_scores(tokenize(query))
+        raw = {cid: float(scores[self.c.index[cid]]) for cid in cids}
+        top = max(raw.values()) or 1.0
+        return {cid: value / top for cid, value in raw.items()}
 
     # ── 후보 벡터 (요청 DB 에서 필요분만) ──
     def _ensure_vecs(self, ids) -> None:
+        if self.lexical:
+            return
         missing = [i for i in ids if i not in self._vecs]
         if not missing:
             return
@@ -55,12 +75,16 @@ class Retriever:
             self._vecs[r["id"]] = np.array(as_vector(r["v"]), dtype=np.float32)
 
     def _cos(self, cid: str, qv) -> float:
+        if qv is None:
+            return 0.0
         v = self._vecs.get(cid)
         return float(v @ qv) if v is not None else 0.0
 
     # ── 신호 ──
     def _ce(self, query: str, cids: list, cfg) -> dict[str, float]:
         cids = [c for c in cids if c in self.c.by_id]
+        if self.lexical:
+            return self._lexical_scores(query, cids)
         return dict(zip(cids, predict_cached(
             cfg.ce_model, [(query, passage(self.c.by_id[c])) for c in cids])))
 
@@ -129,6 +153,10 @@ class Retriever:
     # ── 파이프라인 ──
     def retrieve(self, query: str, cfg: Config, pool_k: int = 30,
                  on_progress=None, meta: dict | None = None) -> list[dict]:
+        if self.lexical:
+            cfg = replace(cfg, use_dense=False)
+            if meta is not None:
+                meta["mode"] = "lexical"
         if cfg.cluster_selection_mode == "global_anchor":
             return self._retrieve_global_anchors(query, cfg, pool_k, on_progress, meta)
         return self._retrieve_legacy(query, cfg, pool_k, on_progress, meta)
@@ -233,14 +261,14 @@ class Retriever:
         # 다시 비교한다. 후보 수는 변형당 top_n의 합 이하라 기존 변형별 CE 총량보다 크지 않다.
         combined_query = "\n".join(dict.fromkeys(vq for _, vq, _ in variants))
         candidate_ids = list(candidates)
-        qv = np.array(embedder.encode_texts([combined_query])[0], dtype=np.float32)
+        qv = self._qv(combined_query)
         self._ensure_vecs(candidate_ids)
         ce = self._ce(combined_query, candidate_ids, cfg)
         cos = {cid: self._cos(cid, qv) for cid in candidate_ids}
         alive = sum(1 for value in ce.values() if value >= cfg.cluster_ce_min) >= cfg.cluster_ce_quorum
         # CE와 bi-encoder는 실패 모드가 다르다. 전역 3개 선택에서 한 신호가 확실한 후보를
         # 다른 신호의 0점으로 죽이지 않도록 기존 합집합 게이트와 같은 max 결합을 쓴다.
-        sem = {cid: max(ce.get(cid, 0.0), cos[cid]) for cid in candidate_ids} if alive else cos
+        sem = {cid: max(ce.get(cid, 0.0), cos[cid]) for cid in candidate_ids} if alive or self.lexical else cos
         score = self._fuse(candidate_ids, sem, infer_types(query), cfg)
         ranked_candidates = sorted(
             (cid for cid in candidate_ids if not self._is_hub(cid, cfg)),
@@ -367,7 +395,7 @@ class Retriever:
     def _retrieve_one(self, query: str, cfg: Config, pool_k: int, on_progress,
                       *, expand: bool = True) -> list[dict]:
         wanted = infer_types(query)
-        qv = np.array(embedder.encode_texts([query])[0], dtype=np.float32)
+        qv = self._qv(query)
         cands = recall(self.s, self.c, [query], [qv], cfg)
         pool = [c.node["id"] for c in cands[:pool_k] if c.node["id"] in self.c.by_id]
         if on_progress:
@@ -381,7 +409,7 @@ class Retriever:
         cos = {cid: self._cos(cid, qv) for cid in pool}
         alive = sum(1 for v in ce.values() if v >= cfg.cluster_ce_min) >= cfg.cluster_ce_quorum
         # CE 미채점 꼬리는 CE=0 취급 — 합집합 게이트의 코사인 축(cos≥cos_min)으로만 통과 가능.
-        sem = {c: ce.get(c, 0.0) for c in pool} if alive else cos
+        sem = {c: ce.get(c, 0.0) for c in pool} if alive or self.lexical else cos
         score = self._fuse(pool, sem, wanted, cfg)
         if alive:
             passes = lambda c: score[c][0] >= cfg.cluster_ce_min or cos[c] >= cfg.cluster_cos_min

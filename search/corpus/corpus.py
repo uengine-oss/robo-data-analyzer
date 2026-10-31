@@ -51,12 +51,15 @@ class SearchUnavailable(RuntimeError):
 class Corpus:
     """요청 DB 한 벌의 코퍼스 — bm25/structural 재료 + by_id 메타 + fan_in (+scan 벡터)."""
 
-    def __init__(self, rows: list[dict], fan_in: dict, vecs=None):
+    def __init__(self, rows: list[dict], fan_in: dict, vecs=None, *, lexical: bool = False):
         self.rows = rows
         self.by_id = {r["id"]: r for r in rows}
         self.ids = [r["id"] for r in rows]
+        self.index = {cid: i for i, cid in enumerate(self.ids)}  # bm25 점수 배열의 자리
         self.fan_in = fan_in
         self._vecs = vecs
+        # 임베딩 없이 분석한 그래프 — 검색은 BM25 · 구조 채널만 쓴다(retriever 가 dense · CE 를 건너뛴다)
+        self.lexical = lexical
         from rank_bm25 import BM25Okapi
         texts = [f"{r['name']} {r.get('logical_name', '')} {r['summary']} {r.get('code_text', '')}"
                  for r in rows]
@@ -84,6 +87,8 @@ def load_corpus() -> Corpus:
             ).single()
             fp = meta["fp"] if meta else None
             if not fp:
+                if lexical_allowed():
+                    return _load_lexical(s, uri, db)
                 raise SearchUnavailable(_NO_EMBED_MSG)
             want = embedder.fingerprint()
             if fp != want:
@@ -106,6 +111,30 @@ def load_corpus() -> Corpus:
         return corpus
     finally:
         drv.close()
+
+
+def lexical_allowed() -> bool:
+    """임베딩을 끈 설치(키 없는 Lite — ROBO_PIPELINE_EMBED_ENABLED=false)이거나 ROBO_SEARCH_LEXICAL=1 이면
+    벡터 없이 BM25 · 구조 채널로만 검색한다. 임베딩을 켰는데 벡터가 없으면 예전처럼 재분석을 요구한다."""
+    import os
+
+    return (not SETTINGS.analysis_pipeline.embed_enabled) or os.environ.get("ROBO_SEARCH_LEXICAL") == "1"
+
+
+def _load_lexical(session, uri: str, db: str) -> Corpus:
+    """벡터 없는 코퍼스. 서명 = 요약을 가진 노드 수(재분석으로 바뀌면 다시 읽는다)."""
+    rows = session.run(_CORPUS_QUERY).data()
+    if not rows:
+        raise SearchUnavailable("이 그래프에는 분석한 코드가 없습니다 (레거시 › 코드에서 분석을 실행하세요)")
+    sig = ("lexical", len(rows), rows[0]["id"], rows[-1]["id"])
+    key = (uri, db)
+    cached = _cache.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    fan_in = {r["id"]: r["fi"] for r in session.run(_FAN_IN_QUERY).data()}
+    corpus = Corpus(rows, fan_in, None, lexical=True)
+    _cache[key] = (sig, corpus)
+    return corpus
 
 
 def _load_vectors(session, ids: list[str]):
