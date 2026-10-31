@@ -36,7 +36,7 @@ rank-bm25>=0.2.2
 # Web API
 fastapi>=0.115.0
 uvicorn>=0.34.0
-mcp>=1.0.0
+mcp>=1.0.0,<2  # 2.x 에서 FastMCP 가 MCPServer 로 바뀜(10-31 이미지 재빌드 때 깨짐)
 
 # 외부 파일 결정론 파싱/안전 경계 (spec 078 — span 어댑터)
 charset-normalizer>=3.4.9
