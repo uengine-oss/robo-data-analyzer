@@ -1,0 +1,31 @@
+# Claude Code 다리 — Robo Architect Lite 데스크톱 전용
+# ─────────────────────────────────────────────────────────────
+# 키 없이 분석: Lite 백엔드(호스트)의 OpenAI 호환 /api/llm-bridge/v1 이 받아
+# 사용자 PC 의 Claude Code(`claude -p`, 도구 없음)로 답한다.
+#
+# 경로: ChatOpenAI → http://host.docker.internal:<Lite 백엔드 포트>/api/llm-bridge/v1
+#   포트는 데스크톱이 실행마다 고르고 compose 가 ROBO_ARCHITECT_API_PORT 로 넘긴다.
+# 구조화 출력: with_structured_output(method="function_calling") 의 tools/tool_choice 를
+#   다리가 받아 JSON 하나로 답하게 하고 tool_calls 로 돌려준다.
+# 임베딩은 없다 — 이 config 와 함께 ROBO_PIPELINE_EMBED_ENABLED=false (의미 검색 끔).
+# ROBO_LLM_API_KEY 는 다리가 보지 않지만 분석기가 비어 있으면 거절하므로 아무 값이나 넣는다.
+
+provider: openai
+
+api_base: http://host.docker.internal:${ROBO_ARCHITECT_API_PORT}/api/llm-bridge/v1
+
+# 다리가 "claude-code" 를 ROBO_LLM_BRIDGE_MODEL(기본 sonnet)로 바꾼다
+model: claude-code
+
+model_small: ""
+
+# claude -p 한 번이 함수 하나 — 길어도 몇 분
+max_tokens: 32000
+timeout_seconds: 900
+
+verify_ssl: false
+
+sampling:
+  temperature: 0.2
+
+reasoning_effort: none

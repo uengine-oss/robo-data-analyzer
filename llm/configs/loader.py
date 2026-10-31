@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
@@ -150,7 +152,8 @@ def _build_llm_config(raw: dict, source: str) -> LLMConfig:
     """yaml dict → ``LLMConfig`` 변환 + 필수 필드 검증."""
     provider = _require_string(raw, "provider", source).lower()
     model = _require_string(raw, "model", source)
-    api_base = _require_string(raw, "api_base", source, default="")
+    # ${VAR} 를 환경에서 채운다 — Lite 의 Claude Code 다리처럼 포트가 실행마다 바뀌는 주소용
+    api_base = os.path.expandvars(_require_string(raw, "api_base", source, default=""))
     model_small = _require_string(raw, "model_small", source, default="")
     if not provider or not model:
         raise RuntimeError(f"provider and model must be nonempty strings in {source}")
