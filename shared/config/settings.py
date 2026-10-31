@@ -238,8 +238,13 @@ class AnalysisGraphDatabaseSettings:
     #  않았다(docstring 에서만 언급) → 설정이 거짓말을 했다. spec 046 FR-010.)
     retry_max_attempts: int = field(default_factory=lambda: _getenv_int("ROBO_NEO4J_RETRY_MAX_ATTEMPTS", 5))
     retry_backoff_seconds: float = field(default_factory=lambda: _getenv_float("ROBO_NEO4J_RETRY_BACKOFF_SECONDS", 2.0))
+    # 그래프 엔진 방언 — auto(기본: Bolt 서버 agent 로 판별) / neo4j / ontological.
+    # ontological 이면 부모 라벨 MATCH 를 무라벨로 바꿔 보낸다 (graph/neo4j_client.py).
+    dialect: str = field(default_factory=lambda: _getenv_str("ROBO_GRAPH_DIALECT", "auto").strip().lower())
 
     def __post_init__(self) -> None:
+        if self.dialect not in {"auto", "neo4j", "ontological"}:
+            raise ValueError("AnalysisGraphDatabaseSettings.dialect must be auto, neo4j or ontological")
         _require_non_blank("AnalysisGraphDatabaseSettings.uri", self.uri)
         _require_non_blank("AnalysisGraphDatabaseSettings.user", self.user)
         _require_non_blank("AnalysisGraphDatabaseSettings.database", self.database)

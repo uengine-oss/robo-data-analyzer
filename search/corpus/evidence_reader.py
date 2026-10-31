@@ -9,27 +9,71 @@ from graph.schema.rel_types import HAS_COLUMN
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
+# 관계 그대로 펼쳐 받고(규칙×예시×테이블 1행) 소유 판정·묶음은 파이썬이 한다. 예전엔 질의 안에서
+# ``e.id STARTS WITH hr.occurrence_id + '::'``·``collect(DISTINCT {map})`` 로 했는데 Ontological DB 는
+# 속성과 문자열의 ``+`` 를 ``operator does not exist: text + unknown`` 으로 거절한다(실측).
+_RULE_ROWS_QUERY = (
+    "MATCH (x {id:$id, graph_owner:$graph_owner})-[hr:HAS_RULE]->"
+    "(r:RULE {graph_owner:$graph_owner}) "
+    "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
+    "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
+    "RETURN r.id AS rule_id, hr.occurrence_id AS occurrence_id, "
+    "  coalesce(hr.ordinal,0) AS ordinal, r.statement AS statement, e.id AS example_id, "
+    "  e.given AS given, e.when_ AS when_, e.then_ AS then_, t.name AS table_name, at.op AS op"
+)
+
+
+def owned_rule_rows(raw_rows: list[dict], node_id: str) -> list[dict]:
+    """펼친 행 → (HAS_RULE, 소유 EXAMPLE) 당 1행 + tables. 옛 질의와 같은 소유 규칙·정렬.
+
+    RULE 은 statement 해시로 함수 간 공유되므로 EXAMPLE 은 이 출현(occurrence_id) — 없으면 이
+    함수(``<node_id>::``) — 의 것만 인정한다. 인정된 예시가 하나도 없는 규칙은 예시 없이 1행.
+    """
+    prefix = f"{node_id}::"
+    groups: dict[tuple, dict] = {}
+    for row in raw_rows:
+        occurrence_id = row.get("occurrence_id") or ""
+        rule_key = (row.get("rule_id"), occurrence_id, row.get("ordinal") or 0)
+        example_id = row.get("example_id")
+        owner = f"{occurrence_id}::" if occurrence_id.strip() else prefix
+        owned = example_id is not None and str(example_id).startswith(owner)
+        key = (*rule_key, example_id if owned else None)
+        group = groups.get(key)
+        if group is None:
+            group = {
+                "rule_id": row.get("rule_id"),
+                "occurrence_id": row.get("occurrence_id"),
+                "ordinal": row.get("ordinal") or 0,
+                "statement": row.get("statement"),
+                "example_id": example_id if owned else None,
+                "given": row.get("given") if owned else None,
+                "when_": row.get("when_") if owned else None,
+                "then_": row.get("then_") if owned else None,
+                "tables": [],
+            }
+            groups[key] = group
+        if owned and row.get("table_name") is not None:
+            table = {"name": row.get("table_name"), "op": row.get("op")}
+            if table not in group["tables"]:
+                group["tables"].append(table)
+    with_examples = {key[:3] for key in groups if key[3] is not None}
+    rows = [
+        group for key, group in groups.items()
+        if key[3] is not None or key[:3] not in with_examples
+    ]
+    rows.sort(key=lambda row: (
+        row["ordinal"], row["statement"] or "",
+        row["example_id"] is None, len(row["example_id"] or ""), row["example_id"] or "",
+    ))
+    return rows
+
+
 def read_rules(session, node_id: str) -> list[dict]:
     """코드 노드의 RULE → 소유 EXAMPLE → AFFECTS_TABLE 구조를 순서 보존해 반환한다."""
-    rows = session.run(
-        "MATCH (x {id:$id, graph_owner:$graph_owner})-[hr:HAS_RULE]->"
-        "(r:RULE {graph_owner:$graph_owner}) "
-        "OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:EXAMPLE {graph_owner:$graph_owner}) "
-        "WHERE CASE WHEN trim(coalesce(hr.occurrence_id,'')) <> '' "
-        "  THEN e.id STARTS WITH hr.occurrence_id + '::' "
-        "  ELSE e.id STARTS WITH $prefix END "
-        "OPTIONAL MATCH (e)-[at:AFFECTS_TABLE]->(t:TABLE {graph_owner:$graph_owner}) "
-        "WITH hr, r, e, collect(DISTINCT CASE WHEN t IS NULL THEN NULL "
-        "  ELSE {name: t.name, op: at.op} END) AS tbs "
-        "RETURN r.id AS rule_id, hr.occurrence_id AS occurrence_id, "
-        "  coalesce(hr.ordinal,0) AS ordinal, r.statement AS statement, e.id AS example_id, "
-        "  e.given AS given, e.when_ AS when_, e.then_ AS then_, "
-        "  [x IN tbs WHERE x IS NOT NULL] AS tables "
-        "ORDER BY ordinal, r.statement, size(e.id), e.id",
-        id=node_id,
-        prefix=f"{node_id}::",
-        graph_owner=ANALYZER_GRAPH_OWNER,
-    ).data()
+    rows = owned_rule_rows(
+        session.run(_RULE_ROWS_QUERY, id=node_id, graph_owner=ANALYZER_GRAPH_OWNER).data(),
+        node_id,
+    )
     rules: list[dict] = []
     by_rule: dict[str, dict] = {}
     example_ids: dict[str, set[str]] = {}

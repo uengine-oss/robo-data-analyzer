@@ -50,9 +50,8 @@ MAX_SOURCE_EXCERPT_CHARS = 1200
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (g:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET g:ANALYZER_OWNED,
-    g.terms_json = item.terms_json,
+MERGE (g:ANALYZER_OWNED:GLOSSARY {{id: "glossary", graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET g.terms_json = item.terms_json,
     g.n_terms = item.n_terms
 """
 

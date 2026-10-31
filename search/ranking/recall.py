@@ -17,9 +17,11 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
 
+# 인덱스 이름은 상수라 원문에 박는다 — Ontological DB 는 이 자리에 파라미터를 받지 않고(질의 컴파일 때
+# 인덱스를 푼다), ``YIELD … WHERE`` 도 파싱하지 못해 ``WITH … WHERE`` 로 거른다(실측). Neo4j 도 같은 뜻.
 _QUERY_NODES = (
-    "CALL db.index.vector.queryNodes($name, $k, $qv) YIELD node, score "
-    "WHERE node.id IS NOT NULL AND node.graph_owner = $graph_owner "
+    f"CALL db.index.vector.queryNodes('{VECTOR_INDEX_NAME}', $k, $qv) YIELD node, score "
+    "WITH node, score WHERE node.id IS NOT NULL AND node.graph_owner = $graph_owner "
     "RETURN node.id AS id, score AS score"
 )
 
@@ -56,7 +58,6 @@ def _dense_index(session, qv, k: int) -> list[tuple[str, float]]:
     """요청 DB 벡터 인덱스 근사탐색 top-k (id, cosine)."""
     rows = session.run(
         _QUERY_NODES,
-        name=VECTOR_INDEX_NAME,
         k=k,
         qv=[float(x) for x in qv],
         graph_owner=ANALYZER_GRAPH_OWNER,

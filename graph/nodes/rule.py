@@ -12,9 +12,8 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (r:RULE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET r:ANALYZER_OWNED,
-    r.statement = item.statement,
+MERGE (r:ANALYZER_OWNED:RULE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET r.statement = item.statement,
     r.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 """
 

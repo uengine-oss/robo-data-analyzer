@@ -2,8 +2,15 @@
 
 internal 콜리는 그래프에 정의 노드가 이미 있어 ``MATCH`` 로 연결한다.
 external 콜리(분석 범위 밖 실 프로시저/메소드)는 정의 노드가 없으므로 — legacy 와
-동일하게 — ``:FUNCTION:EXTERNAL`` stub 노드를 그 모듈(``:MODULE:EXTERNAL``)·스키마
-(``:PACKAGE``) 와 함께 생성해 internal 구조와 대칭으로 호출을 연결한다.
+동일하게 — ``:FUNCTION`` stub 노드를 그 모듈(``:MODULE``)·스키마(``:PACKAGE``) 와 함께
+생성해 internal 구조와 대칭으로 호출을 연결한다.
+
+stub 임을 나타내는 것은 ``external = true`` **속성**이다. 예전에는 ``:EXTERNAL`` 라벨이었는데
+같은 라벨이 ``:FUNCTION`` 밑에도 ``:MODULE`` 밑에도 붙는다. 라벨을 단일 상속 타입 사슬로
+보는 Ontological DB 에서는 한 타입이 두 부모를 가질 수 없어(``no node can carry the labels
+(:MODULE:EXTERNAL) at once``) 표현 자체가 안 된다. Neo4j 에서도 ``MATCH (n:FUNCTION)`` 에
+잡히는 것은 같다. 조건부 ``FOREACH`` 도 Ontological 이 파싱하지 못해 스키마 연결은 별도
+문장(``EXTERNAL_PACKAGE_QUERY``)이고, 쓸지 말지는 파이썬이 정한다.
 
 분해 정보(모듈/스키마/이름)는 strategy 별 linker 가 **언어 의미**로 채운다
 (DBMS=스키마·프로시저, Framework=패키지·클래스). 여기선 그 값으로 노드를 균일하게 박는다.
@@ -34,33 +41,39 @@ SET r.scope = item.scope,
     r.recursive = item.recursive
 """
 
-# external — 콜리 정의 노드 없음 → stub(:FUNCTION:EXTERNAL) + 소유 컨테이너(:MODULE:EXTERNAL)
-# + 스키마(:PACKAGE, 있을 때) 를 internal 과 대칭으로 생성하고 호출 연결.
+# external — 콜리 정의 노드 없음 → stub 함수(:FUNCTION) + 소유 컨테이너(:MODULE) 를
+# internal 과 대칭으로 생성하고 호출 연결. stub 표시는 라벨이 아니라 ``external`` 속성.
 # 소속은 HAS_MEMBER / BELONGS_TO 엣지로만 표현 (노드에 소속 속성 안 박음).
-# ★컨테이너 라벨 = :MODULE:EXTERNAL 유지 (의도적): 외부 콜리의 소유 컨테이너는 종류미상
+# ★컨테이너 라벨 = :MODULE 유지 (의도적): 외부 콜리의 소유 컨테이너는 종류미상
 #   (분석 범위 밖) — 실제 파싱한 그릇만 정체대로(FILE/CLASS), 외부 stub 은 중립 합성 라벨.
+# ★라벨은 MERGE 패턴에서 한 번에 준다(``:ANALYZER_OWNED:<종류>``) — 만든 뒤 붙이면
+#   Ontological DB 가 거절한다 (``graph/node_upsert.py`` docstring).
 EXTERNAL_QUERY = f"""
 UNWIND $items AS item
 MATCH (caller:ANALYZER_OWNED {{id: item.caller_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-MERGE (callee:FUNCTION:EXTERNAL {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET callee:ANALYZER_OWNED,
+MERGE (callee:ANALYZER_OWNED:FUNCTION {{id: item.callee_id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+  SET callee.external = true,
       callee.name = coalesce(callee.name, item.callee_name),
       callee.type = coalesce(callee.type, 'FUNCTION'),
       callee.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-MERGE (m:MODULE:EXTERNAL {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET m:ANALYZER_OWNED,
+MERGE (m:ANALYZER_OWNED:MODULE {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+  SET m.external = true,
       m.name = coalesce(m.name, item.callee_name),
       m.type = coalesce(m.type, 'MODULE'),
       m.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 MERGE (m)-[:{HAS_MEMBER}]->(callee)
-FOREACH (_ IN CASE WHEN item.callee_package <> '' THEN [1] ELSE [] END |
-  MERGE (p:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-  SET p:ANALYZER_OWNED, p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
-  MERGE (m)-[:{BELONGS_TO}]->(p)
-)
 MERGE (caller)-[r:{CALLS}]->(callee)
 SET r.scope = item.scope,
     r.recursive = item.recursive
+"""
+
+# 스키마 연결 — 스키마가 있는 external 만 (예전엔 위 질의 안의 조건부 FOREACH 가 하던 판단).
+EXTERNAL_PACKAGE_QUERY = f"""
+UNWIND $items AS item
+MATCH (m:ANALYZER_OWNED {{id: item.callee_module, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+MERGE (p:ANALYZER_OWNED:PACKAGE {{id: item.callee_package, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+  SET p.graph_owner = '{ANALYZER_GRAPH_OWNER}'
+MERGE (m)-[:{BELONGS_TO}]->(p)
 """
 
 
@@ -115,12 +128,15 @@ async def upsert_calls(client: Neo4jClient, edges: Iterable[Calls]) -> None:
         await client.run_batch_unwind(INTERNAL_QUERY, internal)
     if external:
         await client.run_batch_unwind(EXTERNAL_QUERY, external)
+        with_package = [item for item in external if item["callee_package"]]
+        if with_package:
+            await client.run_batch_unwind(EXTERNAL_PACKAGE_QUERY, with_package)
 
 
 async def emit_calls(stream, edges: Iterable[Calls]) -> None:
     """CALLS 라이브 발신 — 저장(upsert_calls)과 **같은 그래프**를 스트림으로(_split_calls 공유 = 드리프트 0).
 
-    internal=CALLS 엣지. external=stub 노드(:FUNCTION:EXTERNAL / :MODULE:EXTERNAL) + HAS_MEMBER +
+    internal=CALLS 엣지. external=stub 노드(:FUNCTION / :MODULE, ``external: true``) + HAS_MEMBER +
     CALLS(+PACKAGE/BELONGS_TO). 끝점 id 가 저장과 동일해 라이브=neo4j. (과거엔 raw callee_id 만
     보내 외부 CALLS 가 끝점 노드 없이 떠다니고 stub 노드가 라이브에 안 떴음.)
     """
@@ -136,9 +152,9 @@ async def emit_calls(stream, edges: Iterable[Calls]) -> None:
     for it in external:
         cid, mid, pkg, nm = it["callee_id"], it["callee_module"], it["callee_package"], it["callee_name"]
         await stream.emit_async({"type": "node_event", "op": "merge", "label": "FUNCTION",
-                     "labels": ["FUNCTION", "EXTERNAL"], "id": cid, "props": {"name": nm}})
+                     "labels": ["FUNCTION"], "id": cid, "props": {"name": nm, "external": True}})
         await stream.emit_async({"type": "node_event", "op": "merge", "label": "MODULE",
-                     "labels": ["MODULE", "EXTERNAL"], "id": mid, "props": {"name": nm}})
+                     "labels": ["MODULE"], "id": mid, "props": {"name": nm, "external": True}})
         await stream.emit_async({"type": "relationship_event", "op": "merge", "rel_type": HAS_MEMBER,
                      "from": {"id": mid}, "to": {"id": cid}, "props": {}})
         if pkg:

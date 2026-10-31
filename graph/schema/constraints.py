@@ -20,6 +20,11 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 # ★코드 노드 라벨은 antlr type **열린 집합**이라 종류별 제약 열거 불가 →
 #   전 노드 공통 마커 ``:ANALYZER_OWNED`` 에 id 유니크 제약을 건다. 이 인덱스가 없으면
 #   무라벨 MATCH by id 가 AllNodesScan — AST 적재 159초의 원인이었다 (run6 실측).
+# ★Ontological DB: 라벨 = 단일 상속 타입. 여기 제약이 ``TABLE`` 등을 (빈) 최상위 타입으로 먼저
+#   만들어도, 첫 ``MERGE (t:ANALYZER_OWNED:TABLE …)`` 때 빈 최상위 타입은 ANALYZER_OWNED 밑으로
+#   들어간다(실측). 노드가 든 최상위 타입은 옮겨지지 않으므로 — 다른 서비스가 같은 graph 에
+#   ``:TABLE`` 을 먼저 만들어 두면 거기서 막힌다. 또 그 엔진의 유니크 제약은 그 타입 자신의 행에만
+#   걸려 하위 타입(종류)에는 미치지 않는다 — 중복 방지는 MERGE 가 맡는다.
 CONSTRAINTS: list[str] = [
     "CREATE CONSTRAINT uniq_analyzer_owned IF NOT EXISTS "
     "FOR (n:ANALYZER_OWNED) REQUIRE n.id IS UNIQUE",
@@ -64,6 +69,7 @@ LEGACY_ANALYZER_STABLE_LABELS: tuple[str, ...] = (
     "DOCUMENT", "DOC_SECTION", "DOC_CHUNK", "UNRESOLVED_REF", "CANDIDATE_LINK",
 )
 
+# ``EXTERNAL`` 라벨은 옛 ``:FUNCTION:EXTERNAL`` stub 용 — 지금 stub 은 ``external`` 속성 + graph_owner.
 LEGACY_OWNER_MIGRATION_QUERY = """
 MATCH (n)
 WHERE n.graph_owner IS NULL

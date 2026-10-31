@@ -1,7 +1,7 @@
 """stage2_extract_calls (DBMS) — AST CALL 노드 → ``Calls`` 엣지 (LLM 0).
 
 ``CallLinker`` 가 각 CALL 노드를 호출 대상에 직접 잇는다(출발 = CALL 노드, 빌트인 드롭).
-internal 은 기존 노드에 연결, external 은 ``:FUNCTION:EXTERNAL`` stub 노드를 스키마·모듈과
+internal 은 기존 노드에 연결, external 은 ``:FUNCTION`` stub 노드(``external`` 속성)를 스키마·모듈과
 함께 생성해 연결 — 둘 다 ``upsert_calls`` 가 처리 (Framework ``link_calls_by_name`` 과 동일).
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ async def link_calls_by_ast_step(state: dict, config: Optional[RunnableConfig] =
     edges = await CallLinker().link(code_nodes=code_nodes_in)
 
     # Framework(link_calls_by_name)와 동일: 전체 엣지를 upsert. internal 은 기존 노드 연결,
-    # external 은 :FUNCTION:EXTERNAL stub(+모듈+스키마) 생성·연결 (upsert_calls 가 분기).
+    # external 은 stub 함수(+모듈+스키마, ``external`` 속성) 생성·연결 (upsert_calls 가 분기).
     if neo is not None and edges:
         await upsert_calls(neo, edges)
 

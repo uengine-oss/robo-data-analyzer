@@ -104,14 +104,14 @@ class ExternalWriterContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.writes), 2)
         self.assertEqual(client.writes[0], client.writes[1])
         self.assertIn("MERGE (n:ANALYZER_OWNED", client.writes[0][0])
-        self.assertIn("SET n:PROJECT_FILE", client.writes[0][0])
+        self.assertIn("MERGE (n:ANALYZER_OWNED:PROJECT_FILE {", client.writes[0][0])
         self.assertIn("graph_owner: 'analyzer'", client.writes[0][0])
 
     async def test_chunk_write_serializes_keys_and_label(self) -> None:
         client = _RecordingClient()
         await upsert_external_nodes(client, [_chunk()])  # type: ignore[arg-type]
         query, items = client.writes[0]
-        self.assertIn("SET n:EXTERNAL_CHUNK", query)
+        self.assertIn("MERGE (n:ANALYZER_OWNED:EXTERNAL_CHUNK {", query)
         self.assertEqual(items[0]["keys"], ["first", "first.enabled"])
         self.assertEqual(items[0]["provenance"], "source_span")
 

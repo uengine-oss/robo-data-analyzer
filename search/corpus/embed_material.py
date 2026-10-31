@@ -9,31 +9,76 @@
 """
 from __future__ import annotations
 
+import json
+
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
 # 임베딩·검색 공용 식별자 (생성=embed_step / 조회=search/ranking/recall — 단일 진실).
-EMBEDDED_LABEL = "EMBEDDED"              # 코드노드 검색벡터 보유 마커 (labels[1:], 역할 아님)
-EMBED_META_LABEL = "EMBED_META"          # 임베딩 지문 메타노드 (검색이 질의 임베더와 대조)
-VECTOR_INDEX_NAME = "embedded_code_vec"  # (:EMBEDDED).embedding 벡터 인덱스
+#
+# 검색 벡터 보유 표지는 **속성**이다(예전 ``:EMBEDDED`` 라벨). Ontological DB 는 만들어진 노드에
+# 라벨을 더할 수 없고(라벨=만들 때 고정되는 타입), 임베딩은 분석 맨 끝에 붙는다. 벡터 인덱스는
+# 라벨 하나가 필요하므로 전 노드 공통 ``:ANALYZER_OWNED`` 에 걸되, 코드노드 검색 벡터만 따로
+# 이름 붙인 속성(``search_embedding``)에 둬 Table/Column 의 ``embedding``(설명 벡터 — Catalog 도
+# 같은 이름으로 쓴다)이 검색 인덱스에 섞이지 않게 한다. 인덱스 이름도 바꿨다 — 옛
+# ``embedded_code_vec``((:EMBEDDED).embedding)가 남은 Neo4j 에서 ``IF NOT EXISTS`` 가 옛 정의를
+# 그대로 둘 수 있기 때문이다.
+OWNED_LABEL = "ANALYZER_OWNED"               # 전 analyzer 노드 공통 부모 라벨
+EMBEDDED_PROPERTY = "embedded"               # 코드노드 검색벡터 보유 표지 (true)
+SEARCH_VECTOR_PROPERTY = "search_embedding"  # 코드노드 검색 벡터 (Table/Column 은 embedding)
+EMBED_META_LABEL = "EMBED_META"              # 임베딩 지문 메타노드 (검색이 질의 임베더와 대조)
+VECTOR_INDEX_NAME = "analyzer_search_vec"    # (:ANALYZER_OWNED).search_embedding 벡터 인덱스
+
+# 노드 종류 = ``type`` 속성, 없으면 공통 부모를 뺀 첫 라벨. Ontological DB 의 ``labels(n)`` 은
+# 상속 사슬 순서(부모→자식)라 ``head(labels(n))`` 가 늘 ANALYZER_OWNED 다.
+NODE_KIND_EXPR = f"coalesce(n.type, head([l IN labels(n) WHERE l <> '{OWNED_LABEL}']))"
+
+
+def as_vector(value) -> list[float]:
+    """저장된 벡터 → float 목록. Ontological DB 는 벡터 색인 속성을 ``"[0.1,…]"`` 문자열로 돌려준다."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    return [float(x) for x in value]
+
 
 # 임베딩 대상 = 요약을 가진 코드노드. 컨테이너(FILE/MODULE/PACKAGE)는 로직이 아니라 제외.
-# 테이블 관계는 노드 속성이 아니라 엣지라 여기서 함께 걷어 온다.
+# 테이블 관계는 노드 속성이 아니라 엣지라 여기서 함께 걷어 온다 — 관계 1개당 1행으로 받고 노드별
+# 묶음은 ``group_material`` 이 한다. Ontological DB 는 ``WITH n, collect(DISTINCT type(rw) + ':' …)``
+# 를 ``operator does not exist: jsonb = text`` 로 거절한다(실측).
 FETCH_MATERIAL = f"""
 MATCH (n)
 WHERE n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
   AND n.summary IS NOT NULL AND n.summary <> ''
   AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE
 OPTIONAL MATCH (n)-[rw:READS|WRITES|AFFECTS_TABLE]->(t:TABLE {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-WITH n, collect(DISTINCT type(rw) + ':' + coalesce(t.name, '')) AS rels
 RETURN n.id AS id,
-       coalesce(n.type, head(labels(n))) AS label,
+       {NODE_KIND_EXPR} AS label,
        coalesce(n.name, '') AS name,
        coalesce(n.stereotype, '') AS stereotype,
        n.summary AS summary,
        coalesce(n.search_text, '') AS search_text,
-       [r IN rels WHERE NOT r ENDS WITH ':'] AS rels
+       type(rw) AS rel_type,
+       t.name AS table_name
 ORDER BY id
 """
+
+
+def group_material(rows: list[dict]) -> list[dict]:
+    """``FETCH_MATERIAL`` 행(노드×관계) → 노드당 1행 + ``rels`` (``"WRITES:주문"`` 태그, 정렬·중복 제거)."""
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        node = grouped.get(row["id"])
+        if node is None:
+            node = {key: value for key, value in row.items() if key not in ("rel_type", "table_name")}
+            node["rels"] = []
+            grouped[row["id"]] = node
+        if row.get("rel_type") and row.get("table_name"):
+            tag = f"{row['rel_type']}:{row['table_name']}"
+            if tag not in node["rels"]:
+                node["rels"].append(tag)
+    for node in grouped.values():
+        node["rels"].sort()
+    return [grouped[key] for key in sorted(grouped)]
+
 
 _READ_RELS = ("READS:", "AFFECTS_TABLE:")
 

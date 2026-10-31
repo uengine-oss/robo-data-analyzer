@@ -22,6 +22,16 @@
 개별 인덱스를 못 걸므로, 이 공통 라벨의 id 유니크 제약(``constraints.py``)이 유일한
 인덱스 경로다 — 무라벨 ``MATCH {id}`` 는 AllNodesScan(엣지 1건당 전 노드 스캔)이 되어
 AST 적재 159초의 원인이었다 (run6 실측 + EXPLAIN 확인).
+
+★ **라벨은 만들 때 한 번에 다 준다** (``:ANALYZER_OWNED:<종류>``). Ontological DB 는 라벨을
+단일 상속 타입 사슬로 본다 — ``CREATE (n:A:B)`` 는 "B 는 A 의 하위 타입"이고, 만들어진 노드는
+나중에 라벨을 얻지 못한다(``SET n:X`` → "a node's type is part of its identifier"). 그래서 예전처럼
+``MERGE (n:ANALYZER_OWNED) SET n:<종류>`` 로 뒤에 붙이면 거기서 첫 쓰기부터 죽는다.
+사슬 순서도 이 방향이어야 한다 — 공통 부모(ANALYZER_OWNED) 아래에 종류가 매달려야
+``MATCH (n:ANALYZER_OWNED {id})`` 가 모든 종류를 찾는다. Neo4j 에서는 라벨 집합이 같으므로
+의미가 같다. 나중에 붙던 표지(역할·외부 stub·임베딩 보유)는 전부 **속성**이다.
+단, Ontological 로 보낼 때 ``MATCH (n:ANALYZER_OWNED {id})`` 는 무라벨로 바뀐다 — 부모 라벨 조회가
+하위 타입 합집합 뷰를 타서 깨지기 때문이다 (``graph/neo4j_client.py`` 의 ``for_ontological``).
 """
 from __future__ import annotations
 
@@ -47,14 +57,14 @@ def join_notes(*parts: str) -> str:
 def merge_query(label: str) -> str:
     """id 로 MERGE + 빈값 제외 속성 SET. 라벨은 통제값(주입 안전).
 
-    MERGE 는 ``:ANALYZER_OWNED`` 유니크 제약 인덱스를 타고, 종류 라벨은 SET 으로 부여한다 —
-    id 가 전역 유일(step2 가드)이라 의미는 같고 열린 라벨 스캔만 사라진다.
+    MERGE 는 ``:ANALYZER_OWNED`` 유니크 제약 인덱스를 타고, 종류 라벨은 **MERGE 패턴에서 함께**
+    준다 — 만든 뒤 ``SET n:<종류>`` 로 붙이면 Ontological DB 가 거절한다(모듈 docstring).
+    id 가 전역 유일(step2 가드)이라 같은 id 가 다른 종류로 다시 오지 않는다.
     """
     return f"""
 UNWIND $items AS item
-MERGE (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET n:{label},
-    n += item,
+MERGE (n:ANALYZER_OWNED:{label} {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET n += item,
     n.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(n) AS created
 """

@@ -16,7 +16,6 @@ from graph.schema.graph_nodes import CodeNode
 from graph.node_upsert import join_notes, nonempty, upsert_by_node_label
 from graph.ownership import ANALYZER_GRAPH_OWNER
 from graph.neo4j_client import Neo4jClient
-from graph.nodes.stereotype_label import apply_stereotype_labels
 from graph.schema.domain_terms import dump_domain_terms
 
 
@@ -86,11 +85,13 @@ async def upsert_code_nodes(client: Neo4jClient, code_nodes: Iterable[CodeNode])
 async def update_summaries(client: Neo4jClient, code_nodes: Iterable[CodeNode]) -> None:
     """analyze_code 결과를 갱신한다. domain terms는 canonical JSON scalar로 저장한다.
 
-    stereotype 은 속성 + **라벨**로 부여(spec 033) — 소비처가 위치(labels[1:])로 역할 필터/색칠.
+    stereotype(역할)은 **속성으로만** 저장한다. 예전(spec 033/036)엔 ``:SERVICE`` 같은 라벨도
+    나중에 붙였는데, Ontological DB 는 만들어진 노드에 라벨을 더할 수 없고 역할 값의 라벨
+    (``MODULE``·``ENUM``)이 종류 라벨과 겹치기도 했다. 소비처(프론트 ``semanticRoleLabels``·
+    검색·아키텍트)는 이미 ``stereotype`` 속성을 읽는다.
     """
     analyzed = [
         f for f in code_nodes
         if f.summary is not None or (f.extra or {}).get("partial")
     ]
     await client.run_batch_unwind(SET_SUMMARY_QUERY, [to_summary_item(f) for f in analyzed])
-    await apply_stereotype_labels(client, [(f.id, f.stereotype or "") for f in analyzed])

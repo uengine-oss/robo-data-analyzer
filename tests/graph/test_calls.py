@@ -5,6 +5,7 @@ import unittest
 
 from graph.schema.graph_edges import Calls
 from graph.edges.calls import (
+    EXTERNAL_PACKAGE_QUERY,
     EXTERNAL_QUERY,
     CallRelationshipInvariantError,
     _split_calls,
@@ -105,7 +106,57 @@ def test_external_recursive_intent_reaches_storage_and_stream() -> None:
     }]
 
 
+def test_external_stub_is_marked_by_property_with_labels_given_at_creation() -> None:
+    """Ontological DB: 라벨 = 단일 상속 타입 — ``:EXTERNAL`` 이 FUNCTION·MODULE 두 부모 밑에 올 수 없다."""
+    assert "MERGE (callee:ANALYZER_OWNED:FUNCTION {" in EXTERNAL_QUERY
+    assert "MERGE (m:ANALYZER_OWNED:MODULE {" in EXTERNAL_QUERY
+    assert "callee.external = true" in EXTERNAL_QUERY
+    assert "m.external = true" in EXTERNAL_QUERY
+    for query in (EXTERNAL_QUERY, EXTERNAL_PACKAGE_QUERY):
+        assert ":EXTERNAL" not in query
+        assert "FOREACH" not in query
+        assert "SET callee:" not in query and "SET m:" not in query and "SET p:" not in query
+    assert "MERGE (p:ANALYZER_OWNED:PACKAGE {" in EXTERNAL_PACKAGE_QUERY
+
+
+def test_external_package_link_is_a_separate_write_only_when_present() -> None:
+    with_pkg = Calls("caller-a", "run", "external", callee_module="jobs", callee_package="alpha", callee_name="run")
+    without_pkg = Calls("caller-b", "stop", "external", callee_module="jobs", callee_name="stop")
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def run_batch_unwind(self, query, items) -> None:
+            self.calls.append((query, items))
+
+    class Stream:
+        def __init__(self) -> None:
+            self.events = []
+
+        async def emit_async(self, event) -> None:
+            self.events.append(event)
+
+    client = Client()
+    asyncio.run(upsert_calls(client, [with_pkg, without_pkg]))  # type: ignore[arg-type]
+    assert [query for query, _ in client.calls] == [EXTERNAL_QUERY, EXTERNAL_PACKAGE_QUERY]
+    assert len(client.calls[0][1]) == 2
+    assert [item["callee_package"] for item in client.calls[1][1]] == ["code:external:package:alpha"]
+
+    stream = Stream()
+    asyncio.run(emit_calls(stream, [with_pkg]))
+    stubs = [event for event in stream.events if event["type"] == "node_event" and event["label"] != "PACKAGE"]
+    assert [event["labels"] for event in stubs] == [["FUNCTION"], ["MODULE"]]
+    assert all(event["props"]["external"] is True for event in stubs)
+
+
 class CallsContractTest(unittest.TestCase):
+    def test_external_stub_property_contract(self) -> None:
+        test_external_stub_is_marked_by_property_with_labels_given_at_creation()
+
+    def test_external_package_split(self) -> None:
+        test_external_package_link_is_a_separate_write_only_when_present()
+
     def test_external_ids(self) -> None:
         test_external_stub_ids_are_namespaced_and_opaque()
 

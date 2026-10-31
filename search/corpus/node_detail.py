@@ -11,9 +11,23 @@ from search.corpus.evidence_reader import read_columns, read_rules
 from search.corpus.neo4j_reader import read_driver
 from graph.ownership import ANALYZER_GRAPH_OWNER
 
-_INTERNAL_PROPERTIES = {"embedding", "search_text", "graph_owner", "element_id"}
+_INTERNAL_PROPERTIES = {
+    "embedding", "search_embedding", "embedded", "search_text", "graph_owner", "element_id",
+}
 _SOURCE_PROPERTIES = {"file_path", "start_line", "end_line", "code_text"}
 _CODE_LABELS = {"FUNCTION", "PROCEDURE", "METHOD", "TRIGGER"}
+
+
+_DIRECTED_PATTERNS = (
+    ("in", "(n {id:$id, graph_owner:$graph_owner})<-[r]-(other {graph_owner:$graph_owner})"),
+    ("out", "(n {id:$id, graph_owner:$graph_owner})-[r]->(other {graph_owner:$graph_owner})"),
+)
+_RELATIONSHIP_QUERY = (
+    "MATCH {pattern} "
+    "RETURN type(r) AS type, '{direction}' AS direction, "
+    "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
+    "labels(other) AS other_labels, properties(r) AS properties"
+)
 
 
 def _error(code: str, message: str) -> dict:
@@ -120,17 +134,19 @@ def read_node_detail(node_id: str) -> dict:
             if len(node_rows) != 1:
                 return build_node_detail(node_rows, [], [], [], node_id=requested_id)
 
-            relationships = session.run(
-                "MATCH (n {id:$id, graph_owner:$graph_owner})-[r]-"
-                "(other {graph_owner:$graph_owner}) "
-                "RETURN type(r) AS type, "
-                "CASE WHEN startNode(r) = n THEN 'out' ELSE 'in' END AS direction, "
-                "coalesce(other.id,'') AS other_id, coalesce(other.name,'') AS other_name, "
-                "labels(other) AS other_labels, properties(r) AS properties "
-                "ORDER BY type, direction, other_id",
-                id=requested_id,
-                graph_owner=ANALYZER_GRAPH_OWNER,
-            ).data()
+            # 방향별로 따로 묻는다 — Ontological DB 는 ``startNode()`` 를 모른다(지원 함수 목록 밖).
+            relationships = sorted(
+                (
+                    row
+                    for direction, pattern in _DIRECTED_PATTERNS
+                    for row in session.run(
+                        _RELATIONSHIP_QUERY.format(pattern=pattern, direction=direction),
+                        id=requested_id,
+                        graph_owner=ANALYZER_GRAPH_OWNER,
+                    ).data()
+                ),
+                key=lambda row: (row["type"], row["direction"], row["other_id"]),
+            )
             labels = set(node_rows[0].get("labels") or [])
             rules = read_rules(session, requested_id)
             columns = read_columns(session, requested_id) if "TABLE" in labels else []

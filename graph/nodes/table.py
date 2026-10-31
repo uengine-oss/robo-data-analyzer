@@ -18,9 +18,8 @@ from graph.node_upsert import nonempty
 # id 단일 식별 (schema_constraints.py 의 UNIQUE 제약과 통일) — 값 = "db.schema.name"
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (t:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET t:ANALYZER_OWNED,
-    t.db = item.db,
+MERGE (t:ANALYZER_OWNED:TABLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET t.db = item.db,
     t.schema = item.schema,
     t.name = item.name,
     t.description = coalesce(t.description, item.description),

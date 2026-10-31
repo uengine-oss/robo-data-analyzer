@@ -1,7 +1,7 @@
 """reembed_graph — 재분석 없이 저장된 그래프에 검색 임베딩·마커·인덱스만 재구성 (spec 044 FR-011).
 
 전량 재분석(수 분·요약 재생성 변동) 없이 embed_step 의 임베딩 로직만 재실행한다. 코드노드
-텍스트 조성·저장·:EMBEDDED·벡터 인덱스·지문은 embed_step 의 것을 **그대로 재사용**(단일 진실) —
+텍스트 조성·저장·``embedded`` 표지·벡터 인덱스·지문은 embed_step 의 것을 **그대로 재사용**(단일 진실) —
 코드노드 재료는 embed_step 이 그래프(FETCH_MATERIAL)에서 직접 읽으므로 state 는 비워 넘긴다.
 검색 대상이 아닌 Table/Column 임베딩은 건드리지 않는다(catalog/text2sql 자체 관리 — plan §B).
 
@@ -29,7 +29,13 @@ os.environ["ROBO_PIPELINE_EMBED_ENABLED"] = "true"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.steps.step8_post_processing.embed_step import embed_step
-from search.corpus.embed_material import EMBED_META_LABEL, EMBEDDED_LABEL, VECTOR_INDEX_NAME
+from search.corpus.embed_material import (
+    EMBED_META_LABEL,
+    EMBEDDED_PROPERTY,
+    OWNED_LABEL,
+    SEARCH_VECTOR_PROPERTY,
+    VECTOR_INDEX_NAME,
+)
 from shared.config.settings import SETTINGS
 from graph.connection_context import Neo4jOverride, set_override
 from graph.neo4j_client import Neo4jClient
@@ -37,27 +43,28 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 
 async def _verify(neo: Neo4jClient) -> None:
-    """재구성 결과 실측 — EMBEDDED 수·차원 분포·인덱스 상태·지문 (손실/차원 점검)."""
+    """재구성 결과 실측 — 검색 벡터 보유 수·차원 분포·인덱스 상태·지문 (손실/차원 점검)."""
     total = (await neo.run_read_query(
         f"MATCH (n {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
         "WHERE n.summary IS NOT NULL AND n.summary <> '' "
         "AND NOT n:FILE AND NOT n:MODULE AND NOT n:PACKAGE RETURN count(n) AS c"))[0]["c"]
     embedded = (await neo.run_read_query(
-        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        "RETURN count(n) AS c"))[0]["c"]
+        f"MATCH (n:{OWNED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"WHERE n.{EMBEDDED_PROPERTY} = true RETURN count(n) AS c"))[0]["c"]
     dims = await neo.run_read_query(
-        f"MATCH (n:{EMBEDDED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        "WITH size(n.embedding) AS d "
+        f"MATCH (n:{OWNED_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"WHERE n.{EMBEDDED_PROPERTY} = true "
+        f"WITH size(n.{SEARCH_VECTOR_PROPERTY}) AS d "
         "RETURN d AS dim, count(*) AS c ORDER BY dim")
     meta = await neo.run_read_query(
         f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
         "RETURN m.fingerprint AS fp, m.dim AS dim")
     idx = await neo.run_read_query(
-        "SHOW INDEXES YIELD name, state, type WHERE name = $n", {"n": VECTOR_INDEX_NAME})
+        f"SHOW INDEXES YIELD name, state, type WHERE name = '{VECTOR_INDEX_NAME}' RETURN name, state, type")
 
     print("\n── 재구성 검증 ──────────────────────────────")
     print(f"대상 코드노드(summary 보유) : {total}")
-    print(f":EMBEDDED 부여            : {embedded}   (손실 {total - embedded})")
+    print(f"검색 벡터(embedded) 부여  : {embedded}   (손실 {total - embedded})")
     print(f"차원 분포                 : {[(d['dim'], d['c']) for d in dims]}")
     print(f":EMBED_META               : {meta}")
     print(f"벡터 인덱스 '{VECTOR_INDEX_NAME}' : {idx}")

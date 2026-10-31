@@ -1,14 +1,15 @@
-"""embed_step — 분석 끝 임베딩 → Neo4j (코드노드 = 검색 강화텍스트 + :EMBEDDED + 벡터 인덱스).
+"""embed_step — 분석 끝 임베딩 → Neo4j (코드노드 = 검색 강화텍스트 + ``embedded`` 표지 + 벡터 인덱스).
 
 코드노드 임베딩 텍스트는 검색측과 **글자 단위 동일**한 ``search/corpus/embed_material.compose_embed_text``
 로 **그래프에서** 조성한다(요약만이 아니라 종류·역할·테이블관계·검색문장 — 검색이 성립하려면
 생성·검색이 같은 문장이어야 하므로 단일 진실). 파이프라인 끝이라 테이블 관계 엣지까지 완성돼 있다.
-Table/Column 은 description 기반 현행 유지(검색 대상 아님 — :EMBEDDED 안 붙임).
+Table/Column 은 description 기반 현행 유지(검색 대상 아님 — ``embedding`` 속성, 검색 인덱스 밖).
 
 흐름:
 1. 그래프에서 코드노드 재료(``FETCH_MATERIAL``) 읽어 ``compose_embed_text`` → 벡터.
 2. Table/Column description → 벡터 (현행).
-3. UNWIND 배치 SET — 코드노드는 ``embedding`` + ``:EMBEDDED`` 마커, Table/Column 은 ``embedding``.
+3. UNWIND 배치 SET — 코드노드는 ``search_embedding`` + ``embedded = true``, Table/Column 은 ``embedding``.
+   (표지가 라벨이 아니라 속성인 이유 — ``search/corpus/embed_material.py`` 머리 주석.)
 4. ``:EMBED_META`` 지문 upsert(검색이 질의 임베더와 대조) + 벡터 인덱스 IF NOT EXISTS + ONLINE 대기.
 5. state 노드에 embedding 반영(artifact 정합).
 
@@ -26,10 +27,13 @@ from langchain_core.runnables import RunnableConfig
 
 from search.corpus.embed_material import (
     EMBED_META_LABEL,
-    EMBEDDED_LABEL,
+    EMBEDDED_PROPERTY,
     FETCH_MATERIAL,
+    OWNED_LABEL,
+    SEARCH_VECTOR_PROPERTY,
     VECTOR_INDEX_NAME,
     compose_embed_text,
+    group_material,
 )
 from shared.config.settings import SETTINGS
 from llm import embedder
@@ -49,7 +53,7 @@ _AWAIT_INDEX_TIMEOUT = 300
 
 
 async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> dict:
-    """코드노드(강화텍스트)·Table/Column(description) → 벡터 → Neo4j + 코드노드 :EMBEDDED·인덱스·지문."""
+    """코드노드(강화텍스트)·Table/Column(description) → 벡터 → Neo4j + 코드노드 표지·인덱스·지문."""
     if not SETTINGS.analysis_pipeline.embed_enabled:
         log_info(_STEP, "skip", reason="임베딩 비활성화 (ROBO_PIPELINE_EMBED_ENABLED=false)")
         return {}
@@ -70,7 +74,7 @@ async def embed_step(state: dict, config: Optional[RunnableConfig] = None) -> di
 
     with step_processing_scope(_STEP, stream):
         # 코드노드 — 그래프 재료로 강화텍스트 임베딩(검색과 동일 조성).
-        material = await neo.run_read_query(FETCH_MATERIAL)
+        material = group_material(await neo.run_read_query(FETCH_MATERIAL))
         code_updates = await _embed_code_material(material, stream)
 
         # Table/Column — description 기반(현행), 임베더만 원격 1024d.
@@ -130,11 +134,11 @@ def _encode_code_rows(rows: list[dict]) -> list[dict]:
 
 
 def _embedded_code_query() -> str:
-    """코드노드 벡터 SET + ``:EMBEDDED`` 마커. ``:ANALYZER_OWNED`` + id 시크(코드 라벨은 antlr 열린집합)."""
+    """코드노드 검색 벡터 SET + ``embedded`` 표지. ``:ANALYZER_OWNED`` + id 시크(코드 라벨은 antlr 열린집합)."""
     return (
         "UNWIND $items AS item "
-        f"MATCH (n:ANALYZER_OWNED {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        f"SET n.embedding = item.vector, n:{EMBEDDED_LABEL}"
+        f"MATCH (n:{OWNED_LABEL} {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        f"SET n.{SEARCH_VECTOR_PROPERTY} = item.vector, n.{EMBEDDED_PROPERTY} = true"
     )
 
 
@@ -143,12 +147,12 @@ def _embedded_code_query() -> str:
 def _metadata_upsert_query() -> str:
     """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다."""
     return (
-        f"MERGE (m:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        "SET m:ANALYZER_OWNED, m.fingerprint = $fp, m.dim = $dim"
+        f"MERGE (m:{OWNED_LABEL}:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
+        "SET m.fingerprint = $fp, m.dim = $dim"
     )
 
 async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
-    """``:EMBEDDED`` 벡터 인덱스 IF NOT EXISTS + ONLINE 대기 + 지문 메타. 차원은 실벡터에서 도출.
+    """검색 벡터 인덱스 IF NOT EXISTS + ONLINE 대기 + 지문 메타. 차원은 실벡터에서 도출.
 
     임베딩된 코드노드가 없으면 인덱스 생성 불가(차원 미상) → skip. 차원 불일치 옛 인덱스가
     남아 있으면 CREATE IF NOT EXISTS 는 no-op 이므로 **수동 DROP 을 명시 안내**(눈대중 금지)."""
@@ -159,7 +163,7 @@ async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> No
     dim = len(code_updates[0]["vector"])
     await _warn_on_dim_mismatch(neo, dim)
     await neo.run_query(_create_vector_index_query(dim))
-    await neo.run_query(f"CALL db.awaitIndexes({_AWAIT_INDEX_TIMEOUT})")
+    await _await_index_online(neo)
     await neo.run_query(_metadata_upsert_query(), {"fp": embedder.fingerprint(), "dim": dim})
     log_info(_STEP, "index_ready", index=VECTOR_INDEX_NAME, dim=dim, fingerprint=embedder.fingerprint())
 
@@ -168,11 +172,34 @@ def _create_vector_index_query(dim: int) -> str:
     """벡터 인덱스 생성 쿼리. dim 은 실벡터 길이(int) 인라인 — 사용자 입력 아님(안전)."""
     return (
         f"CREATE VECTOR INDEX {VECTOR_INDEX_NAME} IF NOT EXISTS "
-        f"FOR (n:{EMBEDDED_LABEL}) ON (n.embedding) "
+        f"FOR (n:{OWNED_LABEL}) ON (n.{SEARCH_VECTOR_PROPERTY}) "
         "OPTIONS {indexConfig: {"
         f"`vector.dimensions`: {int(dim)}, "
         "`vector.similarity_function`: 'cosine'}}"
     )
+
+
+async def _await_index_online(neo: Neo4jClient) -> None:
+    """검색 벡터 인덱스가 ONLINE 이 될 때까지 기다린다 (상한 ``_AWAIT_INDEX_TIMEOUT`` 초).
+
+    ``CALL db.awaitIndexes`` 는 Neo4j 전용이다(Ontological DB 미지원). ``SHOW INDEXES YIELD
+    name, state`` 는 둘 다 받으므로 그 상태를 짧게 되묻는다. 상한을 넘기면 raise — 인덱스 없이
+    끝난 run 은 검색에서 조용히 비어 보인다(헌법 IV). 이름은 상수라 원문에 박는다 — Ontological 은
+    이 자리의 ``$name`` 파라미터를 ``jsonb = text`` 로 거절한다(실측).
+    """
+    deadline = time.monotonic() + _AWAIT_INDEX_TIMEOUT
+    state = None
+    while time.monotonic() < deadline:
+        rows = await neo.run_read_query(
+            f"SHOW INDEXES YIELD name, state WHERE name = '{VECTOR_INDEX_NAME}' RETURN state"
+        )
+        state = rows[0].get("state") if rows else None
+        if state == "ONLINE":
+            return
+        if state == "FAILED":
+            break
+        await asyncio.sleep(1)
+    raise RuntimeError(f"벡터 인덱스 {VECTOR_INDEX_NAME} 가 ONLINE 이 아님 (state={state})")
 
 
 async def _warn_on_dim_mismatch(neo: Neo4jClient, dim: int) -> None:

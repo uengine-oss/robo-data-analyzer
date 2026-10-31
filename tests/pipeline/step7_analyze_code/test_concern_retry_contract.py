@@ -330,11 +330,9 @@ class PartialStateTransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("summary", to_summary_item(node))
 
         client = SimpleNamespace(run_batch_unwind=AsyncMock())
-        with patch(
-            "graph.nodes.code_node.apply_stereotype_labels",
-            new=AsyncMock(),
-        ):
-            await update_summaries(client, [node])
+        await update_summaries(client, [node])
+        # 역할은 속성으로만 — 라벨을 붙이는 두 번째 쓰기가 없다 (Ontological DB 호환).
+        self.assertEqual(1, client.run_batch_unwind.await_count)
         items = client.run_batch_unwind.await_args.args[1]
         self.assertEqual(["summary", "insights"], items[0]["analysis_partial"])
 

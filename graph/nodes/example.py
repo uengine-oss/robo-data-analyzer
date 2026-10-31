@@ -13,9 +13,8 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 _UPSERT_QUERY = f"""
 UNWIND $items AS item
-MERGE (e:EXAMPLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET e:ANALYZER_OWNED,
-    e.given = item.given,
+MERGE (e:ANALYZER_OWNED:EXAMPLE {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET e.given = item.given,
     e.when_ = item.when_,
     e.then_ = item.then_,
     e.graph_owner = '{ANALYZER_GRAPH_OWNER}'

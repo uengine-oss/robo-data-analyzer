@@ -6,7 +6,7 @@ antlr CALL 노드(``…:CALL:line`` + 콜리 이름 = signature)가 호출의 �
 분류:
 - 콜리가 언어 온톨로지에 선언된 정확한 빌트인 패키지 호출 → 드롭.
 - 콜리 단순명이 분석대상 정의 노드(루트)와 일치 → internal (CALL 노드 → 그 정의 노드).
-- 그 외 → external — ``:FUNCTION:EXTERNAL`` stub (스키마 = 호출 수식어 또는 호출자 자기 스키마).
+- 그 외 → external — ``:FUNCTION`` stub(``external`` 속성) (스키마 = 호출 수식어 또는 호출자 자기 스키마).
 
 프로시저↔프로시저는 저장하지 않는다. 루틴 단위가 필요한 소비처는 ``routine_call_pairs`` 로 파생.
 """

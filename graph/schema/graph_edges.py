@@ -118,7 +118,7 @@ class Calls:
     - ``internal``: 같은 코드베이스 안 코드노드 — 콜리 정의 노드가 이미 존재.
     - ``external``: 분석 범위 밖 실 루틴/프로시저 (예: 자기 스키마의 미분석 프로시저,
       다른 스키마/라이브러리). 콜리 정의 노드가 없어 ``upsert_calls`` 가
-      ``:FUNCTION:EXTERNAL`` stub 노드를 모듈·스키마와 함께 internal 과 대칭으로 생성.
+      ``:FUNCTION`` stub 노드(``external`` 속성)를 모듈·스키마와 함께 internal 과 대칭으로 생성.
 
     external 분해 메타 (``callee_*``) — strategy 별 linker 가 **언어 의미**로 채운다
     (DBMS: module=프로시저·package=스키마, Framework: module=클래스·package=패키지).

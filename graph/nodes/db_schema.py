@@ -15,9 +15,8 @@ from graph.ownership import ANALYZER_GRAPH_OWNER
 
 MERGE_QUERY = f"""
 UNWIND $items AS item
-MERGE (s:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
-SET s:ANALYZER_OWNED,
-    s.db = item.db,
+MERGE (s:ANALYZER_OWNED:SCHEMA {{id: item.id, graph_owner: '{ANALYZER_GRAPH_OWNER}'}})
+SET s.db = item.db,
     s.name = item.name,
     s.graph_owner = '{ANALYZER_GRAPH_OWNER}'
 RETURN count(s) AS created

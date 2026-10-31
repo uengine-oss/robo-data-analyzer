@@ -15,6 +15,7 @@ from search.config import Config
 from search.ranking.fusion import infer_types, type_affinity
 from search.ranking.recall import recall
 from search.ranking.rerank import passage, predict_cached
+from search.corpus.embed_material import SEARCH_VECTOR_PROPERTY, as_vector
 from search.corpus.evidence_reader import read_rules
 from llm import embedder
 from graph.ownership import ANALYZER_GRAPH_OWNER
@@ -46,12 +47,12 @@ class Retriever:
             return
         rows = self.s.run(
             "MATCH (n {graph_owner:$graph_owner}) "
-            "WHERE n.id IN $ids AND n.embedding IS NOT NULL "
-            "RETURN n.id AS id, n.embedding AS v",
+            f"WHERE n.id IN $ids AND n.{SEARCH_VECTOR_PROPERTY} IS NOT NULL "
+            f"RETURN n.id AS id, n.{SEARCH_VECTOR_PROPERTY} AS v",
             ids=list(missing), graph_owner=ANALYZER_GRAPH_OWNER,
         ).data()
         for r in rows:
-            self._vecs[r["id"]] = np.array(r["v"], dtype=np.float32)
+            self._vecs[r["id"]] = np.array(as_vector(r["v"]), dtype=np.float32)
 
     def _cos(self, cid: str, qv) -> float:
         v = self._vecs.get(cid)
