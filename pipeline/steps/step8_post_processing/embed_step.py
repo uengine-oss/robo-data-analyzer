@@ -145,10 +145,14 @@ def _embedded_code_query() -> str:
 # ── 벡터 인덱스 + 지문 ────────────────────────────────────────
 
 def _metadata_upsert_query() -> str:
-    """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다."""
+    """임베딩 인덱스 지문도 Analyzer 소유권 경계를 따른다.
+
+    ``embedded_count`` = 검색 벡터를 받은 코드노드 수. 검색 코퍼스 캐시 서명에 쓴다 — 매 검색마다
+    전 노드를 세지 않고(Neo4j 는 라벨 스캔, Ontological 은 부모 라벨 집계가 100인자 한계로 죽는다).
+    """
     return (
         f"MERGE (m:{OWNED_LABEL}:{EMBED_META_LABEL} {{graph_owner: '{ANALYZER_GRAPH_OWNER}'}}) "
-        "SET m.fingerprint = $fp, m.dim = $dim"
+        "SET m.fingerprint = $fp, m.dim = $dim, m.embedded_count = $count"
     )
 
 async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> None:
@@ -164,7 +168,10 @@ async def _ensure_vector_index(neo: Neo4jClient, code_updates: list[dict]) -> No
     await _warn_on_dim_mismatch(neo, dim)
     await neo.run_query(_create_vector_index_query(dim))
     await _await_index_online(neo)
-    await neo.run_query(_metadata_upsert_query(), {"fp": embedder.fingerprint(), "dim": dim})
+    await neo.run_query(
+        _metadata_upsert_query(),
+        {"fp": embedder.fingerprint(), "dim": dim, "count": len(code_updates)},
+    )
     log_info(_STEP, "index_ready", index=VECTOR_INDEX_NAME, dim=dim, fingerprint=embedder.fingerprint())
 
 

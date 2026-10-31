@@ -2,7 +2,7 @@
 
 놀이터는 기동 시 한 DB 의 코퍼스·임베딩을 전역 캐시(.npz)해 요청별 DB 전환이 불가했다.
 여기선 **(uri, database) 키 캐시**로 바꿔 요청마다 그 DB 의 코퍼스를 쓴다(전역 싱글턴 없음).
-캐시는 임베딩 지문 + 검색 벡터 보유(``embedded``) 노드 수 서명으로 무효화한다(재분석 시 자동 재로드).
+캐시는 임베딩 지문 + 검색 벡터 보유 노드 수(EMBED_META.embedded_count) 서명으로 무효화한다(재분석 시 자동 재로드).
 
 - bm25·structural 재료(코드 텍스트)는 인메모리 코퍼스(게이트 재현 우선 — fulltext 이관은 후속 스펙).
 - dense 는 벡터 인덱스(recall) — 코퍼스는 벡터를 안 든다(scan 원복 모드일 때만 로드).
@@ -12,9 +12,7 @@ from __future__ import annotations
 
 from search.corpus.embed_material import (
     EMBED_META_LABEL,
-    EMBEDDED_PROPERTY,
     NODE_KIND_EXPR,
-    OWNED_LABEL,
     SEARCH_VECTOR_PROPERTY,
     as_vector,
 )
@@ -77,9 +75,11 @@ def load_corpus() -> Corpus:
     drv, db = read_driver()
     try:
         with drv.session(database=db) as s:
+            # 검색 벡터 보유 수는 임베딩 때 EMBED_META 에 적어 둔 값을 쓴다 — 매 검색마다 세지 않는다.
+            # (Ontological DB 는 부모 라벨 집계를 속성 50개 초과 시 100인자 한계로 거절한다.)
             meta = s.run(
                 f"MATCH (m:{EMBED_META_LABEL} {{graph_owner: $graph_owner}}) "
-                "RETURN m.fingerprint AS fp",
+                "RETURN m.fingerprint AS fp, m.embedded_count AS count",
                 graph_owner=ANALYZER_GRAPH_OWNER,
             ).single()
             fp = meta["fp"] if meta else None
@@ -88,11 +88,7 @@ def load_corpus() -> Corpus:
             want = embedder.fingerprint()
             if fp != want:
                 raise SearchUnavailable(f"임베딩 모델 불일치 (그래프={fp}, 질의={want}) — 재분석 필요")
-            count = s.run(
-                f"MATCH (n:{OWNED_LABEL} {{graph_owner: $graph_owner}}) "
-                f"WHERE n.{EMBEDDED_PROPERTY} = true RETURN count(n) AS c",
-                graph_owner=ANALYZER_GRAPH_OWNER,
-            ).single()["c"]
+            count = int(meta["count"] or 0)
             if count == 0:
                 raise SearchUnavailable(_NO_EMBED_MSG)
 
