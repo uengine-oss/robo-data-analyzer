@@ -38,6 +38,13 @@ models:
     cached_input_per_1m: 0.08
 
   # ── OpenAI ─────────────────────────────────────────────────
+  # gpt-4.1 — POSCO 납품판이 쓰는 모델(pgpt.yaml · openai_gpt41.yaml 둘 다 `model: gpt-4.1`).
+  # 봉인은 revision 을 gpt-4.1-2025-04-14 로 박지만 lookup_price 가 날짜 꼬리를 떼므로
+  # 키는 `gpt-4.1` 하나로 족하다. 출처: OpenAI 모델 페이지(2026-11-12 확인).
+  gpt-4.1:
+    input_per_1m: 2.00
+    output_per_1m: 8.00
+    cached_input_per_1m: 0.50
   gpt-4o:
     input_per_1m: 2.50
     output_per_1m: 10.0
