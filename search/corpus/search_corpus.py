@@ -21,8 +21,7 @@ RETURN node.product_id AS id,
        coalesce(node.name,'') AS name,
        node.summary AS summary,
        coalesce(node.stereotype,'') AS stereotype,
-       node._search_embedding IS NOT NULL AS embedded,
-       size(node._search_embedding) AS dimension
+       node._search_embedding IS NOT NULL AS embedded
 ORDER BY id
 """
 
@@ -95,7 +94,11 @@ def load_corpus(*, session=None) -> Corpus:
         raise SearchUnavailable(
             f"함수 임베딩이 누락되었습니다: first={missing[0]!r}, count={len(missing)}"
         )
-    dimensions = {int(row.get("dimension") or 0) for row in rows}
+    # 차원은 **불러온 벡터로** 센다. Cypher 의 size(node._search_embedding) 는 Ontological DB 가
+    # 벡터를 배열이 아닌 값으로 돌려줘 "cannot get array length of a scalar" 로 검색 전체가 멈췄다
+    # (2026-11-17 posco-web 판 실측). Neo4j 에서도 같은 결과다.
+    vectors = _load_vectors(session, [row["id"] for row in rows])
+    dimensions = {len(vector) for vector in vectors}
     if len(dimensions) != 1 or 0 in dimensions:
         raise SearchUnavailable("함수 임베딩 차원이 서로 다릅니다.")
     fan_in = {
@@ -104,12 +107,7 @@ def load_corpus(*, session=None) -> Corpus:
             _FAN_IN_QUERY, routine_labels=sorted(ROUTINE_LABELS),
         ).data()
     }
-    vectors = (
-        _load_vectors(session, [row["id"] for row in rows])
-        if SETTINGS.semantic_search.dense_impl == "scan"
-        else None
-    )
-    return Corpus(rows, fan_in, vectors)
+    return Corpus(rows, fan_in, vectors if SETTINGS.semantic_search.dense_impl == "scan" else None)
 
 
 def lexical_allowed() -> bool:
