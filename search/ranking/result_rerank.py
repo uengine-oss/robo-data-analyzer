@@ -16,6 +16,13 @@ from shared.events.runtime_logger import log_warning
 _LOG = "search.ranking.result_rerank"
 
 _ce_cache: dict = {}
+# 실을 수 없던 모델 → 원인. 폐쇄망에서 HF Hub 에 닿지 못하면 요청마다 다시 시도해 봐야 같은 실패다
+# (프록시에 따라 수십 초씩 멈춘다). 프로세스 동안 기억하고, 모델을 넣은 뒤에는 재기동으로 다시 시도한다.
+_ce_unavailable: dict[str, str] = {}
+
+
+class RerankerUnavailable(RuntimeError):
+    """재채점(CE) 모델을 실을 수 없다 — 호출자는 다른 점수로 대신한다."""
 # CE 점수 = 결정론(같은 model·질의·passage → 항상 같은 점수) → 디스크 캐시로 재측정·반복질의 0초.
 # 첫 채점만 CPU 비용 지불, 이후 재사용. output/ 밖 전용 디렉토리(plan §C).
 _CACHE_PATH = Path(__file__).resolve().parent.parent / ".search_cache" / "ce_scores.json"
@@ -63,9 +70,21 @@ def get_ce(model_name: str):
                 _LOG, "configure_torch_threads", "Torch 스레드 최적화 실패 — 기본 설정으로 계속",
                 error=f"{type(error).__name__}: {error}",
             )
+        if model_name in _ce_unavailable:
+            raise RerankerUnavailable(_ce_unavailable[model_name])
         from sentence_transformers import CrossEncoder
 
-        _ce_cache[model_name] = CrossEncoder(model_name)
+        try:
+            _ce_cache[model_name] = CrossEncoder(model_name)
+        except (OSError, ValueError, RuntimeError) as error:
+            # 폐쇄망: "We couldn't connect to 'https://huggingface.co' … couldn't find them in the cached files"
+            reason = f"{type(error).__name__}: {error}"
+            _ce_unavailable[model_name] = reason
+            log_warning(
+                _LOG, "load_reranker", "재채점 모델을 실을 수 없다 — 키워드(BM25) 점수로 대신한다",
+                model=model_name, error=reason[:300],
+            )
+            raise RerankerUnavailable(reason) from error
     return _ce_cache[model_name]
 
 

@@ -17,7 +17,7 @@ from pipeline.source_languages import ROUTINE_LABELS
 from search.search_config import Config
 from search.ranking.rank_fusion import infer_types, type_affinity
 from search.ranking.graph_recall import recall, tokenize
-from search.ranking.result_rerank import passage, predict_cached
+from search.ranking.result_rerank import RerankerUnavailable, passage, predict_cached
 from search.corpus.embed_material import as_vector
 from search.corpus.evidence_reader import read_rules
 from llm import text_embedder
@@ -89,8 +89,13 @@ class Retriever:
         cids = [c for c in cids if c in self.c.by_id]
         if self.lexical:
             return self._lexical_scores(query, cids)
-        return dict(zip(cids, predict_cached(
-            cfg.ce_model, [(query, passage(self.c.by_id[c])) for c in cids])))
+        try:
+            return dict(zip(cids, predict_cached(
+                cfg.ce_model, [(query, passage(self.c.by_id[c])) for c in cids])))
+        except RerankerUnavailable:
+            # 모델을 못 실으면(폐쇄망 · 모델 미반입) 검색 전체를 멈추지 않는다 — 임베딩 없는 Lite 와 같은
+            # BM25 0..1 점수로 CE 자리를 채운다. 벡터(코사인) 채널은 그대로 쓴다.
+            return self._lexical_scores(query, cids)
 
     def _is_hub(self, cid: str, cfg) -> bool:
         return self.c.fan_in.get(cid, 0) >= cfg.cluster_hub_fanin
