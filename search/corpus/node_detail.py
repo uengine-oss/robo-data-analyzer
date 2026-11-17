@@ -13,8 +13,8 @@ _INTERNAL_PROPERTIES = {"_id", "product_id", "_owner", "_search_embedding"}
 # 관계 방향은 패턴으로 나눠 묻는다 — ``CASE WHEN startNode(rel) = node`` 는 Ontological DB 가
 # 받지 않는다. Neo4j 에서도 결과는 같다(무방향 패턴 1개 = 들어오는 것 + 나가는 것).
 _DIRECTED_PATTERNS = (
-    ("in", "(node {_id:$node_id, _owner:'analyzer'})<-[rel]-(other {_owner:'analyzer'})"),
-    ("out", "(node {_id:$node_id, _owner:'analyzer'})-[rel]->(other {_owner:'analyzer'})"),
+    ("in", "(node {product_id:$node_id, _owner:'analyzer'})<-[rel]-(other {_owner:'analyzer'})"),
+    ("out", "(node {product_id:$node_id, _owner:'analyzer'})-[rel]->(other {_owner:'analyzer'})"),
 )
 _RELATIONSHIP_QUERY = (
     "MATCH {pattern} "
@@ -85,7 +85,7 @@ def build_node_detail(
 
 def _table_context(session, table_id: str, access: list[str]) -> dict:
     rows = session.run(
-        "MATCH (table:TABLE {_id:$node_id, _owner:'analyzer'}) "
+        "MATCH (table:TABLE {product_id:$node_id, _owner:'analyzer'}) "
         "RETURN properties(table) AS props",
         node_id=table_id,
     ).data()
@@ -177,7 +177,7 @@ def read_node_detail(node_id: str, *, view: str = "frame") -> dict:
     try:
         with driver.session(database=database) as session:
             node_rows = session.run(
-                "MATCH (node {_id:$node_id, _owner:'analyzer'}) "
+                "MATCH (node {product_id:$node_id, _owner:'analyzer'}) "
                 "RETURN labels(node) AS labels, properties(node) AS props",
                 node_id=requested_id,
             ).data()

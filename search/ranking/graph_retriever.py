@@ -123,7 +123,7 @@ class Retriever:
 
     def _node_row(self, cid: str, cfg, qv, score: dict, callees: list[dict], role: str) -> dict:
         rec = self.s.run(
-            "MATCH (x {_id:$node_id, _owner:'analyzer'}) "
+            "MATCH (x {product_id:$node_id, _owner:'analyzer'}) "
             "OPTIONAL MATCH (x)-[r]->(t:TABLE {_owner:'analyzer'}) "
             "WHERE type(r) IN $rels "
             "RETURN elementId(x) AS eid, "

@@ -78,7 +78,7 @@ def render_rule_structure(rule: dict) -> str:
 def read_rules(session, node_id: str) -> list[dict]:
     """Return one routine's Rule products in their published order."""
     rows = session.run(
-        "MATCH (x {_id:$node_id, _owner:'analyzer'})-[hr:HAS_RULE]->"
+        "MATCH (x {product_id:$node_id, _owner:'analyzer'})-[hr:HAS_RULE]->"
         "(r:RULE {_owner:'analyzer'}) "
         "RETURN r.product_id AS rule_id, coalesce(hr.order,0) AS rule_order, "
         "r.line AS line, coalesce(r.condition,'') AS condition, "
@@ -94,7 +94,7 @@ def read_rules(session, node_id: str) -> list[dict]:
 def read_columns(session, table_id: str) -> list[dict]:
     """TABLE의 컬럼을 graph id 순서로 반환한다. 컬럼 미수집은 정상 빈 배열이다."""
     return session.run(
-        f"MATCH (t:TABLE {{_id:$node_id, _owner:'analyzer'}})-[:{HAS_COLUMN}]->"
+        f"MATCH (t:TABLE {{product_id:$node_id, _owner:'analyzer'}})-[:{HAS_COLUMN}]->"
         "(c:COLUMN {_owner:'analyzer'}) "
         "RETURN c.product_id AS id, c.name AS name, "
         "coalesce(c.data_type,'') AS dtype, "
