@@ -51,10 +51,14 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
 ENV HF_HOME=/opt/hf
 ARG RERANKER_MODEL=""
 ARG RERANKER_REVISION=""
+# ⚠ 커밋으로 받으면 캐시에 refs/main 이 생기지 않는다. 코드는 판 없이(= main) 부르므로, 오프라인에서
+#   "couldn't find them in the cached files" 로 못 실었다(2026-11-17 실측). 받은 커밋을 refs/main 에 적는다.
 RUN if [ -n "$RERANKER_MODEL" ]; then \
-        python -c "import os; from huggingface_hub import snapshot_download; \
-p = snapshot_download(os.environ['RERANKER_MODEL'], revision=os.environ.get('RERANKER_REVISION') or None, \
-    allow_patterns=['*.json', '*.safetensors', '*.model']); print('reranker baked:', p)" \
+        python -c "import os, pathlib; from huggingface_hub import snapshot_download; \
+p = pathlib.Path(snapshot_download(os.environ['RERANKER_MODEL'], revision=os.environ.get('RERANKER_REVISION') or None, \
+    allow_patterns=['*.json', '*.safetensors', '*.model'])); \
+refs = p.parent.parent / 'refs'; refs.mkdir(exist_ok=True); (refs / 'main').write_text(p.name); \
+print('reranker baked:', p)" \
         && find "$HF_HOME" -name '*.lock' -delete; \
     fi
 
