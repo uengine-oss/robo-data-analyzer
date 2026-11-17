@@ -42,6 +42,22 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock \
     && pip uninstall -y pip wheel \
     && rm -rf /root/.cache
 
+# 레거시 검색 재채점(CE) 모델 — **빌드 입력으로만** 굽는다(기본은 굽지 않음 = 첫 검색 때 HF Hub 에서 받음).
+# 사내망처럼 HF Hub 에 못 닿는 판은 빌드 인자로 모델을 넘겨 이미지에 싣고, 런타임에 HF_HUB_OFFLINE=1 로 쓴다.
+#   docker build --build-arg RERANKER_MODEL=dragonkue/bge-reranker-v2-m3-ko \
+#                --build-arg RERANKER_REVISION=<HF 커밋> .
+# 판(고객)마다 다른 것은 브랜치가 아니라 이 인자다. 모델은 약 2.2GB.
+# 코드보다 먼저 두어(COPY . . 앞) 코드가 바뀌어도 이 레이어는 캐시를 쓴다.
+ENV HF_HOME=/opt/hf
+ARG RERANKER_MODEL=""
+ARG RERANKER_REVISION=""
+RUN if [ -n "$RERANKER_MODEL" ]; then \
+        python -c "import os; from huggingface_hub import snapshot_download; \
+p = snapshot_download(os.environ['RERANKER_MODEL'], revision=os.environ.get('RERANKER_REVISION') or None, \
+    allow_patterns=['*.json', '*.safetensors', '*.model']); print('reranker baked:', p)" \
+        && find "$HF_HOME" -name '*.lock' -delete; \
+    fi
+
 COPY . .
 
 EXPOSE 5502
