@@ -1,0 +1,38 @@
+sealed_model_runtime_capabilities:
+  runtime_kind: provider_managed
+  provider_id: claude-code-bridge
+  model_id: claude-code
+  model_revision: claude-code
+  serving_runtime:
+    runtime_id: claude-code-bridge
+    runtime_version: v1
+    runtime_config_sha256: 2e7a0c018d9df0ce8d74baa912defed448b2b41140d4ea3b30cb1e2d6662d232
+  provider_hard_limits:
+    context_tokens: 200000
+    max_output_tokens: 32000
+  profile_version: claude-code-bridge-2026-11-17
+  provider_managed_disclosure:
+    tokenizer_identity: provider_managed_undisclosed
+    quantization: provider_managed_undisclosed
+    infrastructure: provider_managed_undisclosed
+  provenance:
+    config: llm/configs/claude_code_bridge.yaml
+    verified_at: 2026-11-17
+    note: >-
+      Robo Architect Lite 데스크톱 전용. 분석기는 Lite 백엔드의 OpenAI 호환
+      /api/llm-bridge/v1 을 부르고, 다리가 사용자 PC 의 Claude Code(`claude -p`)로
+      답한다. 응답 model 은 "claude-code" 이고 실제 Claude 모델은 다리의
+      ROBO_LLM_BRIDGE_MODEL(기본 sonnet)이 정한다 — 분석기 쪽에서는 그 리비전을 알 수 없어
+      model_revision 도 "claude-code" 로 적는다.
+    limits_note: >-
+      context 200,000 은 Claude Sonnet 의 기본 문맥 한도, max output 32,000 은
+      claude_code_bridge.yaml 의 max_tokens 와 같은 값이다. 분석기는 이 값을 봉인에 기록할
+      뿐 호출을 자르지 않는다.
+    runtime_config_sha256_note: >-
+      gpt41_openai_2025_04_14.yaml 과 같은 규약 —
+      sha256("claude-code-bridge|v1|claude-code|claude-code|200000|32000") 의 16진 요약.
+    usage: >-
+      Lite compose 가 ROBO_LLM_CONFIG=claude_code_bridge 와 함께
+      ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_REF=llm/capabilities/claude_code_bridge.yaml,
+      ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_SHA256=<이 파일의 sha256> 을 넘겨야 한다.
+      비어 있으면 run 이 분석 전 preflight 에서 거절된다.

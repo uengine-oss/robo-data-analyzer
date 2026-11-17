@@ -9,6 +9,9 @@
 #   다리가 받아 JSON 하나로 답하게 하고 tool_calls 로 돌려준다.
 # 임베딩은 없다 — 이 config 와 함께 ROBO_PIPELINE_EMBED_ENABLED=false (의미 검색 끔).
 # ROBO_LLM_API_KEY 는 다리가 보지 않지만 분석기가 비어 있으면 거절하므로 아무 값이나 넣는다.
+# 봉인(run preflight 필수): ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_REF=llm/capabilities/claude_code_bridge.yaml
+#   ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_SHA256=a1c0ac3daa0d3bd024ecc36a91a26c8a1abf7a3249966c8599812308bb9aa9d9
+#   (그 파일 바이트의 sha256 — 파일을 고치면 이 값도 바꾼다)
 
 provider: openai
 

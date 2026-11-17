@@ -1,3 +1,6 @@
 # Gold corpus fixtures are byte-exact answer keys (spec 078) — the boundary
 # tests compare exact CR/LF and encodings, so git must never convert them.
 tests/pipeline/step3_load_external/gold/fixtures/** -text
+# Model runtime capability seals are verified by SHA-256 of their bytes
+# (ROBO_LLM_MODEL_RUNTIME_CAPABILITIES_SHA256) — a CRLF checkout would change the hash.
+llm/capabilities/*.yaml text eol=lf
