@@ -10,6 +10,20 @@ from search.corpus.neo4j_reader import read_driver
 
 _INTERNAL_PROPERTIES = {"_id", "product_id", "_owner", "_search_embedding"}
 
+# 관계 방향은 패턴으로 나눠 묻는다 — ``CASE WHEN startNode(rel) = node`` 는 Ontological DB 가
+# 받지 않는다. Neo4j 에서도 결과는 같다(무방향 패턴 1개 = 들어오는 것 + 나가는 것).
+_DIRECTED_PATTERNS = (
+    ("in", "(node {_id:$node_id, _owner:'analyzer'})<-[rel]-(other {_owner:'analyzer'})"),
+    ("out", "(node {_id:$node_id, _owner:'analyzer'})-[rel]->(other {_owner:'analyzer'})"),
+)
+_RELATIONSHIP_QUERY = (
+    "MATCH {pattern} "
+    "RETURN type(rel) AS type, '{direction}' AS direction, "
+    "other.product_id AS other_id, coalesce(other.name,'') AS other_name, "
+    "labels(other) AS other_labels, properties(other) AS other_properties, "
+    "properties(rel) AS properties"
+)
+
 
 def _error(code: str, message: str) -> dict:
     return {"error": {"code": code, "message": message}}
@@ -171,17 +185,23 @@ def read_node_detail(node_id: str, *, view: str = "frame") -> dict:
                 return build_node_detail(
                     node_rows, [], [], [], node_id=requested_id,
                 )
-            relationships = session.run(
-                "MATCH (node {_id:$node_id, _owner:'analyzer'})-[rel]-"
-                "(other {_owner:'analyzer'}) "
-                "RETURN type(rel) AS type, "
-                "CASE WHEN startNode(rel) = node THEN 'out' ELSE 'in' END AS direction, "
-                "other.product_id AS other_id, coalesce(other.name,'') AS other_name, "
-                "labels(other) AS other_labels, properties(other) AS other_properties, "
-                "properties(rel) AS properties "
-                "ORDER BY type, direction, other_id",
-                node_id=requested_id,
-            ).data()
+            # 방향별로 따로 묻는다 — Ontological DB 는 ``startNode()`` 를 모른다
+            # (지원 함수 목록 밖, 59ecb4f8 실측). 정렬은 옛 ORDER BY 와 같다.
+            relationships = sorted(
+                (
+                    row
+                    for direction, pattern in _DIRECTED_PATTERNS
+                    for row in session.run(
+                        _RELATIONSHIP_QUERY.format(pattern=pattern, direction=direction),
+                        node_id=requested_id,
+                    ).data()
+                ),
+                key=lambda row: (
+                    str(row.get("type") or ""),
+                    str(row.get("direction") or ""),
+                    str(row.get("other_id") or ""),
+                ),
+            )
             labels = set(node_rows[0].get("labels") or [])
             rules = read_rules(session, requested_id) if labels & ROUTINE_LABELS else []
             columns = read_columns(session, requested_id) if "TABLE" in labels else []

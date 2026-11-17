@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pipeline.source_languages import ROUTINE_LABELS
+from search.corpus.embed_material import as_vector
 from search.ranking.graph_recall import tokenize
 from shared.config.app_settings import SETTINGS
 
@@ -118,4 +119,4 @@ def _load_vectors(session, ids: list[str]):
         raise SearchUnavailable(
             f"함수 검색 벡터가 누락되었습니다: first={missing[0]!r}, count={len(missing)}"
         )
-    return np.array([vectors[node_id] for node_id in ids], dtype=np.float32)
+    return np.array([as_vector(vectors[node_id]) for node_id in ids], dtype=np.float32)

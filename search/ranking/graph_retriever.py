@@ -16,6 +16,7 @@ from search.search_config import Config
 from search.ranking.rank_fusion import infer_types, type_affinity
 from search.ranking.graph_recall import recall
 from search.ranking.result_rerank import passage, predict_cached
+from search.corpus.embed_material import as_vector
 from search.corpus.evidence_reader import read_rules
 from llm import text_embedder
 from graph.schema.rel_types import (
@@ -55,7 +56,7 @@ class Retriever:
             ids=list(missing), routine_labels=sorted(ROUTINE_LABELS),
         ).data()
         for r in rows:
-            self._vecs[r["id"]] = np.array(r["v"], dtype=np.float32)
+            self._vecs[r["id"]] = np.array(as_vector(r["v"]), dtype=np.float32)
 
     def _cos(self, cid: str, qv) -> float:
         v = self._vecs.get(cid)
