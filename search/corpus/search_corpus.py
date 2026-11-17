@@ -1,6 +1,8 @@
 """Load the current routine nodes used by semantic search."""
 from __future__ import annotations
 
+import os
+
 from pipeline.source_languages import ROUTINE_LABELS
 from search.corpus.embed_material import as_vector
 from search.ranking.graph_recall import tokenize
@@ -46,16 +48,19 @@ class SearchUnavailable(RuntimeError):
 
 
 class Corpus:
-    def __init__(self, rows: list[dict], fan_in: dict, vecs=None):
+    def __init__(self, rows: list[dict], fan_in: dict, vecs=None, *, lexical: bool = False):
         ids = [str(row.get("id") or "") for row in rows]
         if any(not node_id for node_id in ids) or len(ids) != len(set(ids)):
             raise SearchUnavailable("검색 함수 ID가 비어 있거나 중복됩니다.")
         self.rows = rows
         self.by_id = {row["id"]: row for row in rows}
         self.ids = ids
+        self.index = {node_id: i for i, node_id in enumerate(ids)}  # bm25 점수 배열의 자리
         self.fan_in = fan_in
         self.routine_labels = sorted({str(row["label"]) for row in rows})
         self._vecs = vecs
+        # 임베딩 없이 분석한 그래프 — 검색은 BM25 · 구조 채널만 쓴다(retriever 가 dense · CE 를 건너뛴다)
+        self.lexical = lexical
         from rank_bm25 import BM25Okapi
 
         self.bm25 = BM25Okapi([
@@ -83,6 +88,8 @@ def load_corpus(*, session=None) -> Corpus:
     ).data()
     if not rows:
         raise SearchUnavailable(_NO_EMBED_MSG)
+    if lexical_allowed() and not any(row.get("embedded") for row in rows):
+        return _load_lexical(session, rows)
     missing = [row["id"] for row in rows if not row.get("embedded")]
     if missing:
         raise SearchUnavailable(
@@ -103,6 +110,28 @@ def load_corpus(*, session=None) -> Corpus:
         else None
     )
     return Corpus(rows, fan_in, vectors)
+
+
+def lexical_allowed() -> bool:
+    """임베딩을 끈 설치(키 없는 Lite — ROBO_PIPELINE_EMBED_ENABLED=false)이거나 ROBO_SEARCH_LEXICAL=1.
+
+    이때 벡터가 하나도 없는 그래프는 BM25 · 구조 채널로만 검색한다. 임베딩을 켰는데 벡터가
+    없으면 예전처럼 재분석을 요구한다(벡터가 일부만 있는 그래프도 그대로 거절).
+    """
+    return (
+        not SETTINGS.analysis_pipeline.embed_enabled
+        or os.environ.get("ROBO_SEARCH_LEXICAL") == "1"
+    )
+
+
+def _load_lexical(session, rows: list[dict]) -> Corpus:
+    fan_in = {
+        row["id"]: row["fi"]
+        for row in session.run(
+            _FAN_IN_QUERY, routine_labels=sorted(ROUTINE_LABELS),
+        ).data()
+    }
+    return Corpus(rows, fan_in, None, lexical=True)
 
 
 def _load_vectors(session, ids: list[str]):
