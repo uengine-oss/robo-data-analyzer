@@ -3,10 +3,11 @@
 API key: ``.env`` 의 ``ROBO_LLM_API_KEY`` 단일 진실. 헤더 override 미지원
 (``SETTINGS.analysis_llm.api_key`` 는 import 시점에 frozen 되어 런타임 변경 불가 — 글로벌 write 위험 회피).
 
-엔드포인트 2개::
+엔드포인트 3개::
 
-    POST /robo/analyze          — 분석 시작 (NDJSON 스트림 반환)
-    POST /robo/analyze/control  — 진행 제어 {action: pause|resume|stop}
+    POST /robo/analyze               — 분석 시작 (NDJSON 스트림 반환)
+    POST /robo/analyze/control       — 진행 제어 {action: pause|resume|stop}
+    GET  /robo/analyze/source-files  — 이 프로젝트에 올린 소스 (「코드」 화면 목록 복원)
 
 진행 상태는 NDJSON 스트림 단일 채널(폴링 없음). 제어는 "동시 분석 1개" 모델 —
 ``run_registry`` 의 활성 run 컨트롤러에 신호를 전달한다(payload 에 run_id 없음).
@@ -25,6 +26,7 @@ from pipeline.pipeline_strategies import get_pipeline
 from pipeline.models.analysis_meta import Codebase
 from shared.config.app_settings import SETTINGS
 from shared.config.workspace import current_workspace, data_dir, set_workspace
+from api.source_files import read_uploaded_sources
 from shared.events.ndjson_event_stream import NDJSONStream
 from shared.events.runtime_logger import log_warning
 from graph.analysis_lock import AnalysisLock, AnalysisLockBusy
@@ -196,3 +198,18 @@ async def control_analysis(req: ControlRequest) -> dict:
         pause.request_stop()
 
     return {"success": True, "action": req.action, "status": pause.status()}
+
+
+@router.get("/analyze/source-files")
+async def source_files(request: Request) -> dict:
+    """이 프로젝트에 올린 소스·DDL — 업로드 응답과 같은 ``{files, ddlFiles}``.
+
+    「코드」 화면의 파일 목록은 브라우저 ``localStorage`` 에만 있어서, 다른 PC·브라우저에서
+    같은 프로젝트를 열면 비어 보였다. 화면이 그 목록이 없을 때 여기서 받아 채운다
+    (`api/source_files.py`).
+
+    경로는 ``/analyze/**`` 아래에 둔다 — 게이트웨이(납품판 고정)가 analyzer 로 넘기는
+    길이 그것뿐이다. 작업 폴더는 분석과 **같은 값**(``X-Neo4j-Database``)으로 정한다.
+    """
+    set_workspace(request.headers.get("x-neo4j-database"))
+    return await asyncio.to_thread(read_uploaded_sources)
