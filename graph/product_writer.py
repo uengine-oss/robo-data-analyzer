@@ -239,4 +239,84 @@ RETURN count(node) AS matched
             relationship_count=len(graph.relationships),
         )
 
+    await _prepare_storage(client, nodes_by_label, relationships_by_shape)
     return await client.execute_write(_replace)
+
+
+_PROBE_ID = "__robo_storage_probe__"
+
+
+def _sample_properties(items: list[dict[str, object]]) -> dict[str, object]:
+    """같은 모양의 항목들이 쓰는 속성 키를 모두 담은 견본 — 키마다 처음 나온 값."""
+    sample: dict[str, object] = {}
+    for item in items:
+        for key, value in (item.get("properties") or {}).items():
+            if value is not None and key not in sample:
+                sample[key] = value
+    return sample
+
+
+async def _prepare_storage(
+    client: Neo4jClient,
+    nodes_by_label: dict[str, list[dict[str, object]]],
+    relationships_by_shape: dict[tuple[str, str, str], list[dict[str, object]]],
+) -> None:
+    """바꿔 쓰기 전에 **저장 자리(라벨 테이블 · 속성 컬럼)를 짧은 트랜잭션으로 먼저 만든다.**
+
+    Ontological DB 는 처음 보는 라벨·속성을 만나면 그 자리에서 테이블을 만들거나
+    `ALTER TABLE … ADD COLUMN` 을 한다(배타 잠금). 그게 `_replace` 의 큰 트랜잭션 안에서
+    일어나면, 같은 그래프를 훑는 읽기(catalog `check-data` 등 — 모든 노드 테이블에 공유 잠금)와
+    잠금 순서가 엇갈려 교착이 나고 분석 전체가 실패했다(lite 0.1.7, 2026-11-19 · 새 그래프의 첫 분석:
+    `ALTER TABLE og_data.n_41 ADD COLUMN IF NOT EXISTS p__owner` vs `og_node_json` 집계).
+
+    여기서는 라벨마다 · 관계 모양마다 견본 속성으로 탐침을 만들었다가 같은 트랜잭션에서 지운다.
+    트랜잭션이 짧아 교착이 나도 드라이버가 곧바로 다시 시도해 끝난다. 이미 자리가 있으면 바뀌는
+    것이 없다(지운 탐침은 남지 않는다).
+    """
+    for label, items in sorted(nodes_by_label.items()):
+        properties = _sample_properties(items)
+
+        async def probe_node(tx, label=label, properties=properties):
+            result = await tx.run(
+                f"""
+CREATE (probe:{label})
+SET probe = $properties
+SET probe.product_id = $probe_id
+WITH probe
+DETACH DELETE probe
+RETURN 1 AS probed
+""",
+                properties=properties,
+                probe_id=_PROBE_ID,
+            )
+            await result.single(strict=True)
+
+        await client.execute_write(probe_node)
+
+    for (relationship_type, source_label, target_label), items in sorted(relationships_by_shape.items()):
+        properties = _sample_properties(items)
+
+        async def probe_relationship(
+            tx,
+            relationship_type=relationship_type,
+            source_label=source_label,
+            target_label=target_label,
+            properties=properties,
+        ):
+            result = await tx.run(
+                f"""
+CREATE (source:{source_label} {{product_id: $source_id}})
+CREATE (target:{target_label} {{product_id: $target_id}})
+CREATE (source)-[relationship:{relationship_type}]->(target)
+SET relationship = $properties
+WITH source, target
+DETACH DELETE source, target
+RETURN 1 AS probed
+""",
+                properties=properties,
+                source_id=_PROBE_ID + ":source",
+                target_id=_PROBE_ID + ":target",
+            )
+            await result.single(strict=True)
+
+        await client.execute_write(probe_relationship)

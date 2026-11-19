@@ -79,7 +79,16 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
 
         receipt = await replace_product_graph(client, graph)
 
-        self.assertEqual(1, client.write_count)
+        # 저장 자리 준비(라벨 둘 + 관계 모양 하나) 셋 + 데이터 트랜잭션 하나
+        self.assertEqual(4, client.write_count)
+        probes = [query for query, _ in client.transaction.calls if "AS probed" in query]
+        self.assertEqual(3, len(probes))
+        self.assertTrue(any("CREATE (probe:METHOD)" in q for q in probes))
+        self.assertTrue(any("CREATE (probe:RULE)" in q for q in probes))
+        self.assertTrue(any("[relationship:HAS_RULE]" in q and "DETACH DELETE source, target" in q for q in probes))
+        probe_params = [params for query, params in client.transaction.calls if "CREATE (probe:METHOD)" in query][0]
+        self.assertEqual({"name", "file_path", "start_line", "end_line", "code_text", "summary", "_search_embedding", "_owner"}
+                         - set(probe_params["properties"]), set())
         self.assertEqual(2, receipt.node_count)
         self.assertEqual(1, receipt.relationship_count)
         all_queries = "\n".join(
