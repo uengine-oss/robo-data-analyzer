@@ -150,12 +150,23 @@ def load_llm_config(name: str) -> LLMConfig:
     return _build_llm_config(raw, source=str(path))
 
 
+_ENV_DEFAULT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}")
+
+
+def _expand_env(value: str) -> str:
+    """``${VAR:-default}`` → 환경값(비었으면 기본값), 그다음 ``$VAR`` · ``${VAR}`` 는 os.path.expandvars."""
+    value = _ENV_DEFAULT.sub(lambda m: (os.environ.get(m.group(1)) or "").strip() or m.group(2), value)
+    return os.path.expandvars(value)
+
+
 def _build_llm_config(raw: dict, source: str) -> LLMConfig:
     """yaml dict → ``LLMConfig`` 변환 + 필수 필드 검증."""
     provider = _require_string(raw, "provider", source).lower()
     model = _require_string(raw, "model", source)
-    # ${VAR} 를 환경에서 채운다 — Lite 의 Claude Code 다리처럼 포트가 실행마다 바뀌는 주소용
-    api_base = os.path.expandvars(_require_string(raw, "api_base", source, default=""))
+    # ${VAR} 를 환경에서 채운다 — Lite 의 Claude Code 다리처럼 포트가 실행마다 바뀌는 주소용.
+    # ${VAR:-기본값} 도 받는다(2026-11-24) — 망마다 주소가 다른 P-GPT 를 .env 한 곳에서 주되,
+    # 값이 없으면 지금까지 박혀 있던 주소로 간다.
+    api_base = _expand_env(_require_string(raw, "api_base", source, default=""))
     if not provider or not model:
         raise RuntimeError(f"provider and model must be nonempty strings in {source}")
 

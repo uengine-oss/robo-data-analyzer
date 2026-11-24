@@ -29,7 +29,9 @@
 
 provider: openai
 
-api_base: http://aigpt.posco.net/gpgpta01-gpt/v1
+# 주소는 .env 의 ROBO_AI_BASE_URL 이 정한다(망마다 다르다 — DX망 · 포스코망). 비면 아래 기본값.
+# 2026-11-20 포스코 현장: 여기 박힌 주소로만 가서 404 — compose 마운트로 덮었던 것을 여기서 푼다.
+api_base: ${ROBO_AI_BASE_URL:-http://aigpt.posco.net/gpgpta01-gpt/v1}
 
 # ⚠ 2026-10-29: 받은 문서의 예시(`gpt-5.2`)에서 **gpt-4.1** 로 바꿨다.
 #    근거는 **이 조직이 실제로 쓰는 모델**이다 — msa-ez/platform v1.0.30 의
