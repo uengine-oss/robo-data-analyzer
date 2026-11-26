@@ -104,7 +104,10 @@ class ProductWriterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MATCH (target:RULE {product_id: $target_id})", all_queries)
         self.assertIn("MATCH (node:METHOD {product_id: id, _owner: $owner})", all_queries)
         self.assertNotIn("MATCH (source {_id: item.source_id})", all_queries)
-        self.assertIn("CREATE (source:METHOD)-[relationship:HAS_RULE", all_queries)
+        # 묶인 변수에 라벨을 다시 붙이지 않는다 — AGE · Neo4j 는 거부한다(2026-11-26)
+        self.assertIn("MATCH (target:RULE {product_id: $target_id})\n"
+                      "CREATE (source)-[relationship:HAS_RULE]->(target)", all_queries)
+        self.assertNotIn("CREATE (source:METHOD)-[", all_queries)
         self.assertIn("SET node = item.properties", all_queries)
         self.assertIn("{product_id: item.node_id}", all_queries)
         self.assertIn("node.product_id = item.node_id", all_queries)

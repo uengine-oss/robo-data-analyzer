@@ -181,12 +181,13 @@ RETURN count(node) AS written
         ), items in sorted(relationships_by_shape.items()):
             for item in items:
                 properties = item["properties"]
+                # 앞의 MATCH 가 이미 묶은 변수에 라벨을 다시 붙이지 않는다(2026-11-26) — Ontological 은 받아 줬지만
+                # Neo4j · Apache AGE 는 "previously declared variables cannot have a label" 로 거부한다.
                 create = (
-                    f"CREATE (source:{source_label})-[relationship:FK {{"
-                    f"from_column: $from_column, to_column: $to_column}}]->(target:{target_label})"
+                    "CREATE (source)-[relationship:FK {"
+                    "from_column: $from_column, to_column: $to_column}]->(target)"
                     if relationship_type == "FK"
-                    else f"CREATE (source:{source_label})-"
-                         f"[relationship:{relationship_type}]->(target:{target_label})"
+                    else f"CREATE (source)-[relationship:{relationship_type}]->(target)"
                 )
                 try:
                     result = await transaction.run(
