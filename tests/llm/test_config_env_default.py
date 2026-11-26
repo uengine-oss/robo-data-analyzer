@@ -28,3 +28,13 @@ def test_pgpt_config_follows_env(monkeypatch):
     assert load_llm_config("pgpt").api_base == "http://pgpt.posco/v1"
     monkeypatch.delenv("ROBO_AI_BASE_URL")
     assert load_llm_config("pgpt").api_base == "http://aigpt.posco.net/gpgpta01-gpt/v1"
+
+
+def test_pgpt_model_follows_env(monkeypatch):
+    """레거시 분석 모델도 .env 로(2026-11-26) — 비면 gpt-4.1."""
+    monkeypatch.setenv("ROBO_ANALYZER_MODEL", "gpt-4o")
+    assert load_llm_config("pgpt").model == "gpt-4o"
+    monkeypatch.setenv("ROBO_ANALYZER_MODEL", " ")
+    assert load_llm_config("pgpt").model == "gpt-4.1"
+    monkeypatch.delenv("ROBO_ANALYZER_MODEL")
+    assert load_llm_config("pgpt").model == "gpt-4.1"

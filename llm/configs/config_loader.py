@@ -162,7 +162,9 @@ def _expand_env(value: str) -> str:
 def _build_llm_config(raw: dict, source: str) -> LLMConfig:
     """yaml dict → ``LLMConfig`` 변환 + 필수 필드 검증."""
     provider = _require_string(raw, "provider", source).lower()
-    model = _require_string(raw, "model", source)
+    # model 도 ${VAR:-기본값} 을 받는다(2026-11-26) — 레거시 분석 모델을 .env(ROBO_ANALYZER_MODEL)로.
+    # 가격표(llm_pricing.yaml)에 없는 모델은 첫 호출에서 UnknownModelPriceError 로 멈춘다(fail-closed 그대로).
+    model = _expand_env(_require_string(raw, "model", source))
     # ${VAR} 를 환경에서 채운다 — Lite 의 Claude Code 다리처럼 포트가 실행마다 바뀌는 주소용.
     # ${VAR:-기본값} 도 받는다(2026-11-24) — 망마다 주소가 다른 P-GPT 를 .env 한 곳에서 주되,
     # 값이 없으면 지금까지 박혀 있던 주소로 간다.

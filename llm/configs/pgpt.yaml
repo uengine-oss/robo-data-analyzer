@@ -41,7 +41,7 @@ api_base: ${ROBO_AI_BASE_URL:-http://aigpt.posco.net/gpgpta01-gpt/v1}
 #    (context 1,047,576 · max output 32,768 — OpenAI 모델 페이지에서 확인).
 #    ⓘ 날짜 스냅샷은 OpenAI 가 **deprecated** 로 표시했으므로 별칭을 쓴다.
 #    ⚠ 현장에서 `GET {api_base}/models` 로 한 번 확인한다.
-model: gpt-4.1
+model: ${ROBO_ANALYZER_MODEL:-gpt-4.1}
 
 # 게이트웨이는 본점보다 컨텍스트가 좁은 경우가 많다. 넘치면 **조용히 잘린 응답**이
 # 오는 쪽이라(ENT-AI-001) 넉넉하게 잡지 않는다.
